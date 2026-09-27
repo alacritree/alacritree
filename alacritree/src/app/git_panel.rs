@@ -564,6 +564,7 @@ fn paint_git_sidebar_status(
     requests: &mut GitSidebarRequests,
 ) {
     let theme = &view.theme;
+    reserve_scroll_bar_gutter(ui);
     sidebar_scroll_area(ui, theme.scroll_align, |ui| {
         if let Some(err) = &view.error {
             ui.label(RichText::new(err).color(view.theme.error).small());
@@ -584,6 +585,17 @@ fn paint_git_sidebar_status(
         paint_unstaged_section(ui, view, requests, &mut section_gap);
         paint_branch_section(ui, view, requests, &mut section_gap);
     });
+}
+
+/// egui's floating scroll bar opens over the content's right edge, where the
+/// panel pins its review buttons and +/- counts. Setting aside the bar's full
+/// width plus the margin a solid bar keeps puts it beside them instead. The
+/// gutter opens only while the bar shows.
+fn reserve_scroll_bar_gutter(ui: &mut egui::Ui) {
+    let scroll = &mut ui.spacing_mut().scroll;
+    if scroll.floating {
+        scroll.floating_allocated_width = scroll.bar_inner_margin + scroll.bar_width;
+    }
 }
 
 fn paint_git_branch_header(
@@ -881,32 +893,34 @@ pub(super) fn file_row(
     let mut path_galley = None;
     let mut hints = IconHints::default();
     // Reserve the full row so short paths do not shrink the click target.
-    let resp = ui
-        .allocate_ui_with_layout(
-            egui::vec2(ui.available_width(), row_h),
-            egui::Layout::left_to_right(egui::Align::Center),
-            |ui| {
-                ui.set_min_height(row_h);
-                // Labels default to `Sense::click_and_drag` for text selection;
-                // hit testing picks the smallest covering widget, so a clickable
-                // label inside our row would eat clicks before the row sees
-                // them. Opt out of selection on every label that lives inside
-                // a clickable row so the click falls through.
-                let badge = ui.add(
-                    egui::Label::new(
-                        RichText::new(git_nav::change_glyph(change.kind))
-                            .color(color)
-                            .monospace()
-                            .small(),
-                    )
-                    .selectable(false),
-                );
-                hints.add(badge.rect, git_nav::change_label(change.kind));
-                let (_, galley) = git_path_label(ui, &change.path, path_color, theme);
-                path_galley = Some(galley);
-                fill_row(ui);
-            },
-        )
+    let resp = git_row_frame()
+        .show(ui, |ui| {
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), row_h),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    ui.set_min_height(row_h);
+                    // Labels default to `Sense::click_and_drag` for text selection;
+                    // hit testing picks the smallest covering widget, so a clickable
+                    // label inside our row would eat clicks before the row sees
+                    // them. Opt out of selection on every label that lives inside
+                    // a clickable row so the click falls through.
+                    let badge = ui.add(
+                        egui::Label::new(
+                            RichText::new(git_nav::change_glyph(change.kind))
+                                .color(color)
+                                .monospace()
+                                .small(),
+                        )
+                        .selectable(false),
+                    );
+                    hints.add(badge.rect, git_nav::change_label(change.kind));
+                    let (_, galley) = git_path_label(ui, &change.path, path_color, theme);
+                    path_galley = Some(galley);
+                    fill_row(ui);
+                },
+            );
+        })
         .response
         .interact(egui::Sense::click());
     let resp = hints.apply(resp, theme.icon_tooltips, |resp| {
@@ -933,49 +947,51 @@ pub(super) fn branch_diff_row(
     // Same shape as row_with_trailing (right_to_left wrapping a left_to_right)
     // so +/- counts pin to the right edge while the path truncates cleanly;
     // `set_min_height` + `fill_row` push the hit box to the full row size.
-    let resp = ui
-        .allocate_ui_with_layout(
-            egui::vec2(ui.available_width(), row_h),
-            egui::Layout::right_to_left(egui::Align::Center),
-            |ui| {
-                ui.set_min_height(row_h);
-                if stat.deletions > 0 {
-                    ui.add(
-                        egui::Label::new(
-                            RichText::new(format!("-{}", stat.deletions))
-                                .color(removed)
-                                .small()
-                                .monospace(),
-                        )
-                        .selectable(false),
-                    );
-                }
-                if stat.additions > 0 {
-                    ui.add(
-                        egui::Label::new(
-                            RichText::new(format!("+{}", stat.additions))
-                                .color(added)
-                                .small()
-                                .monospace(),
-                        )
-                        .selectable(false),
-                    );
-                }
-                let remaining = ui.available_width();
-                if remaining > 0.0 {
-                    ui.allocate_ui_with_layout(
-                        egui::vec2(remaining, row_h),
-                        egui::Layout::left_to_right(egui::Align::Center),
-                        |ui| {
-                            ui.set_min_height(row_h);
-                            let (_, galley) = git_path_label(ui, &stat.path, path_color, theme);
-                            path_galley = Some(galley);
-                            fill_row(ui);
-                        },
-                    );
-                }
-            },
-        )
+    let resp = git_row_frame()
+        .show(ui, |ui| {
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), row_h),
+                egui::Layout::right_to_left(egui::Align::Center),
+                |ui| {
+                    ui.set_min_height(row_h);
+                    if stat.deletions > 0 {
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(format!("-{}", stat.deletions))
+                                    .color(removed)
+                                    .small()
+                                    .monospace(),
+                            )
+                            .selectable(false),
+                        );
+                    }
+                    if stat.additions > 0 {
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(format!("+{}", stat.additions))
+                                    .color(added)
+                                    .small()
+                                    .monospace(),
+                            )
+                            .selectable(false),
+                        );
+                    }
+                    let remaining = ui.available_width();
+                    if remaining > 0.0 {
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(remaining, row_h),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| {
+                                ui.set_min_height(row_h);
+                                let (_, galley) = git_path_label(ui, &stat.path, path_color, theme);
+                                path_galley = Some(galley);
+                                fill_row(ui);
+                            },
+                        );
+                    }
+                },
+            );
+        })
         .response
         .interact(egui::Sense::click());
     let resp = git_path_tooltip(resp, path_galley.as_deref(), theme);
@@ -1292,6 +1308,12 @@ pub(super) fn base_branch_target(
 
 /// Extend a row's bounding rect to its parent's full width so the response
 /// covers the empty space past short labels, instead of just the content.
+/// Keeps a row's text off the edges of its highlight and cursor outline, which
+/// span the row's full height and the panel's full width.
+fn git_row_frame() -> Frame {
+    Frame::NONE.inner_margin(Margin { left: 4, right: 4, top: 3, bottom: 3 })
+}
+
 fn fill_row(ui: &mut egui::Ui) {
     let remaining = ui.available_width();
     if remaining > 0.0 {
@@ -1343,32 +1365,53 @@ mod tests {
         assert_eq!(working_section_title(&status), "Changes");
     }
 
-    /// Paint a section header with a review button for a few frames with the
-    /// pointer at `pointer`, returning the last frame's shapes.
-    fn review_header_shapes(theme: &Theme, pointer: egui::Pos2) -> Vec<egui::Shape> {
+    /// Paint `contents` edge to edge in a `size` window for a few frames with
+    /// the pointer at `pointer`, returning the last frame's shapes. The frames
+    /// are a second apart, so every animation has settled by the last one.
+    fn painted_shapes(
+        size: egui::Vec2,
+        pointer: egui::Pos2,
+        mut contents: impl FnMut(&mut egui::Ui),
+    ) -> Vec<egui::Shape> {
         let ctx = egui::Context::default();
         let mut shapes = Vec::new();
         for frame in 0..3 {
             let input = egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(300.0, 100.0),
-                )),
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
                 time: Some(frame as f64),
                 events: vec![egui::Event::PointerMoved(pointer)],
                 ..Default::default()
             };
             let output = ctx.run(input, |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    let review = ReviewButton { label: "review", active: false };
-                    section_header(ui, theme, Some(review), |ui| {
-                        ui.label("Staged");
-                    });
-                });
+                egui::CentralPanel::default().frame(Frame::NONE).show(ctx, &mut contents);
             });
             shapes = output.shapes.into_iter().map(|clipped| clipped.shape).collect();
         }
         shapes
+    }
+
+    fn text_rects(shapes: &[egui::Shape]) -> Vec<(String, egui::Rect)> {
+        shapes
+            .iter()
+            .filter_map(|s| match s {
+                // A right-aligned galley extends left of `pos`.
+                egui::Shape::Text(t) => {
+                    Some((t.galley.text().to_string(), t.galley.rect.translate(t.pos.to_vec2())))
+                },
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Paint a section header with a review button with the pointer at
+    /// `pointer`, returning the last frame's shapes.
+    fn review_header_shapes(theme: &Theme, pointer: egui::Pos2) -> Vec<egui::Shape> {
+        painted_shapes(egui::vec2(300.0, 100.0), pointer, |ui| {
+            let review = ReviewButton { label: "review", active: false };
+            section_header(ui, theme, Some(review), |ui| {
+                ui.label("Staged");
+            });
+        })
     }
 
     /// The fill of the tightest filled rect painted behind `text`, which
@@ -1403,6 +1446,126 @@ mod tests {
         let (_, hovered) = fill_behind(&review_header_shapes(&theme, rect.center()), "review")
             .expect("the frame stays under the pointer");
         assert_ne!(idle, hovered, "hovering must change the button's fill");
+    }
+
+    /// A row's highlight clears its text on every side, so neither the path
+    /// nor the +/- counts sit on the highlight's edge. The text is as tall as
+    /// the row's minimum height, the way a large `[ui.font] size` paints it.
+    #[test]
+    fn git_rows_pad_their_text_inside_the_highlight() {
+        let theme = Theme::from_config(&Config::default());
+        let change = modified("AGENTS.md");
+        let stat =
+            alacritree_vcs::DiffStat { path: "AGENTS.md".into(), additions: 47, deletions: 66 };
+
+        for is_diff in [false, true] {
+            let shapes =
+                painted_shapes(egui::vec2(300.0, 100.0), egui::pos2(-100.0, -100.0), |ui| {
+                    let row_h = ui.spacing().interact_size.y;
+                    ui.style_mut()
+                        .text_styles
+                        .insert(egui::TextStyle::Small, egui::FontId::proportional(row_h));
+                    if is_diff {
+                        let _ = branch_diff_row(ui, &stat, &theme, true);
+                    } else {
+                        let _ = file_row(ui, &change, &theme, true);
+                    }
+                });
+            let highlight = shapes
+                .iter()
+                .find_map(|s| match s {
+                    egui::Shape::Rect(r) if r.fill == theme.row_active_bg => Some(r.rect),
+                    _ => None,
+                })
+                .expect("the active row paints its highlight");
+            let texts = text_rects(&shapes);
+            assert!(!texts.is_empty());
+            for (text, rect) in texts {
+                let gaps = [
+                    rect.min.x - highlight.min.x,
+                    highlight.max.x - rect.max.x,
+                    rect.min.y - highlight.min.y,
+                    highlight.max.y - rect.max.y,
+                ];
+                assert!(
+                    gaps.iter().all(|gap| *gap >= 2.0),
+                    "diff row: {is_diff}, {text:?} at {rect:?} in {highlight:?}: gaps \
+                     left/right/top/bottom {gaps:?}"
+                );
+            }
+        }
+    }
+
+    /// A panel of rows long enough to scroll, with a review button and +/-
+    /// counts at the right edge where a scroll bar would go.
+    fn overflowing_view() -> GitSidebarView {
+        let base_diff: Vec<_> = (0..30)
+            .map(|i| alacritree_vcs::DiffStat {
+                path: format!("src/file_{i}.rs"),
+                additions: 47,
+                deletions: 66,
+            })
+            .collect();
+        let branch_visible = base_diff.iter().map(|stat| stat.path.clone()).collect();
+        let count = || SectionCount { visible: 30, total: 30 };
+        let base = "main".to_string();
+        GitSidebarView {
+            theme: Theme::from_config(&Config::default()),
+            path: PathBuf::from("C:/repo/wt"),
+            workspace_home: None,
+            status: Status {
+                trunk: Some(base.clone()),
+                base: Some(base.clone()),
+                base_diff,
+                ..Default::default()
+            },
+            error: None,
+            pr_info: None,
+            branch_base: Some(base.clone()),
+            active_diff_key: None,
+            filtering: false,
+            staged_count: count(),
+            unstaged_count: count(),
+            branch_count: count(),
+            staged_visible: HashSet::new(),
+            unstaged_visible: HashSet::new(),
+            branch_visible,
+            review_label: "review".to_string(),
+            staged_review: None,
+            unstaged_review: None,
+            branch_review: Some(Target::Section(Section::Branch { base })),
+            cursor_row: None,
+            cursor_moved: false,
+        }
+    }
+
+    /// With the pointer on the scroll bar it opens to its full width, and in
+    /// either style nothing the panel draws sits beneath it.
+    #[test]
+    fn the_git_panel_scroll_bar_never_covers_its_rows() {
+        const SIZE: egui::Vec2 = egui::vec2(300.0, 120.0);
+        let view = overflowing_view();
+        let on_the_bar = egui::pos2(SIZE.x - 2.0, SIZE.y / 2.0);
+
+        for style in [ScrollbarStyle::Floating, ScrollbarStyle::Solid] {
+            let mut bar_width = 0.0;
+            let shapes = painted_shapes(SIZE, on_the_bar, |ui| {
+                apply_scrollbar_style(ui, style);
+                bar_width = ui.spacing().scroll.bar_width;
+                paint_git_sidebar_status(ui, &view, &mut GitSidebarRequests::default());
+            });
+            let bar_left = SIZE.x - bar_width;
+            let mut drawn = text_rects(&shapes);
+            let (review, _) = fill_behind(&shapes, "review").expect("the review button painted");
+            drawn.push(("review button".to_string(), review));
+            assert!(drawn.iter().any(|(text, _)| text == "-66"), "{drawn:?}");
+            for (text, rect) in drawn {
+                assert!(
+                    rect.max.x <= bar_left,
+                    "{style:?}: {text:?} at {rect:?} reaches under the bar from x = {bar_left}"
+                );
+            }
+        }
     }
 
     #[test]
