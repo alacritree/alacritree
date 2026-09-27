@@ -20,8 +20,23 @@ mkdir -p "$app_dir"
 cp -R "$template" "$app_dir/"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$root/target/release/alacritree" "$app/Contents/MacOS/"
-# No alacritree icon yet; reuse upstream's under the name Info.plist expects.
-cp "$root/extra/osx/Alacritty.app/Contents/Resources/alacritty.icns" \
-    "$app/Contents/Resources/alacritree.icns"
+
+# The icon is built from the PNGs the Linux desktop entry installs, so every
+# platform shows the same one.  Retina slots take the next size up; the
+# largest has no PNG of its own and is scaled down from the master icon.
+assets="$root/alacritree/assets"
+iconset="$app_dir/alacritree.iconset"
+rm -rf "$iconset"
+mkdir -p "$iconset"
+for size in 16 32 128 256 512; do
+    cp "$assets/icon-$size.png" "$iconset/icon_${size}x${size}.png"
+done
+for size in 16 32 128 256; do
+    cp "$assets/icon-$((size * 2)).png" "$iconset/icon_${size}x${size}@2x.png"
+done
+sips -z 1024 1024 "$assets/icon.png" --out "$iconset/icon_512x512@2x.png" >/dev/null
+iconutil -c icns "$iconset" -o "$app/Contents/Resources/alacritree.icns"
+rm -rf "$iconset"
+
 codesign --force --deep --sign - "$app"
 echo "Created $app"
