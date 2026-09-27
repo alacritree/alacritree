@@ -238,6 +238,7 @@ impl AlacritreeApp {
             ),
             false => None,
         };
+        let activity = crate::activity::status_line(&self.activities, self.activities.now());
         let panel_resp = SidePanel::left("left_sidebar")
             .resizable(true)
             .default_width(240.0 * theme.ui_scale)
@@ -248,6 +249,7 @@ impl AlacritreeApp {
                 // default I-beam-and-select on labels is the wrong affordance.
                 ui.style_mut().interaction.selectable_labels = false;
                 apply_scrollbar_style(ui, self.config.ui.scrollbar);
+                activity_row::show(ui, &activity, &theme);
                 if let Some(tasks) = tasks {
                     requests.open_tasks = tasks_panel::show(ui, tasks, &theme, TasksSidebar::Left);
                 }

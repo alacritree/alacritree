@@ -64,6 +64,7 @@ use crate::{
 use alacritree_vcs::{Checkout, Dirty, Liveness, UpstreamState, VersionControl};
 
 mod actions;
+mod activity_row;
 mod focus;
 mod git_panel;
 mod ipc_handler;
@@ -4507,6 +4508,111 @@ mod tests {
         app.sync_activities();
         assert_eq!(status_text(&app), "Scanning projects 0/1");
         assert_eq!(scan_until(&mut app, "Projects scanned"), "Projects scanned just now");
+    }
+
+    /// An app whose one project has a checkout on `topic`, asking `forge`
+    /// about its PR, with PR status on.
+    fn app_asking(forge: alacritree_forge::fake::FakeForge) -> AlacritreeApp {
+        let mut app = test_app();
+        app.config.integrations.gh.pr_status = true;
+        app.pr_cache = PrCache::new(Forge::Fake(forge));
+        let root = PathBuf::from("/r");
+        let mut checkout = checkout_at(&root);
+        checkout.head.name = Some("topic".into());
+        app.projects.push(Project {
+            vcs: Some(crate::vcs::Vcs::Fake(alacritree_vcs::fake::FakeVcs::new("/r"))),
+            checkouts: vec![checkout],
+            ..Project::placeholder(root)
+        });
+        app
+    }
+
+    /// Run whole frames, drains and sidebars, until the status row reads
+    /// something starting with `want` or ten seconds pass. Returns the row's
+    /// text and every text the last frame painted.
+    fn frames_until(app: &mut AlacritreeApp, ctx: &Context, want: &str) -> (String, Vec<String>) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::Vec2::new(800.0, 600.0),
+                )),
+                ..Default::default()
+            };
+            let output = ctx.run(input, |ctx| {
+                app.poll_update_jobs(ctx);
+                let view = app.frame_paint_view(false);
+                app.paint_sidebars(ctx, view);
+            });
+            let text = status_text(app);
+            if text.starts_with(want) || Instant::now() > deadline {
+                let painted = painted_texts(&output.shapes).into_iter().map(|(t, _)| t).collect();
+                return (text, painted);
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn a_pr_refresh_counts_off_and_says_it_finished() {
+        use crate::app::actions::Action;
+
+        let (forge, release) = alacritree_forge::fake::FakeForge::default().paused();
+        let mut app = app_asking(forge);
+        let ctx = Context::default();
+        action::RefreshPrStatus.run(&mut app, &ctx, ActionOrigin::Keyboard);
+
+        let (text, painted) = frames_until(&mut app, &ctx, "PRs 0/1");
+        assert!(text.starts_with("PRs 0/1 · "), "{text}");
+        assert!(painted.contains(&text), "the row paints {text:?}: {painted:?}");
+
+        release.release();
+        let (text, painted) = frames_until(&mut app, &ctx, "PRs refreshed");
+        assert_eq!(text, "PRs refreshed just now");
+        assert!(painted.contains(&text), "{painted:?}");
+    }
+
+    #[test]
+    fn a_failed_pr_refresh_says_why() {
+        use crate::app::actions::Action;
+
+        let forge = alacritree_forge::fake::FakeForge::default().failing_on("topic");
+        let mut app = app_asking(forge);
+        let ctx = Context::default();
+        action::RefreshPrStatus.run(&mut app, &ctx, ActionOrigin::Keyboard);
+
+        let (text, _) = frames_until(&mut app, &ctx, "PR refresh");
+        assert_eq!(
+            text,
+            "PR refresh: 1 of 1 failed: fake answered with something other than a pull request \
+             list"
+        );
+    }
+
+    #[test]
+    fn a_pr_refresh_with_pr_status_off_says_so() {
+        use crate::app::actions::Action;
+
+        let mut app = app_asking(alacritree_forge::fake::FakeForge::default());
+        app.config.integrations.gh.pr_status = false;
+        action::RefreshPrStatus.run(&mut app, &Context::default(), ActionOrigin::Keyboard);
+        assert!(!app.pr_cache.triggered());
+        assert_eq!(status_text(&app), "PR status is off");
+    }
+
+    /// With both sidebars hidden nothing polls, and the refresh still ends.
+    #[test]
+    fn a_pr_refresh_with_the_sidebars_hidden_has_nothing_to_check() {
+        use crate::app::actions::Action;
+
+        let mut app = app_asking(alacritree_forge::fake::FakeForge::default());
+        app.show_left_sidebar = false;
+        app.show_right_sidebar = false;
+        let ctx = Context::default();
+        action::RefreshPrStatus.run(&mut app, &ctx, ActionOrigin::Palette);
+        let (text, _) = frames_until(&mut app, &ctx, "PRs:");
+        assert_eq!(text, "PRs: nothing to check");
     }
 
     fn checkout_at(path: &std::path::Path) -> alacritree_vcs::Checkout {

@@ -507,7 +507,7 @@ mod tests {
 
     #[test]
     fn a_newer_result_replaces_the_last_one() {
-        let (mut a, clock) = activities();
+        let (mut a, _) = activities();
         a.report_off();
         assert_eq!(text(&a, SEC), "PR status is off");
         refresh_once(&mut a, &[("o/a", 1)]);
