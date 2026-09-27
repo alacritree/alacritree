@@ -55,17 +55,137 @@ impl Cancel {
     }
 }
 
+/// How a job stopped running.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum JobEnd {
+    Returned,
+    Panicked,
+    /// The handle dropped before the job ended.
+    Cancelled,
+}
+
+/// One step a job declared, and how it went once it ended.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Step {
+    pub label: String,
+    /// `None` while the step has not ended.
+    pub outcome: Option<Result<(), String>>,
+    /// From the previous step's end, or from `set_steps` for the first.
+    pub took: Option<Duration>,
+}
+
+/// What a job has reported so far.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct ProgressSnapshot {
+    /// In the order the job declared them.
+    pub steps: Vec<Step>,
+    pub end: Option<JobEnd>,
+}
+
+/// The progress a job's worker, its handle and its readers share.
+#[derive(Default)]
+struct Progress {
+    steps: Vec<Step>,
+    /// When the running step began.
+    mark: Option<Instant>,
+    end: Option<JobEnd>,
+}
+
+type SharedProgress = Arc<Mutex<Progress>>;
+
+/// The first end recorded wins. The worker, the handle's drop, and the
+/// settled constructors can each reach a job's end, and a handle dropped just
+/// after its value landed must still read as returned.
+fn settle(progress: &SharedProgress, end: JobEnd) {
+    let mut progress = progress.lock().unwrap_or_else(|e| e.into_inner());
+    progress.end.get_or_insert(end);
+}
+
+/// Reads a job's progress. Outlives the job, so whoever owns the `Job` keeps
+/// its cancel-on-drop while others watch.
+#[derive(Clone)]
+pub struct ProgressReader(SharedProgress);
+
+impl ProgressReader {
+    pub fn snapshot(&self) -> ProgressSnapshot {
+        let progress = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        ProgressSnapshot { steps: progress.steps.clone(), end: progress.end }
+    }
+}
+
+/// A reader a test writes to by hand, standing in for a job's worker.
+#[cfg(any(test, feature = "test-support"))]
+impl ProgressReader {
+    pub fn scripted() -> Self {
+        Self(SharedProgress::default())
+    }
+
+    pub fn script_steps(&self, labels: &[&str]) {
+        let mut progress = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        progress.steps = labels
+            .iter()
+            .map(|l| Step { label: l.to_string(), outcome: None, took: None })
+            .collect();
+    }
+
+    pub fn script_done(&self, label: &str, outcome: Result<(), String>, took: Duration) {
+        let mut progress = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(step) = progress.steps.iter_mut().find(|s| s.label == label) {
+            step.outcome = Some(outcome);
+            step.took = Some(took);
+        }
+    }
+
+    pub fn script_end(&self, end: JobEnd) {
+        settle(&self.0, end);
+    }
+}
+
 /// Proof that the holder runs on a pool worker. The constructor is private
 /// to this module, so a blocking helper that takes one cannot be called from
 /// the UI thread.
-pub struct Blocking(Arc<Cancel>);
+pub struct Blocking {
+    cancel: Arc<Cancel>,
+    progress: SharedProgress,
+    /// The pool whose wake-up a step runs. `None` on the calling thread,
+    /// where nothing on screen waits.
+    pool: Option<Arc<Shared>>,
+}
 
 impl Blocking {
     /// Whether this job's handle has been dropped. Check between steps. A
     /// job doing local work has no child registered for a cancel to kill, so
     /// nothing else would stop it.
     pub fn cancelled(&self) -> bool {
-        self.0.flag.load(Ordering::Relaxed)
+        self.cancel.flag.load(Ordering::Relaxed)
+    }
+
+    /// Name every step this job will run, in order. Labels are unique within
+    /// a job. Calling again replaces the list. Timing starts here, so work
+    /// done before is charged to no step.
+    pub fn set_steps(&self, labels: Vec<String>) {
+        let mut progress = self.progress.lock().unwrap_or_else(|e| e.into_inner());
+        progress.steps =
+            labels.into_iter().map(|label| Step { label, outcome: None, took: None }).collect();
+        progress.mark = Some(Instant::now());
+    }
+
+    /// Record how `label` ended, and wake the UI so the frame that reads it
+    /// happens without input.
+    pub fn step_done(&self, label: &str, outcome: Result<(), String>) {
+        {
+            let mut progress = self.progress.lock().unwrap_or_else(|e| e.into_inner());
+            let now = Instant::now();
+            let took = progress.mark.map(|mark| now.saturating_duration_since(mark));
+            progress.mark = Some(now);
+            if let Some(step) = progress.steps.iter_mut().find(|s| s.label == label) {
+                step.outcome = Some(outcome);
+                step.took = took;
+            }
+        }
+        if let Some(pool) = &self.pool {
+            pool.run_waker();
+        }
     }
 
     /// Run a child a cancel is allowed to kill, and return what it wrote.
@@ -104,16 +224,16 @@ impl Blocking {
     /// Register `child` for a cancel to kill, then wait for it to exit or for
     /// `deadline` to pass, returning it reaped.
     fn wait_registered(&self, child: Child, deadline: Option<Instant>) -> io::Result<Child> {
-        *self.0.child.lock().expect("the cancel slot is poisoned") = Some(child);
+        *self.cancel.child.lock().expect("the cancel slot is poisoned") = Some(child);
         // The handle can drop between the spawn and the registration, in
         // which case `cancel` ran while there was nothing to kill. Killing
         // here does not skip the loop below, since reaping stays there
         // whichever path did the killing.
         if self.cancelled() {
-            self.0.kill_registered();
+            self.cancel.kill_registered();
         }
         loop {
-            let mut slot = self.0.child.lock().expect("the cancel slot is poisoned");
+            let mut slot = self.cancel.child.lock().expect("the cancel slot is poisoned");
             let status = match slot.as_mut() {
                 Some(child) => child.try_wait(),
                 // Nothing else in this module takes from the slot, so this
@@ -188,6 +308,7 @@ const CHILD_POLL: Duration = Duration::from_millis(25);
 
 struct Task {
     cancel: Arc<Cancel>,
+    progress: SharedProgress,
     run: Box<dyn FnOnce(&Blocking) + Send>,
     /// Reports a caught panic to the `Job`'s channel. Kept separate from
     /// `run` because `run` moves its sender into a closure that drops it,
@@ -244,6 +365,14 @@ struct Shared {
     wake_ui: OnceLock<Box<dyn Fn() + Send + Sync>>,
 }
 
+impl Shared {
+    fn run_waker(&self) {
+        if let Some(wake) = self.wake_ui.get() {
+            wake();
+        }
+    }
+}
+
 /// A pool of worker threads that run for the life of the process. There is
 /// no shutdown path, so a dropped `Pool` leaks its threads, parked forever on
 /// the empty queue. Harmless for the process-wide singleton this crate uses;
@@ -259,6 +388,7 @@ pub struct Pool {
 pub struct Job<T> {
     rx: mpsc::Receiver<Result<T, JobFailed>>,
     cancel: Arc<Cancel>,
+    progress: SharedProgress,
     /// Latched by `poll` the moment it drains a failure off the channel, so
     /// the signal survives every `poll` after that one too. `poll` itself
     /// can only report it on the one call that observes it, since its `T`
@@ -296,16 +426,30 @@ impl<T> Job<T> {
         self.failed.get()
     }
 
+    /// A reader of this job's progress, which stays readable after the job
+    /// and this handle are gone.
+    pub fn progress_reader(&self) -> ProgressReader {
+        ProgressReader(Arc::clone(&self.progress))
+    }
+
     /// A job still running and never finishing, standing in for work a test
     /// build must not start.
     pub fn never() -> Self {
         let (_, rx) = mpsc::channel();
-        Job { rx, cancel: Arc::new(Cancel::default()), failed: Cell::new(false) }
+        Job {
+            rx,
+            cancel: Arc::new(Cancel::default()),
+            progress: SharedProgress::default(),
+            failed: Cell::new(false),
+        }
     }
 }
 
 impl<T> Drop for Job<T> {
     fn drop(&mut self) {
+        // Before the cancel, so a worker that notices it and returns cannot
+        // record its end first.
+        settle(&self.progress, JobEnd::Cancelled);
         self.cancel.cancel();
     }
 }
@@ -325,9 +469,11 @@ impl<T> Job<T> {
 
     fn settled(result: Result<T, JobFailed>) -> Self {
         let (tx, rx) = mpsc::channel();
+        let progress = SharedProgress::default();
+        settle(&progress, if result.is_ok() { JobEnd::Returned } else { JobEnd::Panicked });
         // The sender drops here; `try_recv` still hands back what it buffered.
         let _ = tx.send(result);
-        Job { rx, cancel: Arc::new(Cancel::default()), failed: Cell::new(false) }
+        Job { rx, cancel: Arc::new(Cancel::default()), progress, failed: Cell::new(false) }
     }
 }
 
@@ -365,9 +511,7 @@ impl Pool {
     /// Runs the registered wake-up outside any job, for a thread of this
     /// crate's own that learns something the UI has to draw.
     pub fn wake_ui(&self) {
-        if let Some(wake) = self.shared.wake_ui.get() {
-            wake();
-        }
+        self.shared.run_waker();
     }
 
     #[must_use = "dropping the handle cancels the job"]
@@ -379,10 +523,17 @@ impl Pool {
         let (tx, rx) = mpsc::channel();
         let fail_tx = tx.clone();
         let cancel = Arc::new(Cancel::default());
+        let progress = SharedProgress::default();
+        let returned = Arc::clone(&progress);
         let task = Task {
             cancel: Arc::clone(&cancel),
+            progress: Arc::clone(&progress),
             run: Box::new(move |blocking| {
-                let _ = tx.send(Ok(f(blocking)));
+                let value = f(blocking);
+                // Before the send: the owner may drop the handle the moment
+                // it takes the value, which would otherwise read as cancelled.
+                settle(&returned, JobEnd::Returned);
+                let _ = tx.send(Ok(value));
             }),
             on_failure: Box::new(move || {
                 let _ = fail_tx.send(Err(JobFailed));
@@ -395,7 +546,7 @@ impl Pool {
         }
         drop(state);
         self.shared.wake.notify_one();
-        Job { rx, cancel, failed: Cell::new(false) }
+        Job { rx, cancel, progress, failed: Cell::new(false) }
     }
 }
 
@@ -431,9 +582,7 @@ struct WakeOnEnd<'a> {
 
 impl Drop for WakeOnEnd<'_> {
     fn drop(&mut self) {
-        if let Some(wake) = self.shared.wake_ui.get() {
-            wake();
-        }
+        self.shared.run_waker();
     }
 }
 
@@ -453,10 +602,15 @@ fn worker(shared: Arc<Shared>) {
         if !task.cancel.flag.load(Ordering::Relaxed) {
             lower_this_thread(matches!(slot, Slot::Background));
             let _wake = WakeOnEnd { shared: &shared };
-            let blocking = Blocking(Arc::clone(&task.cancel));
+            let blocking = Blocking {
+                cancel: Arc::clone(&task.cancel),
+                progress: Arc::clone(&task.progress),
+                pool: Some(Arc::clone(&shared)),
+            };
             let outcome = catch_unwind(AssertUnwindSafe(|| (task.run)(&blocking)));
             if let Err(panic) = outcome {
                 log::error!("a job panicked: {}", panic_message(&panic));
+                settle(&task.progress, JobEnd::Panicked);
                 (task.on_failure)();
             }
         }
@@ -496,7 +650,23 @@ fn lower_this_thread(_background: bool) {}
 pub fn on_this_thread<T>(f: impl FnOnce(&Blocking) -> T) -> T {
     // Nothing holds this `Cancel`, so `run_cancellable` here behaves exactly
     // like a plain run.
-    f(&Blocking(Arc::new(Cancel::default())))
+    f(&Blocking {
+        cancel: Arc::new(Cancel::default()),
+        progress: SharedProgress::default(),
+        pool: None,
+    })
+}
+
+/// [`on_this_thread`], returning what `f` reported alongside its value, for
+/// a test of a job's progress that needs no pool.
+#[cfg(any(test, feature = "test-support"))]
+pub fn recorded<T>(f: impl FnOnce(&Blocking) -> T) -> (T, ProgressSnapshot) {
+    let progress = SharedProgress::default();
+    let blocking =
+        Blocking { cancel: Arc::new(Cancel::default()), progress: Arc::clone(&progress), pool: None };
+    let value = f(&blocking);
+    settle(&progress, JobEnd::Returned);
+    (value, ProgressReader(progress).snapshot())
 }
 
 /// The process-wide pool. Sized for IO-bound work, meaning subprocesses and
@@ -525,6 +695,7 @@ mod tests {
         for _ in 0..interactive {
             state.interactive.push_back(Task {
                 cancel: Arc::new(Cancel::default()),
+                progress: SharedProgress::default(),
                 run: Box::new(|_| {}),
                 on_failure: Box::new(|| {}),
             });
@@ -532,6 +703,7 @@ mod tests {
         for _ in 0..background {
             state.background.push_back(Task {
                 cancel: Arc::new(Cancel::default()),
+                progress: SharedProgress::default(),
                 run: Box::new(|_| {}),
                 on_failure: Box::new(|| {}),
             });
@@ -831,6 +1003,120 @@ mod tests {
         assert!(output.status.success());
         assert_eq!(output.stdout.len(), 200_000);
         assert_eq!(output.stderr.len(), 200_000);
+    }
+
+    fn labels(names: &[&str]) -> Vec<String> {
+        names.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// Poll a reader until its job has ended, since a pool job ends on its
+    /// own schedule.
+    fn end_of(reader: &ProgressReader) -> JobEnd {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(end) = reader.snapshot().end {
+                return end;
+            }
+            assert!(Instant::now() < deadline, "the job never ended");
+            std::thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn a_job_reports_its_steps_as_they_end() {
+        let pool = Pool::new(2);
+        let wakes = Arc::new(Mutex::new(0_usize));
+        let counter = Arc::clone(&wakes);
+        pool.set_waker(move || *counter.lock().unwrap() += 1);
+        let (reported_tx, reported_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let job = pool.spawn(Priority::Interactive, move |blocking| {
+            blocking.set_steps(labels(&["a", "b", "c"]));
+            blocking.step_done("a", Ok(()));
+            blocking.step_done("b", Err("nope".into()));
+            let _ = reported_tx.send(());
+            let _ = release_rx.recv();
+        });
+        reported_rx.recv_timeout(Duration::from_secs(5)).expect("the job never reported");
+
+        let snap = job.progress_reader().snapshot();
+        assert_eq!(snap.end, None, "the job is still running");
+        let got: Vec<_> =
+            snap.steps.iter().map(|s| (s.label.as_str(), s.outcome.clone(), s.took.is_some())).collect();
+        assert_eq!(got, [
+            ("a", Some(Ok(())), true),
+            ("b", Some(Err("nope".to_string())), true),
+            ("c", None, false),
+        ]);
+        assert_eq!(*wakes.lock().unwrap(), 2, "each step wakes the UI");
+        let _ = release_tx.send(());
+    }
+
+    #[test]
+    fn a_job_that_returned_reads_returned() {
+        let pool = Pool::new(2);
+        let job = pool.spawn(Priority::Interactive, |_| 1_u8);
+        let reader = job.progress_reader();
+        assert_eq!(end_of(&reader), JobEnd::Returned);
+        assert!(reader.snapshot().steps.is_empty(), "a job that never set steps reports none");
+    }
+
+    #[test]
+    fn a_panicked_job_reads_panicked() {
+        let pool = Pool::new(2);
+        let job = pool.spawn(Priority::Interactive, |b: &Blocking| -> u8 {
+            b.set_steps(labels(&["a"]));
+            panic!("boom")
+        });
+        assert_eq!(end_of(&job.progress_reader()), JobEnd::Panicked);
+    }
+
+    #[test]
+    fn dropping_a_running_job_reads_cancelled() {
+        let pool = Pool::new(2);
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let job = pool.spawn(Priority::Interactive, move |_| {
+            let _ = started_tx.send(());
+            let _ = release_rx.recv();
+        });
+        started_rx.recv_timeout(Duration::from_secs(5)).expect("the job never started");
+        let reader = job.progress_reader();
+        drop(job);
+        let _ = release_tx.send(());
+        assert_eq!(reader.snapshot().end, Some(JobEnd::Cancelled));
+    }
+
+    /// The owner drops a handle as soon as it has taken the value, which must
+    /// not rewrite a job that finished as one that was cancelled.
+    #[test]
+    fn a_returned_job_dropped_after_it_landed_stays_returned() {
+        let pool = Pool::new(2);
+        let job = pool.spawn(Priority::Interactive, |_| 2_u8);
+        assert_eq!(poll_until(&job, Duration::from_secs(5)), 2);
+        let reader = job.progress_reader();
+        drop(job);
+        assert_eq!(reader.snapshot().end, Some(JobEnd::Returned));
+    }
+
+    #[test]
+    fn settled_handles_report_their_end() {
+        assert_eq!(Job::ready(1_u8).progress_reader().snapshot().end, Some(JobEnd::Returned));
+        assert_eq!(Job::<u8>::panicked().progress_reader().snapshot().end, Some(JobEnd::Panicked));
+        assert_eq!(Job::<u8>::never().progress_reader().snapshot().end, None);
+    }
+
+    #[test]
+    fn recorded_returns_what_the_closure_reported() {
+        let (value, snap) = recorded(|b| {
+            b.set_steps(labels(&["one", "two"]));
+            b.step_done("one", Ok(()));
+            5_u8
+        });
+        assert_eq!(value, 5);
+        assert_eq!(snap.steps.len(), 2);
+        assert_eq!(snap.steps[0].outcome, Some(Ok(())));
+        assert_eq!(snap.steps[1].outcome, None);
     }
 
     #[test]
