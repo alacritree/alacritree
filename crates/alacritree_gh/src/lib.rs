@@ -986,8 +986,8 @@ mod tests {
 
     #[test]
     fn reads_the_repository_gh_resolved() {
-        let slug = parse_name_with_owner(br#"{"nameWithOwner":"mathix420/alacritree"}"#);
-        assert_eq!(slug, Some(("mathix420".to_string(), "alacritree".to_string())));
+        let slug = parse_name_with_owner(br#"{"nameWithOwner":"owner/repo"}"#);
+        assert_eq!(slug, Some(("owner".to_string(), "repo".to_string())));
     }
 
     #[test]
