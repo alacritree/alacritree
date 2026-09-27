@@ -1184,15 +1184,22 @@ fn show_new_row(ui: &mut Ui, view: &mut TasksView, tasks: &[Task], c: Style) {
     let mut committed = None;
     let mut dropped = false;
     let mut focused = false;
-    ui.horizontal(|ui| {
+    ui.horizontal_top(|ui| {
         ui.add_space(new.depth as f32 * INDENT + GRIP_WIDTH);
         toggle(ui, None, c.chevron, c.chevron_hover);
+        // Multiline only so a long task wraps. Enter still ends the task
+        // instead of breaking the line.
         let edit = ui.add(
-            TextEdit::singleline(&mut new.text)
+            TextEdit::multiline(&mut new.text)
                 .hint_text("new task")
+                .desired_rows(1)
+                .return_key(None)
                 .lock_focus(true)
                 .desired_width(f32::INFINITY),
         );
+        if edit.has_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+            edit.surrender_focus();
+        }
         if new.focus {
             edit.request_focus();
             new.focus = false;
@@ -1776,6 +1783,21 @@ mod tests {
         let line = h.text("+ add a task").height();
         assert!(rect.height() > 2.0 * line, "{rect:?}");
         assert!(rect.right() <= 800.0, "{rect:?}");
+    }
+
+    #[test]
+    fn a_long_new_task_wraps_while_typed() {
+        let long = "word ".repeat(60).trim_end().to_string();
+        let mut h = Harness::new(Vec::new());
+        let add = h.text("+ add a task");
+        h.click(add.center());
+        h.frame(vec![Event::Text(long.clone())]);
+        h.frame(Vec::new());
+        let rect = h.text(&long);
+        assert!(rect.height() > 2.0 * add.height(), "{rect:?}");
+        assert!(rect.right() <= 800.0, "{rect:?}");
+        h.key(Key::Enter);
+        assert_eq!(h.view.plain_lines(), ["## global", format!("- [ ] {long}").as_str()]);
     }
 
     #[test]
