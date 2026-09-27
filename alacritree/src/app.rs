@@ -254,6 +254,7 @@ impl Theme {
                 error,
                 accent,
                 terminal_bg,
+                config.font.tasks_size.map_or(font_heading, |pt| pt * 96.0 / 72.0),
             ),
             git: GitColors {
                 added: rgb_to_color32(config.palette.normal[2]),
@@ -270,6 +271,7 @@ impl Theme {
 /// colors, and the add button tinted with the accent over the pane. Selected
 /// rows take the terminal's selection colors, swapping text and background
 /// when those are unset, as the terminal does.
+#[allow(clippy::too_many_arguments)]
 fn tasks_style(
     tasks: &crate::config::TasksUi,
     palette: &crate::config::Palette,
@@ -278,6 +280,7 @@ fn tasks_style(
     error: Color32,
     accent: Color32,
     background: Color32,
+    font: f32,
 ) -> crate::tasks::view::Style {
     let color = |c: Option<alacritty_terminal::vte::ansi::Rgb>, fallback| {
         c.map_or(fallback, rgb_to_color32)
@@ -312,6 +315,7 @@ fn tasks_style(
             Some(_) => text,
             None => background,
         }),
+        font,
     }
 }
 
@@ -7840,6 +7844,24 @@ mod tests {
         assert_eq!(theme.ui_scale, default_theme.ui_scale);
         assert_eq!(theme.font_normal, default_theme.font_normal);
         assert_eq!(theme.font_heading, default_theme.font_heading);
+    }
+
+    #[test]
+    fn tasks_font_matches_the_ui_heading_size_when_unset() {
+        let theme = Theme::from_config(&Config::default());
+        assert_eq!(theme.tasks.font, theme.font_heading);
+    }
+
+    #[test]
+    fn tasks_size_sets_only_the_tasks_font() {
+        let default_theme = Theme::from_config(&Config::default());
+        let mut config = Config::default();
+        config.font.tasks_size = Some(12.0);
+
+        let theme = Theme::from_config(&config);
+        assert_eq!(theme.tasks.font, 16.0); // 12 pt × 96/72
+        assert_eq!(theme.font_normal, default_theme.font_normal);
+        assert_eq!(theme.scratchpad_font, default_theme.scratchpad_font);
     }
 
     /// With no override, `attention` reads the palette's yellow slot; a

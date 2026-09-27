@@ -61,7 +61,8 @@
       "y": 0
     },
     "scratchpad_size": null,
-    "size": 11.25
+    "size": 11.25,
+    "tasks_size": null
   },
   "integrations": {
     "checkout_hooks": [],

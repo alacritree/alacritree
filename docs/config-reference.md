@@ -117,6 +117,7 @@ The terminal grid's font: the four faces, size, cell offsets, and alacritree's f
 - `fallback` (array of string, default `[]`): Ordered list of fallback font families or font file paths, tried in order after the four primary faces and before the automatic system chain. Recommended home is `alacritree.toml`: upstream alacritty warns about unknown keys, so putting it in the shared `alacritty.toml` would make the real alacritty noisy.
 - `scratchpad_size` (number): Point size for the scratchpad editor's text, which is drawn in the terminal font. Unset scales it with the sidebar font. Also alacritree-only, so it belongs in `alacritree.toml`.
 - `size` (number, default `11.25`): Font size in points.
+- `tasks_size` (number): Point size for task text in the tasks pane, which is drawn in the terminal font. Buttons and counters in the pane scale with it. Unset scales it with the sidebar font. Also alacritree-only, so it belongs in `alacritree.toml`.
 
 ### `[font.bold]`
 

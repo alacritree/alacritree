@@ -777,6 +777,7 @@ fn draw(
     }
     let paint = Paint { allow_focus, shortcuts, c: style };
     Frame::default().inner_margin(Margin::symmetric(10, 6)).show(ui, |ui| {
+        use_terminal_font(ui.style_mut(), style.font);
         ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             for e in view.load_error.iter().chain(&view.write_error) {
                 ui.label(RichText::new(e).color(style.error));
@@ -798,6 +799,23 @@ fn draw(
     background
 }
 
+/// Every text style in the pane switches to the terminal font. Body and
+/// Heading take `body` pixels, the rest keep the UI's smaller ratio to it.
+fn use_terminal_font(style: &mut egui::Style, body: f32) {
+    use crate::config::FontConfig;
+    use egui::{FontId, TextStyle};
+    let small = body * FontConfig::UI_NORMAL_RATIO / FontConfig::UI_HEADING_RATIO;
+    for (text_style, size) in [
+        (TextStyle::Heading, body),
+        (TextStyle::Body, body),
+        (TextStyle::Small, small),
+        (TextStyle::Button, small),
+        (TextStyle::Monospace, small),
+    ] {
+        style.text_styles.insert(text_style, FontId::monospace(size));
+    }
+}
+
 /// `[ui.tasks]` with every color resolved against the palette.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Style {
@@ -814,6 +832,9 @@ pub(crate) struct Style {
     /// Behind a selected row.
     pub selection: Color32,
     pub selected_text: Color32,
+    /// Logical-pixel size for task text, in the terminal font. Smaller text
+    /// such as buttons keeps the UI's ratio to it.
+    pub font: f32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1543,7 +1564,20 @@ mod tests {
             },
             selection: Color32::from_rgb(200, 200, 120),
             selected_text: Color32::BLACK,
+            font: 12.5,
         }
+    }
+
+    #[test]
+    fn the_pane_draws_in_the_terminal_font_at_the_configured_size() {
+        let mut h = Harness::new(vec![pending("a", "iiii"), pending("b", "MMMM")]);
+        assert_eq!(h.text("iiii").width(), h.text("MMMM").width(), "monospace");
+        let (row, button) = (h.text("iiii").height(), h.text("hide completed").height());
+
+        h.style.font *= 2.0;
+        h.frame(Vec::new());
+        assert!(h.text("iiii").height() > 1.8 * row);
+        assert!(h.text("hide completed").height() > 1.8 * button);
     }
 
     fn pending(id: &str, text: &str) -> Task {
