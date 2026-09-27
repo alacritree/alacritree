@@ -5,7 +5,7 @@
 //! Either lists only while drawn.
 
 use alacritree_tasks::Status;
-use alacritree_tasks::tree::{Row, Section};
+use alacritree_tasks::tree::{self, Row, Section};
 use egui::{Sense, StrokeKind, Vec2, vec2};
 
 use crate::config::TasksSidebar;
@@ -109,7 +109,11 @@ pub(super) fn show(ui: &mut egui::Ui, view: &mut TasksView, theme: &Theme, side:
     let shown = panel.show_inside(ui, |ui| {
         let top = ui.cursor().top();
         ui.add_space(6.0 * theme.ui_scale);
-        ui.label(RichText::new("Tasks").color(theme.text).strong());
+        row_with_trailing(
+            ui,
+            |ui| _ = ui.label(RichText::new("Tasks").color(theme.text).strong()),
+            |ui| filter_button(ui, view, theme, id.with("hide-completed")),
+        );
         if let Some(e) = view.load_error() {
             ui.add(egui::Label::new(RichText::new(e).color(theme.error).small()).wrap());
         }
@@ -134,8 +138,18 @@ pub(super) fn show(ui: &mut egui::Ui, view: &mut TasksView, theme: &Theme, side:
     }
 }
 
+/// Hides or shows the completed tasks, in the sidebar and every tasks tab.
+fn filter_button(ui: &mut egui::Ui, view: &mut TasksView, theme: &Theme, id: egui::Id) {
+    let text = if view.hides_completed() { "show completed" } else { "hide completed" };
+    let label = ui.label(RichText::new(text).color(theme.tasks_sidebar.count).small());
+    let button = ui.interact(label.rect, id, Sense::click());
+    if button.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+        view.toggle_completed();
+    }
+}
+
 /// A heading that folds the section, the same fold the tab shows, then a
-/// bar of how much of it is done and its rows.
+/// bar of how much of it is done and the rows the filter leaves.
 fn paint_section(ui: &mut egui::Ui, view: &mut TasksView, section: &Section, theme: &Theme) {
     let (s, c) = (theme.ui_scale, theme.tasks_sidebar);
     let open = !view.is_collapsed(&section.node);
@@ -162,9 +176,14 @@ fn paint_section(ui: &mut egui::Ui, view: &mut TasksView, section: &Section, the
         view.toggle_collapsed(&section.node);
     }
     paint_bar(ui, done as f32 / total as f32, &c, 3.0 * s);
-    if open {
-        section.rows.iter().for_each(|row| paint_row(ui, row, theme));
+    if !open {
+        return;
     }
+    let rows = match view.hides_completed() {
+        true => tree::without_completed(section.rows.clone()),
+        false => section.rows.clone(),
+    };
+    rows.iter().for_each(|row| paint_row(ui, row, theme));
 }
 
 fn paint_bar(ui: &mut egui::Ui, done: f32, c: &Colors, height: f32) {
@@ -236,11 +255,10 @@ mod tests {
 
     impl Harness {
         fn listing(count: usize) -> Self {
-            let tasks = (0..count)
-                .map(|i| {
-                    alacritree_tasks::fake::task(&format!("t{i}"), alacritree_tasks::scope::GLOBAL)
-                })
-                .collect();
+            Self::of((0..count).map(|i| task(&format!("t{i}"))).collect())
+        }
+
+        fn of(tasks: Vec<alacritree_tasks::Task>) -> Self {
             let view = TasksView::new(
                 crate::tasks::backend::Backend::Fake(
                     alacritree_tasks::fake::FakeBackend::with_tasks(tasks),
@@ -262,7 +280,8 @@ mod tests {
             h
         }
 
-        fn frame(&mut self, events: Vec<Event>) {
+        /// The texts the frame painted.
+        fn frame(&mut self, events: Vec<Event>) -> Vec<String> {
             self.time += 0.05;
             let input = RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(Pos2::ZERO, vec2(300.0, SIDEBAR))),
@@ -271,11 +290,36 @@ mod tests {
                 ..Default::default()
             };
             let (view, theme) = (&mut self.view, &self.theme);
-            let _ = self.ctx.run(input, |ctx| {
+            let output = self.ctx.run(input, |ctx| {
                 egui::CentralPanel::default().frame(Frame::default()).show(ctx, |ui| {
                     show(ui, view, theme, TasksSidebar::Left);
                 });
             });
+            fn walk(shape: &egui::Shape, out: &mut Vec<String>) {
+                match shape {
+                    egui::Shape::Text(t) => out.push(t.galley.text().to_owned()),
+                    egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                    _ => {},
+                }
+            }
+            let mut texts = Vec::new();
+            output.shapes.iter().for_each(|clipped| walk(&clipped.shape, &mut texts));
+            texts
+        }
+
+        fn click_filter(&mut self) -> Vec<String> {
+            let id = panel_id(TasksSidebar::Left).with("hide-completed");
+            let pos = self.ctx.read_response(id).expect("the filter was drawn").rect.center();
+            let button = |pressed| Event::PointerButton {
+                pos,
+                button: PointerButton::Primary,
+                pressed,
+                modifiers: Modifiers::NONE,
+            };
+            self.frame(vec![Event::PointerMoved(pos)]);
+            self.frame(vec![button(true)]);
+            self.frame(vec![button(false)]);
+            self.frame(Vec::new())
         }
 
         fn panel(&self) -> Option<egui::Rect> {
@@ -306,6 +350,27 @@ mod tests {
             self.frame(Vec::new());
             self.frame(Vec::new());
         }
+    }
+
+    fn task(id: &str) -> alacritree_tasks::Task {
+        alacritree_tasks::fake::task(id, alacritree_tasks::scope::GLOBAL)
+    }
+
+    #[test]
+    fn the_filter_hides_completed_tasks_and_shows_them_again() {
+        let done = alacritree_tasks::Task { status: Status::Completed, ..task("write it") };
+        let mut h = Harness::of(vec![done, task("test it")]);
+        let has = |texts: &[String], t: &str| texts.iter().any(|x| x == t);
+
+        let hidden = h.click_filter();
+        assert!(!has(&hidden, "write it"), "{hidden:?}");
+        assert!(has(&hidden, "test it"), "{hidden:?}");
+        assert!(has(&hidden, "1/2"), "the count dropped the hidden task: {hidden:?}");
+        let changes = h.view.take_pref_changes();
+        assert_eq!(changes, vec![tasks_view::PrefChange::HideCompleted(true)]);
+
+        let shown = h.click_filter();
+        assert!(has(&shown, "write it"), "{shown:?}");
     }
 
     #[test]

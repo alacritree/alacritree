@@ -100,7 +100,7 @@ While the integration is on, a sidebar docks the current workspace's tasks at it
 sidebar = "right"
 ```
 
-The section holds the tab's sections that have tasks, less the global list, which it shows only on Home. Each section is named below the workspace, so an agent session reads as `claude-<id>`, and carries a `done/total` count and a bar. Rows are read-only: a filled box marks a started task and a ticked one a completed task. Clicking a section header folds it in the sidebar and the tab alike. Drag the divider above the section to resize it, or double-click the divider to fit the section to its tasks, up to half the sidebar. `[ui.tasks.sidebar_colors]` sets every color it draws, listed in the [config reference](config-reference.md).
+The section holds the tab's sections that have tasks, less the global list, which it shows only on Home. Each section is named below the workspace, so an agent session reads as `claude-<id>`, and carries a `done/total` count and a bar. Rows are read-only: a filled box marks a started task and a ticked one a completed task. Clicking a section header folds it in the sidebar and the tab alike. "hide completed" beside the heading is the tab's filter, so it hides the completed tasks in both, while the counts and bars still include them. Drag the divider above the section to resize it, or double-click the divider to fit the section to its tasks, up to half the sidebar. `[ui.tasks.sidebar_colors]` sets every color it draws, listed in the [config reference](config-reference.md).
 
 The section lists only while its sidebar shows it, reloading every second like the tab. When the workspace's tasks tab is open, both draw the same listing.
 

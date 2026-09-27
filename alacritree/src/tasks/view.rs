@@ -452,6 +452,10 @@ impl TasksView {
         self.prefs.collapsed.contains(node)
     }
 
+    pub(crate) fn hides_completed(&self) -> bool {
+        self.prefs.hide_completed
+    }
+
     pub(crate) fn load_error(&self) -> Option<&str> {
         self.load_error.as_deref()
     }
