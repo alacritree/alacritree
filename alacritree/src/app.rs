@@ -1043,7 +1043,8 @@ impl AlacritreeApp {
             };
             let reply = match self.projects.iter_mut().find(|p| p.root == root) {
                 Some(project) => {
-                    self.activities.scan_finished(&root, Ok(()));
+                    let scanned = found.failure.as_ref().map_or(Ok(()), |e| Err(e.to_string()));
+                    self.activities.scan_finished(&root, scanned);
                     let occupied: HashSet<PathBuf> =
                         self.sessions.iter().filter_map(|s| s.working_directory.clone()).collect();
                     project.apply(found, &occupied);
@@ -4482,6 +4483,25 @@ mod tests {
         assert_eq!(scan_until(&mut app, "Projects scanned"), "Projects scanned just now");
     }
 
+    /// A distro that is down answers no discovery. The project keeps its
+    /// rows, and the row says the scan failed rather than that it finished.
+    #[test]
+    fn a_scan_that_could_not_reach_its_project_says_so() {
+        use crate::app::actions::Action;
+
+        let mut app = test_app();
+        let root = PathBuf::from("/r");
+        app.vcs_backends = vec![crate::vcs::Vcs::Fake(
+            alacritree_vcs::fake::FakeVcs::new("/r").unreachable("the distro is stopped"),
+        )];
+        app.projects.push(Project::placeholder(root));
+        action::RefreshProjects.run(&mut app, &Context::default(), ActionOrigin::Keyboard);
+
+        let text = scan_until(&mut app, "Project scan");
+        assert!(text.starts_with("Project scan: 1 of 1 failed: "), "{text}");
+        assert!(text.contains("the distro is stopped"), "{text}");
+    }
+
     /// Discovery started by anything but the user, here a moved branch or
     /// startup, is housekeeping and shows nothing.
     #[test]
@@ -4527,28 +4547,36 @@ mod tests {
         app
     }
 
-    /// Run whole frames, drains and sidebars, until the status row reads
-    /// something starting with `want` or ten seconds pass. Returns the row's
-    /// text and every text the last frame painted.
-    fn frames_until(app: &mut AlacritreeApp, ctx: &Context, want: &str) -> (String, Vec<String>) {
+    /// Run one whole frame, drains and sidebars, and return every text it
+    /// painted.
+    fn frame(app: &mut AlacritreeApp, ctx: &Context) -> Vec<String> {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::Vec2::new(800.0, 600.0),
+            )),
+            ..Default::default()
+        };
+        let output = ctx.run(input, |ctx| {
+            app.poll_update_jobs(ctx);
+            let view = app.frame_paint_view(false);
+            app.paint_sidebars(ctx, view);
+        });
+        painted_texts(&output.shapes).into_iter().map(|(t, _)| t).collect()
+    }
+
+    /// Run frames until one paints a text starting with `want` or ten
+    /// seconds pass. Returns that text, read off the frame rather than
+    /// recomputed, since a worker can move the row on between the paint and
+    /// the check.
+    fn frames_until(app: &mut AlacritreeApp, ctx: &Context, want: &str) -> String {
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
-            let input = egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::Vec2::new(800.0, 600.0),
-                )),
-                ..Default::default()
-            };
-            let output = ctx.run(input, |ctx| {
-                app.poll_update_jobs(ctx);
-                let view = app.frame_paint_view(false);
-                app.paint_sidebars(ctx, view);
-            });
-            let text = status_text(app);
-            if text.starts_with(want) || Instant::now() > deadline {
-                let painted = painted_texts(&output.shapes).into_iter().map(|(t, _)| t).collect();
-                return (text, painted);
+            if let Some(text) = frame(app, ctx).into_iter().find(|t| t.starts_with(want)) {
+                return text;
+            }
+            if Instant::now() > deadline {
+                return status_text(app);
             }
             std::thread::sleep(Duration::from_millis(5));
         }
@@ -4563,14 +4591,11 @@ mod tests {
         let ctx = Context::default();
         action::RefreshPrStatus.run(&mut app, &ctx, ActionOrigin::Keyboard);
 
-        let (text, painted) = frames_until(&mut app, &ctx, "PRs 0/1");
+        let text = frames_until(&mut app, &ctx, "PRs 0/1");
         assert!(text.starts_with("PRs 0/1 · "), "{text}");
-        assert!(painted.contains(&text), "the row paints {text:?}: {painted:?}");
 
         release.release();
-        let (text, painted) = frames_until(&mut app, &ctx, "PRs refreshed");
-        assert_eq!(text, "PRs refreshed just now");
-        assert!(painted.contains(&text), "{painted:?}");
+        assert_eq!(frames_until(&mut app, &ctx, "PRs refreshed"), "PRs refreshed just now");
     }
 
     #[test]
@@ -4582,7 +4607,7 @@ mod tests {
         let ctx = Context::default();
         action::RefreshPrStatus.run(&mut app, &ctx, ActionOrigin::Keyboard);
 
-        let (text, _) = frames_until(&mut app, &ctx, "PR refresh");
+        let text = frames_until(&mut app, &ctx, "PR refresh");
         assert_eq!(
             text,
             "PR refresh: 1 of 1 failed: fake answered with something other than a pull request \
@@ -4611,8 +4636,12 @@ mod tests {
         app.show_right_sidebar = false;
         let ctx = Context::default();
         action::RefreshPrStatus.run(&mut app, &ctx, ActionOrigin::Palette);
-        let (text, _) = frames_until(&mut app, &ctx, "PRs:");
-        assert_eq!(text, "PRs: nothing to check");
+        // The palette dispatches after the paint, so the flag waits one
+        // frame's paint before the drain after it can drop it.
+        for _ in 0..2 {
+            frame(&mut app, &ctx);
+        }
+        assert_eq!(status_text(&app), "PRs: nothing to check");
     }
 
     fn checkout_at(path: &std::path::Path) -> alacritree_vcs::Checkout {

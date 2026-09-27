@@ -213,6 +213,16 @@ impl<F: RemoteForge + Clone + Send + 'static> PrCache<F> {
         let mut still_running = Vec::new();
         for batch in std::mem::take(&mut self.batches) {
             if let Some(found) = batch.job.poll() {
+                // A member refreshed mid-lookup is re-queried by the next
+                // paint's poll, and that lookup is what the user asked for.
+                if self.triggered
+                    && batch
+                        .members
+                        .iter()
+                        .any(|m| self.entries.get(&m.path).is_some_and(|e| e.refresh_requested))
+                {
+                    self.painted_since_trigger = false;
+                }
                 for m in &batch.members {
                     self.settle(m, answer(&found, m), now);
                 }
@@ -1168,6 +1178,31 @@ mod tests {
         let _ = release.send(());
         drain_until(&mut cache, Path::new("/repo/wt"), Duration::from_secs(5));
         assert!(!cache.triggered());
+    }
+
+    /// A refresh pressed while a lookup is already running cannot be
+    /// answered by it: its entries come back stale, and the re-query the
+    /// next paint queues is the answer. The flag has to wait for that one.
+    #[test]
+    fn a_refresh_during_a_lookup_waits_for_the_re_query() {
+        let repaint = Recorder::default();
+        let mut cache = cache();
+        let path = Path::new("/repo/wt");
+        let (release, job) = spawn_stuck_job();
+        bank_one(&mut cache, "/repo/wt", "main", job);
+        cache.invalidate_all();
+        cache.trigger();
+        cache.mark_painted(&repaint);
+        assert!(cache.take_progress().is_empty(), "the running lookup began before the refresh");
+
+        let _ = release.send(());
+        drain_until(&mut cache, path, Duration::from_secs(5));
+        assert!(cache.triggered(), "the lookup that landed predates the refresh");
+
+        cache.poll(path, Some("main"), &vcs(), &repaint);
+        cache.mark_painted(&repaint);
+        cache.drain_completed(&repaint);
+        assert_eq!(cache.take_progress().len(), 1, "the re-query counts toward the refresh");
     }
 
     /// With both sidebars hidden nothing polls, so no lookup wakes the frame

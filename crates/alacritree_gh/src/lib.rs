@@ -134,7 +134,7 @@ fn groups_with(due: Vec<Head>, resolve: impl Fn(&Path) -> Option<(String, String
         }
         group.members.push(m);
     }
-    by_repo
+    let mut groups: Vec<Group> = by_repo
         .into_values()
         .flat_map(|mut g| {
             // `origin` says only which worktrees share a repository. Which
@@ -147,22 +147,37 @@ fn groups_with(due: Vec<Head>, resolve: impl Fn(&Path) -> Option<(String, String
                 Some((owner, name)) => format!("{owner}/{name}"),
                 None => wsl::display_path(&g.cwd),
             };
-            // Later chunks carry their position, so each keeps a timing of
-            // its own under a label no other step shares.
             g.members
                 .chunks(graphql::CHUNK)
-                .enumerate()
-                .map(|(i, c)| Group {
+                .map(|c| Group {
                     cwd: g.cwd.clone(),
                     slug: g.slug.clone(),
                     members: c.to_vec(),
                     head_owners: g.head_owners.clone(),
-                    label: if i == 0 { name.clone() } else { format!("{name} ({})", i + 1) },
+                    label: name.clone(),
                 })
                 .collect::<Vec<_>>()
         })
         .chain(ungrouped)
-        .collect()
+        .collect();
+    unique_labels(&mut groups);
+    groups
+}
+
+/// A repository's later chunks share its name, and so do two origins that
+/// resolve to one repository, such as a fork's clone and its upstream's.
+/// Each repeat carries its position, so every step keeps its own outcome and
+/// timing.
+fn unique_labels(groups: &mut [Group]) {
+    let mut seen = std::collections::HashSet::new();
+    for g in groups {
+        let base = g.label.clone();
+        let mut n = 1;
+        while !seen.insert(g.label.clone()) {
+            n += 1;
+            g.label = format!("{base} ({n})");
+        }
+    }
 }
 
 /// Ask GitHub about a whole group in one request, falling back to the
@@ -1118,6 +1133,25 @@ mod tests {
             wsl::display_path(Path::new("/wt")),
             Some(Err(ForgeError::Malformed { program: GH }.to_string())),
         )]);
+    }
+
+    /// A clone of a fork and a clone of its upstream group apart by `origin`
+    /// and resolve to one repository. Each step's label still has to be its
+    /// own, or one request's outcome lands on the other's step.
+    #[test]
+    fn two_origins_resolving_to_one_repository_keep_distinct_labels() {
+        let fork = "https://github.com/me/tool.git";
+        let up = "https://github.com/up/tool.git";
+        let due = vec![
+            Head { path: PathBuf::from("/a"), branch: "x".into(), remotes: remotes(fork, fork) },
+            Head { path: PathBuf::from("/b"), branch: "y".into(), remotes: remotes(up, up) },
+        ];
+
+        let out = groups_with(due, |_| Some(("up".to_string(), "tool".to_string())));
+
+        let mut labels: Vec<_> = out.iter().map(|g| g.label.as_str()).collect();
+        labels.sort();
+        assert_eq!(labels, ["up/tool", "up/tool (2)"]);
     }
 
     /// Branches of one repository share a request; a chunk boundary splits them

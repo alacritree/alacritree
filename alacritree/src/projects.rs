@@ -35,19 +35,21 @@ pub struct Project {
 /// worktree list.  A backend that could not be reached returns a placeholder
 /// standing in for an unknown tree, which must never overwrite what the
 /// caller already knows.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Discovered {
     pub project: Project,
     pub authoritative: bool,
+    /// Why discovery could not vouch for its result, for a user who asked.
+    pub failure: Option<VcsError>,
 }
 
 impl Discovered {
     fn found(project: Project) -> Self {
-        Self { project, authoritative: true }
+        Self { project, authoritative: true, failure: None }
     }
 
-    fn unavailable(project: Project) -> Self {
-        Self { project, authoritative: false }
+    fn unavailable(project: Project, failure: VcsError) -> Self {
+        Self { project, authoritative: false, failure: Some(failure) }
     }
 }
 
@@ -68,13 +70,13 @@ impl Project {
                 },
                 // A directory that is not a repository is a fact, not a failure.
                 Err(VcsError::NotARepository(_)) => continue,
-                Err(VcsError::Unreachable(e)) => {
+                Err(e @ VcsError::Unreachable(_)) => {
                     log::warn!("WSL discovery failed for {}: {e}", root.display());
-                    return Discovered::unavailable(Self::placeholder(root));
+                    return Discovered::unavailable(Self::placeholder(root), e);
                 },
                 Err(e) => {
                     log::warn!("discovery failed for {}: {e}", root.display());
-                    return Discovered::unavailable(Self::placeholder(root));
+                    return Discovered::unavailable(Self::placeholder(root), e);
                 },
             }
         }
@@ -223,6 +225,7 @@ mod tests {
             Discovered {
                 project: Project::placeholder(project.root.clone()),
                 authoritative: false,
+                failure: None,
             },
             &HashSet::new(),
         );
@@ -243,7 +246,10 @@ mod tests {
         fresh.checkouts.clear();
         fresh.trunk = Some("main".to_string());
 
-        project.apply(Discovered { project: fresh, authoritative: true }, &HashSet::new());
+        project.apply(
+            Discovered { project: fresh, authoritative: true, failure: None },
+            &HashSet::new(),
+        );
 
         assert!(project.checkouts.is_empty());
         assert_eq!(project.trunk.as_deref(), Some("main"));
