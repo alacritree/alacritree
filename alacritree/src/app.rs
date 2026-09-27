@@ -241,6 +241,7 @@ impl Theme {
             editor_hint,
             tasks: tasks_style(
                 &config.ui.tasks,
+                &config.palette,
                 editor_text,
                 editor_hint,
                 error,
@@ -259,9 +260,12 @@ impl Theme {
 }
 
 /// `[ui.tasks]` with each unset color derived from the tab's text and hint
-/// colors, and the add button tinted with the accent over the pane.
+/// colors, and the add button tinted with the accent over the pane. Selected
+/// rows take the terminal's selection colors, swapping text and background
+/// when those are unset, as the terminal does.
 fn tasks_style(
     tasks: &crate::config::TasksUi,
+    palette: &crate::config::Palette,
     text: Color32,
     hint: Color32,
     error: Color32,
@@ -296,6 +300,11 @@ fn tasks_style(
             hover_fill: color(b.hover_fill, tint(0.70)),
             pressed_fill: color(b.pressed_fill, tint(0.55)),
         },
+        selection: color(palette.selection_bg, text),
+        selected_text: color(palette.selection_fg, match palette.selection_bg {
+            Some(_) => text,
+            None => background,
+        }),
     }
 }
 

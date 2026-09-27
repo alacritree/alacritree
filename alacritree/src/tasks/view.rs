@@ -252,9 +252,8 @@ struct NewRow {
 
 /// A delete that would take subtasks with it, waiting for a yes.
 struct ConfirmDelete {
-    id: String,
-    text: String,
-    subtasks: usize,
+    ids: Vec<String>,
+    prompt: String,
 }
 
 /// Where a drawn row's text starts and ends, for the arrow that steps into it.
@@ -316,6 +315,10 @@ pub(crate) struct TasksView {
     /// The row a task action runs on: the one being edited, or the last one
     /// that was, so the palette can still reach it.
     current: Option<String>,
+    /// Rows picked with Ctrl or Shift held, which a delete takes together.
+    selected: HashSet<String>,
+    /// The row a Shift+click selects from.
+    anchor: Option<String>,
     confirm: Option<ConfirmDelete>,
     /// The rows drawn last frame, top to bottom across every section.
     spots: Vec<RowSpot>,
@@ -364,6 +367,8 @@ impl TasksView {
             new_row: None,
             collapsed_tasks: HashSet::new(),
             current: None,
+            selected: HashSet::new(),
+            anchor: None,
             confirm: None,
             spots: Vec::new(),
             drawing: Vec::new(),
@@ -426,13 +431,16 @@ impl TasksView {
         lines
     }
 
-    /// Runs `action` on the current row. Waits out an open delete prompt,
-    /// so a key pressed under it does not act on the row behind it.
+    /// Runs `action` on the current row, or deletes the selected rows when
+    /// there are any. Waits out an open delete prompt, so a key pressed under
+    /// it does not act on the row behind it.
     pub(crate) fn act(&mut self, action: RowAction) {
         if self.confirm.is_some() {
             return;
         }
-        if let Some(id) = self.current.clone() {
+        if action == RowAction::Delete && !self.selected.is_empty() {
+            self.request_delete(self.selection());
+        } else if let Some(id) = self.current.clone() {
             self.act_on(&id, action);
         }
     }
@@ -446,16 +454,7 @@ impl TasksView {
             RowAction::Dedent => tree::dedent(&refs, id),
             RowAction::MoveUp => tree::move_up(&refs, id),
             RowAction::MoveDown => tree::move_down(&refs, id),
-            RowAction::Delete => {
-                let subtasks = tree::descendant_ids(&refs, id).len();
-                if subtasks == 0 {
-                    self.delete(id);
-                } else {
-                    let text = task.description.clone();
-                    self.confirm = Some(ConfirmDelete { id: id.to_string(), text, subtasks });
-                }
-                return;
-            },
+            RowAction::Delete => return self.request_delete(vec![id.to_string()]),
         };
         // A row moved under a collapsed task would vanish mid-edit.
         for edit in &edits {
@@ -466,21 +465,76 @@ impl TasksView {
         self.rearrange(id, edits);
     }
 
-    /// Deletes `id` and everything nested below it, the subtasks first so a
-    /// failure part way never leaves them orphaned at the top level.
-    fn delete(&mut self, id: &str) {
+    /// The selected rows still shown, in store order.
+    fn selection(&self) -> Vec<String> {
+        let shown = self.shown_tasks().into_iter();
+        shown.filter(|t| self.selected.contains(&t.id)).map(|t| t.id).collect()
+    }
+
+    /// Deletes `ids` at once, or asks first when they would take subtasks
+    /// that are not among them.
+    fn request_delete(&mut self, ids: Vec<String>) {
         let shown = self.shown_tasks();
         let refs: Vec<&Task> = shown.iter().collect();
-        let mut ids = tree::descendant_ids(&refs, id);
-        ids.push(id.to_string());
-        for gone in &ids {
-            self.drafts.remove(gone);
-            self.deleted.insert(gone.clone());
+        let ids: Vec<String> =
+            ids.into_iter().filter(|id| refs.iter().any(|t| &t.id == id)).collect();
+        let subtasks = doomed(&refs, &ids).len() - ids.len();
+        if subtasks == 0 {
+            return self.delete(&ids);
         }
-        if self.current.as_ref().is_some_and(|c| ids.contains(c)) {
+        let noun = if subtasks == 1 { "subtask" } else { "subtasks" };
+        let prompt = match ids.as_slice() {
+            [id] => {
+                let text = refs.iter().find(|t| &t.id == id).map_or("", |t| &t.description);
+                format!("Delete \"{text}\" and its {subtasks} {noun}?")
+            },
+            _ => format!("Delete {} tasks and their {subtasks} {noun}?", ids.len()),
+        };
+        self.confirm = Some(ConfirmDelete { ids, prompt });
+    }
+
+    /// Deletes `ids` and everything nested below them in one write.
+    fn delete(&mut self, ids: &[String]) {
+        let Some(first) = ids.first() else { return };
+        let shown = self.shown_tasks();
+        let refs: Vec<&Task> = shown.iter().collect();
+        let gone = doomed(&refs, ids);
+        for id in &gone {
+            self.drafts.remove(id);
+            self.deleted.insert(id.clone());
+            self.selected.remove(id);
+        }
+        if self.current.as_ref().is_some_and(|c| gone.contains(c)) {
             self.current = None;
         }
-        self.write(Some(id.to_string()), ids.into_iter().map(Edit::Delete).collect());
+        self.write(Some(first.clone()), gone.into_iter().map(Edit::Delete).collect());
+    }
+
+    /// Ctrl+click adds `id` to the selection or takes it out. Shift+click
+    /// selects every drawn row between it and the anchor, or the row being
+    /// edited when nothing was picked yet.
+    fn pick(&mut self, id: &str, range: bool) {
+        let at = |id: &str| self.spots.iter().position(|s| s.id == id);
+        let from = self.anchor.as_deref().or(self.current.as_deref()).and_then(at);
+        match (range, from, at(id)) {
+            (true, Some(from), Some(to)) => {
+                let span = &self.spots[from.min(to)..=from.max(to)];
+                self.selected = span.iter().map(|s| s.id.clone()).collect();
+                self.anchor = Some(self.spots[from].id.clone());
+            },
+            _ => {
+                if !self.selected.remove(id) {
+                    self.selected.insert(id.to_string());
+                }
+                self.anchor = Some(id.to_string());
+            },
+        }
+        self.current = Some(id.to_string());
+    }
+
+    fn clear_selection(&mut self) {
+        self.selected.clear();
+        self.anchor = None;
     }
 
     /// Writes edits that place `id`, and shows them before the store has.
@@ -649,6 +703,22 @@ impl TasksView {
     }
 }
 
+/// `ids` and every task nested below them, each once, a task's subtasks
+/// before it so a failure part way never leaves them orphaned at the top
+/// level.
+fn doomed(tasks: &[&Task], ids: &[String]) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for id in ids {
+        for gone in tree::descendant_ids(tasks, id).into_iter().chain([id.clone()]) {
+            if seen.insert(gone.clone()) {
+                out.push(gone);
+            }
+        }
+    }
+    out
+}
+
 fn read_cache(path: &Path) -> Option<Vec<Task>> {
     serde_json::from_slice(&std::fs::read(path).ok()?).ok()
 }
@@ -698,6 +768,7 @@ fn draw(
     let background = ui.interact(ui.max_rect(), ui.id().with("tasks-tab"), Sense::click());
     if background.clicked() {
         view.current = None;
+        view.clear_selection();
     }
     let paint = Paint { allow_focus, shortcuts, c: style };
     Frame::default().inner_margin(Margin::symmetric(10, 6)).show(ui, |ui| {
@@ -735,6 +806,9 @@ pub(crate) struct Style {
     pub active_marker: Stroke,
     pub active_background: Color32,
     pub add_button: ButtonStyle,
+    /// Behind a selected row.
+    pub selection: Color32,
+    pub selected_text: Color32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -780,6 +854,7 @@ fn show_section(ui: &mut Ui, view: &mut TasksView, section: &Section, paint: &Pa
     if view.new_row.as_ref().is_some_and(adding_first) {
         show_new_row(ui, view, &tasks, c);
     } else if button(ui, "+ add a task", c.add_button).clicked() {
+        view.clear_selection();
         // Drawn below the last root row from the next frame on.
         let last_root = section.rows.iter().rev().find(|r| r.depth == 0).map(|r| r.id.clone());
         view.new_row = Some(NewRow {
@@ -833,6 +908,7 @@ fn show_row(
     let background = ui.painter().add(Shape::Noop);
     let highlight = ui.painter().add(Shape::Noop);
     let collapsed = view.collapsed_tasks.contains(&row.id);
+    let selected = view.selected.contains(&row.id);
     let line = ui.horizontal_top(|ui| {
         ui.add_space(row.depth as f32 * INDENT);
         grip(ui, c, Sense::drag())
@@ -854,7 +930,8 @@ fn show_row(
             paint_chevron(ui, rect.center(), false, c.active_marker);
         }
         if collapsed && below > 0 {
-            ui.label(RichText::new(format!("+{below}")).color(c.hidden_count));
+            let color = if selected { c.selected_text } else { c.hidden_count };
+            ui.label(RichText::new(format!("+{below}")).color(color));
         }
         // Locking focus keeps Tab for indenting instead of moving to the
         // next widget.
@@ -863,7 +940,11 @@ fn show_row(
             .desired_rows(1)
             .frame(false)
             .lock_focus(true)
-            .text_color(if checked { c.dim } else { c.text })
+            .text_color(match (selected, checked) {
+                (true, _) => c.selected_text,
+                (false, true) => c.dim,
+                (false, false) => c.text,
+            })
             .desired_width(f32::INFINITY);
         let show = |ui: &mut Ui| ui.add_enabled_ui(paint.allow_focus, |ui| field.show(ui)).inner;
         let subtasks = row.subtasks;
@@ -872,7 +953,7 @@ fn show_row(
         }
         let counter = format!("({}/{})", subtasks.done, subtasks.total);
         ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
-            ui.label(RichText::new(counter).color(c.dim));
+            ui.label(RichText::new(counter).color(if selected { c.selected_text } else { c.dim }));
             show(ui)
         })
         .inner
@@ -886,6 +967,11 @@ fn show_row(
     edit.context_menu(|ui| row_menu(ui, view, &row.id, paint.shortcuts));
     if edit.has_focus() {
         view.current = Some(row.id.clone());
+    }
+    // A right-click focuses the row too, and its menu acts on the selection.
+    let right_click = ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Secondary));
+    if edit.gained_focus() && !right_click {
+        view.clear_selection();
     }
     if erase {
         view.act_on(&row.id, RowAction::Delete);
@@ -914,7 +1000,20 @@ fn show_row(
         let radius = ui.visuals().widgets.inactive.corner_radius;
         ui.painter().set(background, Shape::rect_filled(rect, radius, c.active_background));
     }
-    if view.current.as_deref() == Some(&row.id) && !edit.has_focus() {
+    // Registered after the row's widgets, so it takes the click from them
+    // while a selecting modifier is held and leaves it to them otherwise.
+    if ui.input(|i| i.modifiers.command || i.modifiers.shift) {
+        let pick = ui.interact(rect, id.with("pick"), Sense::click_and_drag());
+        if pick.clicked() {
+            view.pick(&row.id, ui.input(|i| i.modifiers.shift));
+            if let Some(focused) = ui.memory(|m| m.focused()) {
+                ui.memory_mut(|m| m.surrender_focus(focused));
+            }
+        }
+    }
+    if view.selected.contains(&row.id) {
+        ui.painter().set(highlight, Shape::rect_filled(rect, 2.0, c.selection));
+    } else if view.current.as_deref() == Some(&row.id) && !edit.has_focus() {
         let fill = ui.visuals().faint_bg_color;
         ui.painter().set(highlight, Shape::rect_filled(rect, 2.0, fill));
     }
@@ -1088,16 +1187,27 @@ fn row_menu(ui: &mut Ui, view: &mut TasksView, id: &str, shortcuts: &Shortcuts) 
             ui.close_menu();
         }
     }
+    // A row inside a selection of several deletes all of it.
+    let picked = view.selection();
+    let batch = picked.len() > 1 && picked.iter().any(|p| p == id);
     for action in RowAction::MENU {
         if action == RowAction::Delete || action == RowAction::Indent {
             ui.separator();
         }
-        let mut button = egui::Button::new(action.label());
+        let batch_delete = batch && action == RowAction::Delete;
+        let label = match batch_delete {
+            true => format!("Delete {} tasks", picked.len()),
+            false => action.label().to_string(),
+        };
+        let mut button = egui::Button::new(label);
         if let Some(keys) = crate::command_palette::first_key(shortcuts, action.named()) {
             button = button.shortcut_text(keys);
         }
         if ui.add(button).clicked() {
-            view.act_on(id, action);
+            match batch_delete {
+                true => view.request_delete(picked.clone()),
+                false => view.act_on(id, action),
+            }
             ui.close_menu();
         }
     }
@@ -1150,8 +1260,7 @@ fn show_confirm(ctx: &egui::Context, view: &mut TasksView) {
     let Some(confirm) = &view.confirm else { return };
     let mut answer = None;
     let modal = Modal::new(Id::new("tasks-confirm-delete")).show(ctx, |ui| {
-        let noun = if confirm.subtasks == 1 { "subtask" } else { "subtasks" };
-        ui.label(format!("Delete \"{}\" and its {} {noun}?", confirm.text, confirm.subtasks));
+        ui.label(&confirm.prompt);
         ui.horizontal(|ui| {
             if ui.button("Delete").clicked() {
                 answer = Some(true);
@@ -1169,8 +1278,8 @@ fn show_confirm(ctx: &egui::Context, view: &mut TasksView) {
     }
     match answer {
         Some(true) => {
-            let id = view.confirm.take().map(|c| c.id).expect("present above");
-            view.delete(&id);
+            let ids = view.confirm.take().map(|c| c.ids).expect("present above");
+            view.delete(&ids);
         },
         Some(false) => view.confirm = None,
         None => {},
@@ -1425,6 +1534,8 @@ mod tests {
                 hover_fill: Color32::BLUE,
                 pressed_fill: Color32::BLUE,
             },
+            selection: Color32::from_rgb(200, 200, 120),
+            selected_text: Color32::BLACK,
         }
     }
 
@@ -1466,6 +1577,8 @@ mod tests {
         paths: Vec<Rect>,
         background_clicked: bool,
         style: Style,
+        /// The modifier keys held down through each frame.
+        modifiers: Modifiers,
     }
 
     fn collect_fills(shape: &Shape, fills: &mut Vec<(Color32, Rect)>, paths: &mut Vec<Rect>) {
@@ -1506,6 +1619,7 @@ mod tests {
                 paths: Vec::new(),
                 background_clicked: false,
                 style: test_style(),
+                modifiers: Modifiers::NONE,
             };
             h.frame(Vec::new());
             h
@@ -1515,6 +1629,7 @@ mod tests {
             let input = RawInput {
                 screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0))),
                 events,
+                modifiers: self.modifiers,
                 ..Default::default()
             };
             let (view, shortcuts) = (&mut self.view, &self.shortcuts);
@@ -1576,6 +1691,23 @@ mod tests {
 
         fn click(&mut self, pos: Pos2) {
             self.press(pos, PointerButton::Primary);
+        }
+
+        /// Holds `modifiers` down, points at `pos` for a frame, then clicks
+        /// it, the way a hand holds a key before clicking.
+        fn click_with(&mut self, pos: Pos2, modifiers: Modifiers) {
+            self.modifiers = modifiers;
+            self.frame(vec![Event::PointerMoved(pos)]);
+            let event = |pressed| Event::PointerButton {
+                pos,
+                button: PointerButton::Primary,
+                pressed,
+                modifiers,
+            };
+            self.frame(vec![event(true)]);
+            self.frame(vec![event(false)]);
+            self.modifiers = Modifiers::NONE;
+            self.frame(Vec::new());
         }
 
         fn key(&mut self, key: Key) {
@@ -1860,6 +1992,106 @@ mod tests {
         h.press(h.text("one").center(), PointerButton::Secondary);
         h.click(h.text("Delete").center());
         assert_eq!(h.edits(), [&Edit::Delete("a".into())]);
+    }
+
+    fn three_selectable_rows() -> Harness {
+        Harness::new(vec![
+            pending("a", "one"),
+            Task { order: Some(2048), ..pending("b", "two") },
+            Task { order: Some(3072), ..pending("c", "three") },
+        ])
+    }
+
+    #[test]
+    fn ctrl_clicked_rows_are_deleted_together() {
+        let mut h = three_selectable_rows();
+        h.click_with(h.text("one").center(), Modifiers::COMMAND);
+        h.click_with(h.text("three").center(), Modifiers::COMMAND);
+        h.view.act(RowAction::Delete);
+        h.frame(Vec::new());
+        assert_eq!(h.ops, [(Some("a".to_string()), vec![
+            Edit::Delete("a".into()),
+            Edit::Delete("c".into())
+        ])]);
+        assert_eq!(h.view.plain_lines(), ["## global", "- [ ] two"]);
+    }
+
+    #[test]
+    fn ctrl_clicking_a_selected_row_leaves_it_out() {
+        let mut h = three_selectable_rows();
+        h.click_with(h.text("one").center(), Modifiers::COMMAND);
+        h.click_with(h.text("two").center(), Modifiers::COMMAND);
+        h.click_with(h.text("one").center(), Modifiers::COMMAND);
+        h.view.act(RowAction::Delete);
+        h.frame(Vec::new());
+        assert_eq!(h.edits(), [&Edit::Delete("b".into())]);
+    }
+
+    #[test]
+    fn shift_click_selects_every_row_from_the_edited_one() {
+        let mut h = three_selectable_rows();
+        h.edit_end("one");
+        h.click_with(h.text("three").center(), Modifiers::SHIFT);
+        h.view.act(RowAction::Delete);
+        h.frame(Vec::new());
+        assert_eq!(h.edits(), [
+            &Edit::Delete("a".into()),
+            &Edit::Delete("b".into()),
+            &Edit::Delete("c".into())
+        ]);
+    }
+
+    #[test]
+    fn a_selected_row_is_highlighted() {
+        let mut h = three_selectable_rows();
+        h.click_with(h.text("two").center(), Modifiers::COMMAND);
+        let lit = |text: &str| {
+            let at = h.text(text).center();
+            h.fills.iter().any(|(c, r)| *c == h.style.selection && r.contains(at))
+        };
+        assert!(lit("two"));
+        assert!(!lit("one"));
+    }
+
+    #[test]
+    fn editing_a_row_drops_the_selection() {
+        let mut h = three_selectable_rows();
+        h.click_with(h.text("one").center(), Modifiers::COMMAND);
+        h.edit_end("two");
+        h.view.act(RowAction::Delete);
+        h.frame(Vec::new());
+        assert_eq!(h.edits(), [&Edit::Delete("b".into())], "the edited row, not the selection");
+    }
+
+    #[test]
+    fn the_row_menu_deletes_every_selected_row() {
+        let mut h = three_selectable_rows();
+        h.click_with(h.text("one").center(), Modifiers::COMMAND);
+        h.click_with(h.text("two").center(), Modifiers::COMMAND);
+        h.press(h.text("two").center(), PointerButton::Secondary);
+        h.click(h.text("Delete 2 tasks").center());
+        assert_eq!(h.edits(), [&Edit::Delete("a".into()), &Edit::Delete("b".into())]);
+    }
+
+    #[test]
+    fn a_selection_that_takes_subtasks_waits_for_a_yes() {
+        let mut h = Harness::new(vec![pending("a", "big"), child("a1", "small", "a"), Task {
+            order: Some(2048),
+            ..pending("b", "other")
+        }]);
+        h.click_with(h.text("big").center(), Modifiers::COMMAND);
+        h.click_with(h.text("other").center(), Modifiers::COMMAND);
+        h.view.act(RowAction::Delete);
+        h.frame(Vec::new());
+        h.frame(Vec::new());
+        assert!(!h.deleted());
+        h.text("Delete 2 tasks and their 1 subtask?");
+        h.click(h.text("Delete").center());
+        assert_eq!(h.edits(), [
+            &Edit::Delete("a1".into()),
+            &Edit::Delete("a".into()),
+            &Edit::Delete("b".into())
+        ]);
     }
 
     #[test]
