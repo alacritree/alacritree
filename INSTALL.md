@@ -71,9 +71,9 @@ scoop bucket add alacritree https://github.com/alacritree/alacritree
 scoop install alacritree
 ```
 
-Without Scoop, download `alacritree-x86_64-pc-windows-msvc.zip` from the [latest release](https://github.com/alacritree/alacritree/releases/latest), extract it to a folder of your choice and add that folder to your `PATH`.
+Without Scoop, download `alacritree-x86_64-pc-windows-msvc.zip` from the [latest release](https://github.com/alacritree/alacritree/releases/latest) and extract it. Either add the extracted folder to your `PATH`, or run `.\alacritree.exe install` from it to copy the program into `~\.local\bin`.
 
-Keep `alacritree.exe`, `conpty.dll` and `OpenConsole.exe` in the same folder. Alacritree loads the console host from its own directory, and without those two files every terminal falls back to the console host built into Windows, which is slower.
+Keep `alacritree.exe`, `conpty.dll` and `OpenConsole.exe` in the same folder. Alacritree loads the console host from its own directory, and without those two files every terminal falls back to the console host built into Windows, which is slower. `alacritree install` copies all three.
 
 ## Building from source
 
@@ -121,21 +121,20 @@ The binary lands at `target/release/alacritree`. On Windows the build also copie
 
 ### Install the build
 
-On Linux, `alacritree install` copies the binary into `~/.local/bin`, or into the directory `--dest` names. It replaces a copy that is still running without disturbing it, so it is safe to run while Alacritree is open.
+On Linux and Windows, `alacritree install` copies the binary into `~/.local/bin`, or into the directory `--dest` names. On Windows it copies `conpty.dll` and `OpenConsole.exe` along with it. It replaces a copy that is still running without disturbing it, so it is safe to run while Alacritree is open.
 
 ```sh
 target/release/alacritree install
 ```
 
-On macOS, build the app bundle instead. The script builds a release binary, wraps it in `target/release/osx/Alacritree.app` and ad-hoc signs it.
+Put that directory on your `PATH` if it is not already there.
+
+On macOS, build the app bundle instead. The script builds a release binary, wraps it in `target/release/osx/Alacritree.app` with the Alacritree icon, and ad-hoc signs it.
 
 ```sh
 ./alacritree/extra/osx/make-app.sh
 cp -R target/release/osx/Alacritree.app /Applications/
 ```
-
-On Windows, `alacritree install` copies `alacritree.exe` alone, which leaves the faster console host behind. Copy the three files from `target\release` into a folder on your `PATH` instead, as with the [release zip](#windows).
-
 ## After installing
 
 ### Desktop entry (Linux)
