@@ -1,22 +1,21 @@
-Scripts
-=======
+# Scripts
 
 ## Flamegraph
 
-Run the release version of Alacritty while recording call stacks. After the Alacritty process exits, a flamegraph will be generated and it's URI printed as the only output to STDOUT.
+Runs a release build of alacritree while `perf` records call stacks. When alacritree exits, `cargo-flamegraph` writes the flamegraph. Arguments are passed through to alacritree.
 
 ```sh
 ./create-flamegraph.sh
 ```
 
-Running this script depends on an installation of `perf`.
+It needs `perf`, so it runs on Linux only. It installs `cargo-flamegraph` if it is missing, and offers to uninstall it afterwards.
 
-## ANSI Color Tests
+## ANSI color tests
 
-We include a few scripts for testing the color of text inside a terminal. The first shows various foreground and background variants. The second enumerates all the colors of a standard terminal. The third enumerates the 24-bit colors.
+Scripts for checking how a terminal draws color. `fg-bg.sh` prints foreground and background combinations, `colors.sh` every pairing of the eight foreground and background colors under each text attribute, and `24-bit-color.sh` a truecolor gradient.
 
 ```sh
 ./fg-bg.sh
 ./colors.sh
-./24-bit-colors.sh
+./24-bit-color.sh
 ```
