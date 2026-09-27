@@ -6,6 +6,7 @@
 
 #![warn(unreachable_pub)]
 
+pub(crate) mod activity;
 pub mod alloc_count;
 pub mod app;
 pub(crate) mod bindings;
