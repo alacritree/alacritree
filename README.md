@@ -32,7 +32,7 @@ https://github.com/user-attachments/assets/c0b0aa23-59f1-49d3-a3aa-dcdf1eff7363
 
 ## Install
 
-Every release publishes builds for Linux, macOS and Windows at <https://github.com/alacritree/alacritree/releases>. On Windows, Alacritree also runs projects that live inside a WSL distro.
+Every release publishes builds for Linux, macOS and Windows at <https://github.com/alacritree/alacritree/releases>. On Windows, Alacritree also runs projects that live inside a WSL distro. [`INSTALL.md`](INSTALL.md) covers every install route in full, along with building from source and the setup after installing.
 
 ### Linux
 
