@@ -662,8 +662,11 @@ pub fn on_this_thread<T>(f: impl FnOnce(&Blocking) -> T) -> T {
 #[cfg(any(test, feature = "test-support"))]
 pub fn recorded<T>(f: impl FnOnce(&Blocking) -> T) -> (T, ProgressSnapshot) {
     let progress = SharedProgress::default();
-    let blocking =
-        Blocking { cancel: Arc::new(Cancel::default()), progress: Arc::clone(&progress), pool: None };
+    let blocking = Blocking {
+        cancel: Arc::new(Cancel::default()),
+        progress: Arc::clone(&progress),
+        pool: None,
+    };
     let value = f(&blocking);
     settle(&progress, JobEnd::Returned);
     (value, ProgressReader(progress).snapshot())
@@ -1041,8 +1044,11 @@ mod tests {
 
         let snap = job.progress_reader().snapshot();
         assert_eq!(snap.end, None, "the job is still running");
-        let got: Vec<_> =
-            snap.steps.iter().map(|s| (s.label.as_str(), s.outcome.clone(), s.took.is_some())).collect();
+        let got: Vec<_> = snap
+            .steps
+            .iter()
+            .map(|s| (s.label.as_str(), s.outcome.clone(), s.took.is_some()))
+            .collect();
         assert_eq!(got, [
             ("a", Some(Ok(())), true),
             ("b", Some(Err("nope".to_string())), true),
