@@ -1223,6 +1223,15 @@ impl AlacritreeApp {
                 self.close_session(ctx, id);
                 return;
             }
+        }
+        self.open_tasks_tab(ctx);
+    }
+
+    /// Puts the workspace's tasks tab on screen, opening one if it has none.
+    fn open_tasks_tab(&mut self, ctx: &Context) {
+        let workspace = self.current_workspace.clone();
+        if let Some(index) = self.tasks_session_index(&workspace) {
+            let id = self.sessions[index].id;
             self.sessions.set_active(workspace, id);
         } else {
             let session = Session::spawn_tasks(
@@ -6511,6 +6520,53 @@ mod tests {
             assert!(!texts.iter().any(|t| t == "Tasks"), "{texts:?}");
         }
         assert!(app.tasks_panel.is_none(), "a listing was started");
+    }
+
+    #[test]
+    fn a_right_click_on_the_sidebar_tasks_heading_opens_the_tasks_tab() {
+        let mut app = app_with_tasks_on();
+        let view = fake_tasks_view(vec![unscoped_task("test it")]);
+        app.tasks_panel = Some(tasks_panel::TasksPanel { workspace: None, view });
+        let ctx = Context::default();
+        let mut time = 0.0;
+        let mut frame = |app: &mut AlacritreeApp, events: Vec<egui::Event>| {
+            time += 0.05;
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::Vec2::new(800.0, 600.0),
+                )),
+                time: Some(time),
+                events,
+                ..Default::default()
+            };
+            let output = ctx.run(input, |ctx| _ = app.show_project_sidebar(ctx, Frame::default()));
+            painted_text_rects(&output.shapes)
+        };
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let heading = loop {
+            let drawn = frame(&mut app, Vec::new());
+            if drawn.iter().any(|(t, _)| t == "test it") {
+                break drawn.into_iter().find(|(t, _)| t == "Tasks").expect("a heading").1;
+            }
+            assert!(Instant::now() < deadline, "the listing never landed");
+            std::thread::yield_now();
+        };
+        assert!(app.tasks_session_index(&None).is_none());
+
+        let pos = heading.center();
+        let button = |pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Secondary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(&mut app, vec![egui::Event::PointerMoved(pos)]);
+        frame(&mut app, vec![button(true)]);
+        frame(&mut app, vec![button(false)]);
+
+        let tab = app.tasks_session_index(&None).expect("no tasks tab opened");
+        assert_eq!(app.sessions.active(&None), Some(app.sessions[tab].id));
     }
 
     #[test]

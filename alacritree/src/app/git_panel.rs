@@ -81,6 +81,7 @@ struct GitSidebarView {
 struct GitSidebarRequests {
     diff: Option<Target>,
     open_picker: Option<PathBuf>,
+    open_tasks: bool,
 }
 
 impl AlacritreeApp {
@@ -438,7 +439,7 @@ impl AlacritreeApp {
                 ui.style_mut().interaction.selectable_labels = false;
                 apply_scrollbar_style(ui, self.config.ui.scrollbar);
                 if let Some(tasks) = tasks {
-                    tasks_panel::show(ui, tasks, &theme, TasksSidebar::Right);
+                    requests.open_tasks = tasks_panel::show(ui, tasks, &theme, TasksSidebar::Right);
                 }
                 ui.horizontal(|ui| {
                     panel_header_filter_ui(
@@ -487,6 +488,9 @@ impl AlacritreeApp {
         }
         if let Some(path) = requests.open_picker {
             self.open_base_branch_picker(path);
+        }
+        if requests.open_tasks {
+            self.open_tasks_tab(ctx);
         }
     }
 

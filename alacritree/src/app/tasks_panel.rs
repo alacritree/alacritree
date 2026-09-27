@@ -2,7 +2,8 @@
 //! agent's progress shows beside the terminal. `[ui.tasks] sidebar` picks the
 //! sidebar. The section draws the workspace's tasks tab when one is open, so
 //! the two never list twice, and keeps a listing of its own otherwise.
-//! Either lists only while drawn. `ToggleTasksSidebar` hides the section.
+//! Either lists only while drawn. `ToggleTasksSidebar` hides the section, and
+//! a right-click on its heading opens the tasks tab.
 
 use alacritree_tasks::Status;
 use alacritree_tasks::tree::{self, Row, Section};
@@ -91,13 +92,19 @@ pub(super) fn panel_id(side: TasksSidebar) -> egui::Id {
 /// Lists when due and, while the workspace has tasks, docks them at the
 /// bottom of `ui` in a section the user can resize. Double-clicking the
 /// divider above it fits the section to its tasks. Runs before whatever
-/// fills the rest of `ui`.
-pub(super) fn show(ui: &mut egui::Ui, view: &mut TasksView, theme: &Theme, side: TasksSidebar) {
+/// fills the rest of `ui`. Returns whether a right-click on the heading asked
+/// for the tasks tab.
+pub(super) fn show(
+    ui: &mut egui::Ui,
+    view: &mut TasksView,
+    theme: &Theme,
+    side: TasksSidebar,
+) -> bool {
     view.tick();
     ui.ctx().request_repaint_after(tasks_view::RELOAD_EVERY);
     let sections = view.sidebar_sections();
     if sections.is_empty() {
-        return;
+        return false;
     }
     let id = panel_id(side);
     let (fit_id, content_id) = (id.with("fit"), id.with("content"));
@@ -116,12 +123,13 @@ pub(super) fn show(ui: &mut egui::Ui, view: &mut TasksView, theme: &Theme, side:
         let content = ui.ctx().data(|d| d.get_temp::<f32>(content_id)).unwrap_or(most);
         panel = panel.exact_height(content.clamp(least, (sidebar * FIT_SHARE).max(least)));
     }
+    let mut open_tab = false;
     let shown = panel.show_inside(ui, |ui| {
         let top = ui.cursor().top();
         ui.add_space(6.0 * theme.ui_scale);
         row_with_trailing(
             ui,
-            |ui| _ = ui.label(RichText::new("Tasks").color(theme.text).strong()),
+            |ui| open_tab = heading(ui, theme),
             |ui| filter_button(ui, view, theme),
         );
         if let Some(e) = view.load_error() {
@@ -146,6 +154,15 @@ pub(super) fn show(ui: &mut egui::Ui, view: &mut TasksView, theme: &Theme, side:
         ui.ctx().data_mut(|d| d.insert_temp(fit_id, ()));
         ui.ctx().request_repaint();
     }
+    open_tab
+}
+
+/// The section's title. Returns whether it was right-clicked.
+fn heading(ui: &mut egui::Ui, theme: &Theme) -> bool {
+    let text = RichText::new("Tasks").color(theme.text).strong();
+    let label = ui.add(egui::Label::new(text).sense(Sense::click()));
+    icon_tooltip(label, "Right-click to open the tasks tab", theme.icon_tooltips)
+        .secondary_clicked()
 }
 
 /// Hides or shows the completed tasks, in the sidebar and every tasks tab.

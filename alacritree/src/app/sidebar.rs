@@ -249,7 +249,7 @@ impl AlacritreeApp {
                 ui.style_mut().interaction.selectable_labels = false;
                 apply_scrollbar_style(ui, self.config.ui.scrollbar);
                 if let Some(tasks) = tasks {
-                    tasks_panel::show(ui, tasks, &theme, TasksSidebar::Left);
+                    requests.open_tasks = tasks_panel::show(ui, tasks, &theme, TasksSidebar::Left);
                 }
                 ui.horizontal(|ui| {
                     panel_header_filter_ui(
@@ -540,6 +540,9 @@ impl AlacritreeApp {
         if requests.add_project {
             self.add_project_via_dialog(ctx);
         }
+        if requests.open_tasks {
+            self.open_tasks_tab(ctx);
+        }
         if requests.reorder_toggled {
             self.sidebar.reorder_mode = !self.sidebar.reorder_mode;
         }
@@ -812,6 +815,7 @@ struct WorktreeView {
 #[derive(Default)]
 struct SidebarRequests {
     add_project: bool,
+    open_tasks: bool,
     reorder_toggled: bool,
     refresh: Option<usize>,
     remove: Option<ProjectRemoveState>,
