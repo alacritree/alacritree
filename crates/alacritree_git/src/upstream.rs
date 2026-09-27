@@ -42,8 +42,11 @@ fn classify(upstream: &str, track: &str) -> Option<UpstreamState> {
         // A track string we cannot read means a git whose vocabulary
         // changed. No entry, so the row paints nothing, which beats
         // "0 ahead, 0 behind" on a branch that is neither.
-        track => parse_track_counts(track)
-            .map(|(ahead, behind)| UpstreamState::Diverged { upstream, ahead, behind }),
+        track => parse_track_counts(track).map(|(ahead, behind)| UpstreamState::Diverged {
+            upstream,
+            ahead,
+            behind,
+        }),
     }
 }
 

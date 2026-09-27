@@ -851,7 +851,8 @@ mod tests {
     #[test]
     fn an_ungroupable_path_still_gets_its_own_group() {
         let dir = tempfile::tempdir().expect("temp dir");
-        let due = vec![Head { path: dir.path().to_path_buf(), branch: "topic".into(), remotes: None }];
+        let due =
+            vec![Head { path: dir.path().to_path_buf(), branch: "topic".into(), remotes: None }];
         let resolves = AtomicUsize::new(0);
 
         let out = groups_with(due, |_| {
@@ -874,7 +875,11 @@ mod tests {
         let fork = || remotes("https://github.com/me/fork.git", "https://github.com/me/fork.git");
         let due = vec![
             Head { path: PathBuf::from("/r/main"), branch: "topic-a".into(), remotes: fork() },
-            Head { path: PathBuf::from("/r/wt-topic-b"), branch: "topic-b".into(), remotes: fork() },
+            Head {
+                path: PathBuf::from("/r/wt-topic-b"),
+                branch: "topic-b".into(),
+                remotes: fork(),
+            },
         ];
         let resolves = AtomicUsize::new(0);
 
@@ -896,7 +901,11 @@ mod tests {
             origin_url: Some("https://github.com/up/repo.git".into()),
             push_url: Some("git@github.com:me/repo.git".into()),
         });
-        let due = vec![Head { path: PathBuf::from("/no/such/checkout"), branch: "topic".into(), remotes }];
+        let due = vec![Head {
+            path: PathBuf::from("/no/such/checkout"),
+            branch: "topic".into(),
+            remotes,
+        }];
 
         let out = groups_with(due, |_| Some(("up".to_string(), "repo".to_string())));
 
@@ -943,8 +952,11 @@ mod tests {
     /// these URLs, and ask with `answer` standing in for GitHub. Returns the
     /// PR number the branch's badge shows, if any.
     fn ask_as_github(origin: &str, push: &str, branch: &str, answer: Vec<u8>) -> Option<u64> {
-        let due =
-            vec![Head { path: PathBuf::from("/r"), branch: branch.into(), remotes: remotes(origin, push) }];
+        let due = vec![Head {
+            path: PathBuf::from("/r"),
+            branch: branch.into(),
+            remotes: remotes(origin, push),
+        }];
         let groups = groups_with(due, |_| Some(("upstream".to_string(), "repo".to_string())));
         assert_eq!(groups.len(), 1);
         let found = query_group(

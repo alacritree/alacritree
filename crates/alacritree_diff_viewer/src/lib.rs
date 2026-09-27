@@ -239,7 +239,9 @@ fn diff_target(target: &Target) -> DiffTarget {
         },
         Target::Section(Section::Staged) => (DiffScope::Staged, false),
         Target::Section(Section::Unstaged) => (DiffScope::Working, false),
-        Target::Section(Section::Branch { base }) => (DiffScope::Base { base: base.clone() }, false),
+        Target::Section(Section::Branch { base }) => {
+            (DiffScope::Base { base: base.clone() }, false)
+        },
     };
     DiffTarget { scope, file: target.file().map(str::to_string), untracked }
 }
