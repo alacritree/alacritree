@@ -3191,6 +3191,9 @@ impl AlacritreeApp {
         self.poll_multiplexers();
         self.reconcile_pane_sessions(ctx);
         self.sync_pane_views(ctx);
+        if let Some(err) = self.gpu_grid.take_build_error() {
+            self.modals.error_dialog = Some(format!("the terminal grid cannot be drawn: {err}"));
+        }
         // Poll first, then check `failed`: a panicked job's `poll` returns
         // `None` forever, so `failed` is what stops its handle from sitting
         // here for the rest of the process.
@@ -5134,6 +5137,21 @@ mod tests {
             app.multiplexers.scripted().pending_create().is_empty(),
             "an untranslatable workspace still asked the multiplexer"
         );
+    }
+
+    /// A context too old for the grid still draws every panel, so the window
+    /// says why the terminal is blank, once, rather than leaving it to the log.
+    #[test]
+    fn a_grid_the_driver_rejects_is_reported_in_the_error_dialog_once() {
+        let mut app = test_app();
+        app.gpu_grid.fail_build(crate::grid_gl::BuildError::Outdated("2.1 Mesa".into()));
+
+        app.poll_update_jobs(&Context::default());
+        let shown = app.modals.error_dialog.take().expect("the failure was not reported");
+        app.poll_update_jobs(&Context::default());
+
+        assert!(shown.contains("OpenGL 2.1 Mesa"), "the driver's version is missing: {shown}");
+        assert_eq!(app.modals.error_dialog, None, "a dismissed report came back");
     }
 
     /// A create the multiplexer refused must answer whoever asked for the

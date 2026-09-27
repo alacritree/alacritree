@@ -105,14 +105,18 @@ impl GridState {
 pub(crate) struct GpuGrid {
     pub state: Arc<Mutex<GridState>>,
     gl: Arc<Mutex<GlSlot>>,
+    /// Left by the paint callback for the next frame to report.  Only the
+    /// callback holds a `glow::Context`, so the frame that asked for the grid
+    /// has already been built by the time the build fails.
+    build_error: Arc<Mutex<Option<BuildError>>>,
 }
 
 /// Why the GL side will not build. glow reports each GL failure as the
 /// driver's own text, which the variants carry.
 #[derive(Debug, thiserror::Error)]
-enum BuildError {
-    #[error("{0:?} has no instanced arrays")]
-    NoInstancing(ShaderVersion),
+pub(crate) enum BuildError {
+    #[error("the driver offers OpenGL {0}, and the grid needs OpenGL 3.3 or OpenGL ES 3.0")]
+    Outdated(String),
     #[error("could not create a GL object: {0}")]
     Create(String),
     #[error("shader did not compile: {0}")]
@@ -135,7 +139,20 @@ impl GpuGrid {
         Self {
             state: Arc::new(Mutex::new(GridState::default())),
             gl: Arc::new(Mutex::new(GlSlot::Unbuilt)),
+            build_error: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Why the GL side would not build, handed out once.
+    pub(crate) fn take_build_error(&self) -> Option<BuildError> {
+        self.build_error.lock().expect("grid build error").take()
+    }
+
+    /// Stand in for a driver that rejects the grid.  Nothing headless has a
+    /// `glow::Context` for the callback to fail against.
+    #[cfg(test)]
+    pub(crate) fn fail_build(&self, err: BuildError) {
+        *self.build_error.lock().expect("grid build error") = Some(err);
     }
 
     /// The shape to hand egui.  Everything it draws comes from `state`, which
@@ -143,6 +160,7 @@ impl GpuGrid {
     /// which only the atlas live at paint time can give.
     pub(crate) fn callback(&self, rect: Rect, ctx: &egui::Context, time_gpu: bool) -> egui::Shape {
         let (state, resources, ctx) = (self.state.clone(), self.gl.clone(), ctx.clone());
+        let build_error = self.build_error.clone();
         egui::Shape::Callback(egui::epaint::PaintCallback {
             rect,
             callback: Arc::new(eframe::egui_glow::CallbackFn::new(move |_info, painter| {
@@ -153,6 +171,9 @@ impl GpuGrid {
                         Ok(resources) => GlSlot::Ready(Box::new(resources)),
                         Err(err) => {
                             log::error!("the terminal grid cannot be drawn: {err}");
+                            *build_error.lock().expect("grid build error") = Some(err);
+                            // Nothing else wakes the loop to report it.
+                            ctx.request_repaint();
                             GlSlot::Failed
                         },
                     };
@@ -218,7 +239,9 @@ impl GlResources {
             ShaderVersion::Gl140 => "#version 140\n",
             ShaderVersion::Es300 => "#version 300 es\nprecision highp float;\n",
             ShaderVersion::Gl120 | ShaderVersion::Es100 => {
-                return Err(BuildError::NoInstancing(version));
+                return Err(BuildError::Outdated(unsafe {
+                    gl.get_parameter_string(glow::VERSION)
+                }));
             },
         };
         unsafe {
