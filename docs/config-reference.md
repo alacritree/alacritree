@@ -191,6 +191,12 @@ One hook: the program to run, and its arguments for each worktree event.
 - `path` (string): The program to run on Windows or natively. A bare name is looked up on PATH.
 - `wsl_path` (string, default `""`): The program to run inside a WSL distro for a worktree there, as written. Empty looks up the file name of `path`, without directory or extension, through the distro's login shell, and a distro where that finds nothing skips the hook. A Windows `path` is never run there.
 
+### `[integrations.claude]`
+
+Claude Code settings written into each new worktree.
+
+- `terminal_bell` (boolean, default `true`): Set `preferredNotifChannel` to `terminal_bell` in each new worktree's `.claude/settings.local.json`, so Claude Code rings the bell when it waits on input. Other keys in the file are kept.
+
 ### `[integrations.delta]`
 
 The pager the delta diff viewer runs.

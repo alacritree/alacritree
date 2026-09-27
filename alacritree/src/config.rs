@@ -608,6 +608,7 @@ pub struct IntegrationsConfig {
     pub git: alacritree_git::GitConfig,
     pub gh: alacritree_gh::GhConfig,
     pub doppler: alacritree_doppler::DopplerConfig,
+    pub claude: alacritree_claude::ClaudeConfig,
     pub checkout_hooks: Vec<alacritree_checkout_hooks::CommandHook>,
     pub herdr: alacritree_herdr::HerdrConfig,
     pub zellij: alacritree_zellij::ZellijConfig,
@@ -2979,6 +2980,8 @@ struct RawIntegrations {
     gh: alacritree_gh::RawGh,
     /// The Doppler CLI behind scope mirroring for new worktrees.
     doppler: alacritree_doppler::RawDoppler,
+    /// Claude Code settings written into each new worktree.
+    claude: alacritree_claude::RawClaude,
     /// Programs to run when a worktree is created, first opened, or removed.
     checkout_hooks: alacritree_checkout_hooks::RawCheckoutHooks,
     /// Agents running under a herdr server.
@@ -3003,6 +3006,7 @@ impl RawIntegrations {
             git: self.git.resolve(),
             gh: self.gh.resolve(moved.gh),
             doppler: self.doppler.resolve(),
+            claude: self.claude.resolve(),
             checkout_hooks: self.checkout_hooks.resolve(),
             herdr: self.herdr.resolve(moved.herdr_icon),
             zellij: self.zellij.resolve(),

@@ -2,6 +2,7 @@
 //! vtable, and the one place that decides which of them a config turns on.
 
 use alacritree_checkout_hooks::{CheckoutHook, CommandHook, Outcome, ambassador_impl_CheckoutHook};
+use alacritree_claude::ClaudeBellHook;
 use alacritree_doppler::DopplerHook;
 use ambassador::Delegate;
 
@@ -10,6 +11,7 @@ use crate::config::IntegrationsConfig;
 #[derive(Debug, Clone, Delegate)]
 #[delegate(CheckoutHook)]
 pub(crate) enum Hook {
+    ClaudeBell(ClaudeBellHook),
     Doppler(DopplerHook),
     Command(CommandHook),
 }
@@ -17,7 +19,13 @@ pub(crate) enum Hook {
 /// Built-in hooks first, in a fixed order, then the user's in name order, so
 /// the progress steps read the same on every create.
 pub(crate) fn from_config(integrations: &IntegrationsConfig) -> Vec<Hook> {
-    let mut hooks: Vec<Hook> = integrations.doppler.hook().map(Hook::Doppler).into_iter().collect();
+    let mut hooks: Vec<Hook> = integrations
+        .claude
+        .hook()
+        .map(Hook::ClaudeBell)
+        .into_iter()
+        .chain(integrations.doppler.hook().map(Hook::Doppler))
+        .collect();
     hooks.extend(integrations.checkout_hooks.iter().cloned().map(Hook::Command));
     hooks
 }
@@ -109,6 +117,10 @@ mod tests {
             }],
             ..Default::default()
         };
-        assert!(matches!(from_config(&integrations)[..], [Hook::Doppler(_), Hook::Command(_)]));
+        assert!(matches!(from_config(&integrations)[..], [
+            Hook::ClaudeBell(_),
+            Hook::Doppler(_),
+            Hook::Command(_)
+        ]));
     }
 }

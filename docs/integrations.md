@@ -38,5 +38,6 @@ The [tasks tab](alacritree.md#workspace-tasks) shows the lists for the current w
 
 [Checkout hooks](alacritree.md#checkout-hooks) run when Alacritree creates a worktree, first opens a shell in one, or removes one.
 
+- [Claude Code](https://www.anthropic.com/claude-code) rings the terminal bell in each new worktree when it waits on input. [`[integrations.claude]`](config-reference.md#integrationsclaude)
 - [Doppler](https://www.doppler.com) gives each worktree the main checkout's `doppler setup` scopes. [`[integrations.doppler]`](config-reference.md#integrationsdoppler)
 - Commands of your own, one table each, run in name order. [`[integrations.checkout_hooks.command.<name>]`](config-reference.md#integrationscheckout_hookscommandname)

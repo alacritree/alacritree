@@ -172,14 +172,6 @@ pub(crate) fn create<H: CheckoutHooks + ?Sized>(
         send(&format!("Copied {copied} LLM config item(s)"));
     }
 
-    // Pre-flip Claude Code's BEL setting so the user doesn't have to
-    // configure each worktree by hand.  Other keys in the file are preserved.
-    if let Err(e) = enable_claude_terminal_bell(&target) {
-        log::warn!("failed to write Claude bell config in {}: {e}", target.display());
-    } else {
-        send("Enabled Claude Code terminal bell");
-    }
-
     bail_if_cancelled!();
     let event = CheckoutEvent { main: &req.project_root, checkout: &target };
     crate::checkout_hooks::report(hooks.created(&event, blocking), |_, line| send(line));
@@ -194,26 +186,6 @@ fn create_error(error: VcsError) -> WorktreeError {
         VcsError::Cancelled { .. } => WorktreeError::Cancelled,
         error => WorktreeError::Vcs(error),
     }
-}
-
-fn enable_claude_terminal_bell(worktree_root: &Path) -> std::io::Result<()> {
-    let dir = worktree_root.join(".claude");
-    std::fs::create_dir_all(&dir)?;
-    let path = dir.join("settings.local.json");
-
-    let mut value: serde_json::Value = match std::fs::read_to_string(&path) {
-        Ok(s) => serde_json::from_str(&s).unwrap_or_else(|_| serde_json::json!({})),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
-        Err(e) => return Err(e),
-    };
-    if !value.is_object() {
-        value = serde_json::json!({});
-    }
-    value["preferredNotifChannel"] = serde_json::json!("terminal_bell");
-
-    let pretty = serde_json::to_string_pretty(&value)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    std::fs::write(path, pretty)
 }
 
 /// Worktrees live under `<base>/<project>-<hash>/<branch>`.  `base` defaults
@@ -589,9 +561,9 @@ mod tests {
         let (reached_tx, reached_rx) = mpsc::channel();
         let (gate_tx, gate_rx) = mpsc::channel::<()>();
         let job = jobs::pool().spawn(jobs::Priority::Interactive, move |blocking| {
-            // Park on the last step before the hooks until the handle is gone.
+            // Park on a step before the hooks until the handle is gone.
             let on_step = |step: &str| {
-                if step.starts_with("Enabled Claude Code") {
+                if step.starts_with("Copying LLM configurations") {
                     let _ = reached_tx.send(());
                     let _ = gate_rx.recv();
                 }

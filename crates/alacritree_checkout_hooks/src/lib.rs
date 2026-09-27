@@ -45,6 +45,13 @@ pub enum HookError {
     },
     #[error("{hook} did not finish within {}s", alacritree_common::side::LIMIT.as_secs())]
     TimedOut { hook: String },
+    #[error("{hook} could not write {}", path.display())]
+    Write {
+        hook: String,
+        path: std::path::PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
 }
 
 #[ambassador::delegatable_trait]

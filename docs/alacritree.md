@@ -193,10 +193,7 @@ background thread and streams progress steps back to the UI:
    `.copilot-instructions.md`, `.github/copilot-instructions.md`,
    `.windsurfrules`, `.roomodes`, `.roo/`, `.codeium/`, `.continue/`. Existing
    destination files are left alone.
-6. Set `preferredNotifChannel: terminal_bell` in
-   `.claude/settings.local.json` so Claude Code's completion bell fires through
-   the terminal. Every other key in the file is preserved.
-7. Run the [checkout hooks](#checkout-hooks).
+6. Run the [checkout hooks](#checkout-hooks).
 
 Worktrees are created under
 `<base>/<project>-<hash>/<branch>`, where an unset `<base>` is
@@ -224,8 +221,13 @@ process opens a shell in one, and after it removes one. Opening covers
 worktrees made outside alacritree, such as a plain `git worktree add`. An
 opening hook runs again after a restart, so it must be safe to repeat.
 
-Two kinds of hook exist, and the built-in one runs first:
+The built-in hooks run first, in this order, then your own:
 
+- **Claude Code.** A new worktree gets `preferredNotifChannel: terminal_bell`
+  in `.claude/settings.local.json`, so Claude Code rings the terminal bell
+  when it waits on input and the sidebar flags the session. Every other key in
+  the file is kept. Opening a worktree made elsewhere leaves its settings
+  alone. Turn it off with `[integrations.claude] terminal_bell = false`.
 - **Doppler.** When the main checkout has `doppler setup` scopes, a new or
   opened worktree gets the same scopes, and a removed one gives them back.
   Without this, `doppler run` in a worktree fails with "You must specify a
@@ -658,7 +660,8 @@ Persistent files written by Alacritree:
 - `$XDG_CONFIG_HOME/alacritree/scratchpads/*.md` holds one persistent Markdown
   scratchpad per workspace. Worktree deletion does not remove these notes.
 - `<worktree>/.claude/settings.local.json` is touched only during worktree
-  creation, and only to set `preferredNotifChannel = "terminal_bell"`.
+  creation, and only to set `preferredNotifChannel = "terminal_bell"`, unless
+  `[integrations.claude] terminal_bell` is off.
 
 No telemetry, no analytics, no background network traffic.
 

@@ -251,6 +251,17 @@
       },
       "type": "object"
     },
+    "RawClaude": {
+      "description": "`[integrations.claude]`.",
+      "properties": {
+        "terminal_bell": {
+          "default": true,
+          "description": "Set `preferredNotifChannel` to `terminal_bell` in each new worktree's\n`.claude/settings.local.json`, so Claude Code rings the bell when it\nwaits on input. Other keys in the file are kept.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
     "RawColors": {
       "properties": {
         "bright": {
@@ -1115,6 +1126,10 @@
         "checkout_hooks": {
           "$ref": "#/$defs/RawCheckoutHooks",
           "description": "Programs to run when a worktree is created, first opened, or removed."
+        },
+        "claude": {
+          "$ref": "#/$defs/RawClaude",
+          "description": "Claude Code settings written into each new worktree."
         },
         "delta": {
           "$ref": "#/$defs/RawDelta",

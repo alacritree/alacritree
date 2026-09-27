@@ -66,6 +66,9 @@
   },
   "integrations": {
     "checkout_hooks": [],
+    "claude": {
+      "terminal_bell": true
+    },
     "delta": {
       "path": "delta",
       "wsl_path": null
