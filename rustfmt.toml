@@ -13,3 +13,5 @@ newline_style = "Unix"
 format_strings = true
 wrap_comments = true
 comment_width = 100
+# `cargo fmt` formats every workspace member regardless of `default-members`.
+ignore = ["alacritty", "alacritty_terminal", "alacritty_config", "alacritty_config_derive"]

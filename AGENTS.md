@@ -11,14 +11,13 @@ This is a Cargo workspace. Edit `alacritree/` (the app) and `crates/` (its libra
 ## Build and test
 
 ```sh
-cargo run -p alacritree
-cargo check -p alacritree
-cargo +nightly fmt -p alacritree -p <each crate you changed>
+cargo run
+cargo check
+cargo test
+cargo +nightly fmt   # rustfmt.toml needs nightly
 ```
 
-`rustfmt.toml` needs nightly. Name packages with `-p`, since a bare `cargo fmt` also reformats the vendored crates.
-
-`.github/workflows/ci.yml` holds the `cargo test` and `cargo clippy` invocations CI runs over every crate except the vendored ones. Run those to reproduce CI.
+From the workspace root these cover `alacritree/` and `crates/` and skip the vendored crates, through `default-members` in `Cargo.toml` and `ignore` in `rustfmt.toml`. `.github/workflows/ci.yml` holds the clippy flags CI runs.
 
 ## Architecture
 

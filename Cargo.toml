@@ -9,6 +9,8 @@ members = [
     # and would take crates/clippy.toml for a crate.
     "crates/alacritree_*",
 ]
+# A bare cargo command from the root leaves the vendored alacritty crates alone.
+default-members = ["alacritree", "crates/alacritree_*"]
 resolver = "2"
 
 [workspace.package]
