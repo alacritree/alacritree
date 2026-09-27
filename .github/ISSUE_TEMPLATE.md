@@ -1,15 +1,15 @@
-For bug reports, the following information can help speed up the process. Please
-describe the bug that you have found and what you would expect to happen
-instead.
+For bug reports, describe what happened and what you expected to happen instead. The details below help reproduce it.
 
 ### System
 
-OS: Linux/BSD/macOS/Windows
-Version: `alacritty --version` output
-Linux/BSD: X11/Wayland, DE or Compositor and WM
+OS: Linux/macOS/Windows (and the WSL distro, if the project lives in one)
+Version: `alacritree --version` output
+Linux: X11/Wayland, DE or compositor
 
-### Logs
+### Diagnostics
 
-Crashes: STDERR, STDOUT
-Font/Terminal size: `alacritty -vv`
-Keyboard and bindings: `alacritty --print-events`
+`alacritree doctor` output.
+
+Crashes: `alacritree crashes` lists the crash logs alacritree kept. Attach the one for this crash.
+
+Logs: run with `RUST_LOG=debug`, or pass `--log-file <path>` to write the log to a file. A release build started from a shortcut has no console, so `--log-file` or `[debug] persistent_logging = true` is how to capture it.
