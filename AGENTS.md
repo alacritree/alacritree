@@ -1,81 +1,59 @@
-# AGENTS.md
-
-This file provides guidance to coding agents when working with code in this repository.
-`CLAUDE.md` imports it so Claude Code picks it up too.
+`alacritree` is an egui/eframe terminal that hosts `alacritty_terminal` sessions behind a sidebar of projects and their checkouts, such as git worktrees. Most modules open with a `//!` header giving their purpose and the invariants they hold. Read it before editing the module.
 
 ## Repository layout
 
-This is a Cargo workspace. `alacritree/` and the crates under `crates/` are original work; the `alacritty*` crates are vendored:
+This is a Cargo workspace. Edit `alacritree/` (the app) and `crates/` (its library crates) unless the user says otherwise.
 
-- `alacritree/` is the app, a small egui/eframe app that hosts `alacritty_terminal` and adds a worktree-aware sidebar. Agent-edited code lives here or under `crates/` unless the user explicitly says otherwise.
-- `crates/` holds alacritree's own library crates, split out of `alacritree/` so the compiler enforces their boundaries. `alacritree_common` holds process spawning, the job pool, WSL support and tool paths. Each integration type gets a crate holding its trait, shared models, error type and a test fake (`alacritree_checkout_hooks`), and each backend gets its own crate (`alacritree_doppler`). `alacritree_vcs` is the version control integration: the `VersionControl` trait, the repository, checkout and status models, `VcsError` and `FakeVcs`. `alacritree_git` is its git backend, which reads native repositories through libgit2 and WSL ones through one batched script per question. Only the `alacritree` app depends on specific backends. Keep the `disallowed-methods` list in `crates/clippy.toml` in step with `alacritree/clippy.toml`.
-- `alacritty/`, `alacritty_terminal/`, `alacritty_config/`, `alacritty_config_derive/` are vendored upstream alacritty. Treat them as read-only dependencies. The `alacritty` GUI binary (winit/OpenGL) is **not** what this fork ships; we only use `alacritty_terminal` (the headless PTY + VT parser + grid).
+- `alacritty/`, `alacritty_terminal/`, `alacritty_config/` and `alacritty_config_derive/` are vendored upstream alacritty and read-only. Only `alacritty_terminal` is used, for the PTY, VT parser and grid. The `alacritty` GUI binary is not what this fork ships.
+- `egui-winit/` is a vendored `egui-winit` with a one-line change, wired in through `[patch.crates-io]` in the root `Cargo.toml`. Leave the `x11-clipboard` pin beside it alone unless asked.
+- `CONTRIBUTING.md` and the root `Makefile` are upstream alacritty's and do not govern `alacritree/`.
 
-`egui-winit/` sits alongside them but is not a workspace member. It is a vendored `egui-winit` carrying a one-line change, wired in through `[patch.crates-io]` in the root `Cargo.toml` so Ctrl+V falls through to a key event when the clipboard holds something other than text.
-
-`CONTRIBUTING.md` is the upstream alacritty contributing guide, kept for the vendored crates' historical context. It does not constrain work on `alacritree/`.
-
-## Build / run
+## Build and test
 
 ```sh
-cargo run -p alacritree            # debug build of the GUI
-cargo build -p alacritree --release
-cargo check -p alacritree          # fast type-check loop
-cargo +nightly fmt                 # rustfmt.toml uses nightly-only options; revert anything it touches under alacritty*/
-cargo test -p alacritree           # unit tests live in-module under #[cfg(test)]
+cargo run -p alacritree
+cargo check -p alacritree
+cargo +nightly fmt -p alacritree -p <each crate you changed>
 ```
 
-The workspace MSRV is 1.85 (edition 2024). The root `Makefile` is upstream alacritty's macOS bundling script; it is **not** wired up to alacritree.
+`rustfmt.toml` needs nightly. Name packages with `-p`, since a bare `cargo fmt` also reformats the vendored crates.
 
-There is a `[patch.crates-io]` pin on `x11-clipboard` in the root `Cargo.toml` (TODO from upstream). Leave it alone unless asked.
+`.github/workflows/ci.yml` holds the `cargo test` and `cargo clippy` invocations CI runs over every crate except the vendored ones. Run those to reproduce CI.
 
-## Big-picture architecture
+## Architecture
 
-`alacritree` is an egui app that owns N PTY-backed terminal sessions and routes input/paint through a custom grid renderer. The pieces:
+- The app owns many PTY sessions and paints their grids itself. A `WorkspaceKey` is `Option<PathBuf>`: `None` is the home tab, `Some(path)` a checkout. Each workspace remembers its active session.
+- Sessions outlive workspace switches, on screen or not. A session leaves only through `SessionList::remove`, and a close that changes focus goes through `AlacritreeApp::close_sessions`.
+- PTY output wakes the UI only through `EventProxy`, which calls `request_repaint` when its session is on screen. A background thread that produces terminal events without it looks hung until the next input event.
+- The CLI, the MCP server (`alacritree mcp`) and a running window all speak `ipc::protocol::IpcRequest`. A new operation is one `IpcRequest` variant, placed once in `ipc/route.rs`. MCP tool names match its serde tags. With no window listening, the CLI falls back to `cli/offline.rs`.
+- `alacritree_common::wsl` is the only code that knows WSL exists.
 
-- `lib.rs` declares the module tree, so integration tests under `tests/` can name crate types instead of spawning the binary.
-- `main.rs` holds `eframe::run_native` and env_logger setup. Window opacity comes from config; transparency is a `ViewportBuilder` flag, so toggling it requires restart. Running with a subcommand hands off to `cli/` instead of opening a window.
-- `cli/` is the clap CLI (`mcp`, `project`, `session`, `workspace`, `git-status`, `worktree`, `action`, `doctor`, `install`, `schema`, `completions`). The operational project/session/workspace/git/worktree/action commands map to `IpcRequest`, the same enum the MCP bridge speaks; `mcp`, `doctor`, `install`, `schema`, and `completions` are local or special-purpose commands that return before IPC dispatch. Dispatch is hybrid: a request goes to a running instance when one is listening, and otherwise to `cli/offline.rs`, which serves what it can from `state.toml` and git directly. Commands that are meaningless without a window fail there rather than pretending. `cli/render.rs` turns replies into human-readable output; `--json` prints the raw reply instead.
-- `ipc/` holds local-socket IPC mirroring alacritty's `polling/ipc.rs`, in two halves. `ipc/protocol.rs` holds the request and reply types, socket discovery and the client, and is all `cli/` and `mcp.rs` import. `ipc/server.rs` holds the listener and the `AppCall` channel to the UI thread. `ipc/route.rs` decides where each request runs, on the connection thread, deferred on the UI thread until its work lands, or answered within one frame, so a new request is placed there once. On Unix, a socket under `$XDG_RUNTIME_DIR/alacritree` (or `/run/user/$UID/alacritree` on Linux when the environment variable is absent), falling back to the system temporary directory when the runtime path cannot be created; on Windows, a named pipe at `\\.\pipe\alacritree-<pid>.sock` (`interprocess` addresses both as a path). Advertised via `ALACRITREE_SOCKET`, one newline-delimited JSON request per connection with an `{"ok"}/{"error"}` reply. A client with no env var finds an instance by listing the socket directory. On Windows the pipe filesystem is itself listable. Requests that touch app state are forwarded to the UI thread as `AppCall`s (drained in `update`, woken by `request_repaint`); slow ones (git status, worktree creation) run on the connection thread. Disabled via `[general] ipc_socket = false`. Named pipes have no receive timeout, so the client bounds each request from its own side (worker thread + `recv_timeout`) rather than with `set_recv_timeout`.
-- `mcp.rs` is `alacritree mcp`, a hand-rolled stdio MCP server (newline-delimited JSON-RPC, tools only) whose tool names/arguments map 1:1 onto `ipc::protocol::IpcRequest` serde tags. Deliberately SDK-free to keep the crate synchronous. Platform-agnostic, since it only speaks stdio and `ipc::protocol::send_request`.
-- `app.rs` holds `AlacritreeApp`, the `eframe::App`. It owns the project list, the cached `Theme`, and an `app/session_list.rs` `SessionList`, which holds the sessions and each workspace's active one. A session leaves only through `SessionList::remove`, which repairs the active entries the removal invalidates, and every close that navigates goes through `close_sessions` in `app.rs`. **Workspace model.** A `WorkspaceKey` is `Option<PathBuf>`. `None` is the "home" tab, whose sessions inherit `$PWD`, and `Some(path)` is a worktree. The active session for a workspace persists across switches; sessions are *not* killed when you switch away. Sidebars: left = projects/worktrees, right = git status. Both are toggleable and persisted. Cursor repair for the left sidebar is reconciled once per frame in `sidebar_focus.rs` by diffing a snapshot of the tree, rather than by each mutation site reporting what it removed. The reconcile runs unconditionally, so its unchanged-frame path must stay allocation-free, which `tests/steady_state.rs` asserts.
-- `session.rs` wraps `alacritty_terminal::event_loop::EventLoop`. Each `Session` has its own PTY, its own background read/write thread, and its own monotonic `window_id` (alacritty routes OSC 7 / signal events by id, so ids must be unique). `EventProxy` bridges terminal events into an `mpsc` + `egui::Context::request_repaint`. `Drop` sends `Msg::Shutdown`, so don't bypass it.
-- `terminal_view.rs` is the custom grid painter. It computes cell size from the egui font, resizes the session to fit, drains pending PTY events (`Title`, `ChildExit`, `PtyWrite`), and captures the grid into runs of one style. Those runs go to one of two painters: **the mesh path**, which builds a shape per glyph for epaint to tessellate, or **the GL path** under `[ui] gpu_grid`. Input goes through `input::event_to_bytes`.
-- `grid_gl.rs`, `grid_instances.rs`, `decoration_sprites.rs`, `gpu_timing.rs` make up the GL path, reached through an `egui::PaintCallback` when `[ui] gpu_grid` is set. Default off, and a context that cannot build it falls back to the mesh path for the session. `grid_instances.rs` holds one record per cell on the CPU side, `grid_gl.rs` uploads the dirty rows and draws them, `decoration_sprites.rs` rasterizes the underline styles, `[debug] gpu_timing` times each draw on the GPU.
-- `input.rs` translates `egui::Event` → terminal byte sequences (CSI/SS3 for arrows/F-keys, `ESC + key` for Alt, control bytes for Ctrl-letter). `Event::Text` is preferred for printable input because it handles dead keys / IME.
-- `bindings.rs` parses alacritty's `[[keyboard.bindings]]` TOML into bindings over its own `Key` and `Modifiers` types, so the parser links no GUI framework. Vi and search-mode bindings are dropped, since there is no mode tracking. `BindingAction::Chars` writes raw bytes, and `Named` triggers app-level actions such as paste, scroll, font size and quit. `shortcut.rs` converts egui key presses into those types and spells triggers for the palette.
-- `config.rs` loads `alacritty.toml` then deep-merges `alacritree.toml` over it using **alacritty's merge semantics**: arrays *concatenate* (so `[[keyboard.bindings]]` in alacritree.toml *adds to* upstream bindings), tables merge recursively, primitives replace. Search path mirrors alacritty: `$XDG_CONFIG_HOME/alacritty/`, `~/.config/alacritty/`, `~/.alacritty.toml`, `/etc/alacritty/`. alacritree-only options live under `[ui]` (sidebar colors, etc.) and `[workspace]` (worktree location).
-- `colors.rs` converts alacritty's `Rgb` + `AnsiColor` (Named/Spec/Indexed) to `egui::Color32`, applying the 256-color palette and bright/dim variants.
-- `fonts.rs` loads a system monospace font via `fontdb` and registers it with egui.
-- `vcs.rs` holds the app's `Vcs` enum over every version control backend (`#[derive(ambassador::Delegate)]`), the backends config enables, and which one claims a root. The app reaches version control only through `alacritree_vcs::VersionControl`, and `alacritree_git` holds git behind it. `projects.rs` asks the enabled backends to discover each root in turn and keeps a folder none claims as a plain project with one pseudo-checkout, so the user can still spawn a shell there. `status_cache.rs` keeps a throttled `StatusCache` per checkout for the git panel.
-- `state.rs` is minimal persistence to `$XDG_CONFIG_HOME/alacritree/state.toml`: project roots, expanded state, sidebar visibility, per-worktree base branches. Serialized with `toml`. Failures are logged and ignored, never a panic on missing or corrupt state.
-- `logdir.rs` decides where diagnostics live (`%LOCALAPPDATA%` / `$XDG_STATE_HOME`, deliberately not the roaming config dir). It also holds the per-process identity that names both the crash artifact and the continuous log, built from UTC epoch nanos, pid and retry ordinal, and the per-platform "is this pid alive" check pruning depends on.
-- `crash_log.rs` is the panic hook. Writes one artifact per GUI process; single writer, never shared, so no cross-process protocol. Armed only on the GUI path (after `cli::run` declines) because subcommands exit before config loads and no gate could govern them. Uses `try_lock`, never `lock`: a thread panicking while holding the recorder mutex would otherwise wait on itself forever. Retention is by age and liveness only. Contents never decide deletion. Gated by `[debug] crash_log`, default on.
-- `logging.rs` holds `Tee`, which mirrors env_logger's stream into a per-process file whose sink is filled after config loads (env_logger cannot be retargeted post-`init`). Gated by `[debug] persistent_logging`, default off.
-- `pr_status.rs` caches the PR each branch has and its base, so the git panel diffs against the PR's base instead of the repo's default branch. It asks through the `RemoteForge` trait (`alacritree_forge`), which `forge.rs` dispatches to a backend, today only `alacritree_gh`, which shells out to `gh`. Best-effort: missing or unauthenticated `gh` silently falls back.
-- `alacritree_diff_viewer` decides what the git panel's diff pane opens and builds the command line that opens it on the workspace's side. Delta, tuicr and a custom viewer are values of one `Viewer` type rather than backends, so no backend crates exist for it. The buttons and the pane itself stay in `app/git_panel.rs`.
-- `multiplexer/` holds the app's `Multiplexer` enum over every multiplexer backend (`#[derive(ambassador::Delegate)]`) and `Multiplexers`, which builds one of each and routes a request to the one that owns a pane. `alacritree_multiplexer` holds the `MultiplexerSession` trait, the pane models, `PaneError` and a scripted fake; `alacritree_herdr` and `alacritree_zellij` are the backends, each owning its `[integrations.*]` section. What the app does with an answer lives in `app/panes.rs`.
-- `command_palette.rs` holds the data model and fuzzy ranking for the Ctrl+K palette. `panel_filter.rs` holds the equivalent per-panel search state for the sidebars.
-- `scratchpad.rs` holds persistent per-workspace notes and their built-in editor. Closing the tab or deleting a worktree must never delete the notes.
-- `tasks/` holds the tasks tab and the agent hook. `alacritree_tasks` holds the `TaskBackend` trait, the task model with its typed `Filter` and `Edit`, project node naming (`scope.rs`), the tab's pure tree model (`tree.rs`), an in-memory fake, and the command backend under `[integrations.tasks.command]`, whose `list` output follows `schema/alacritree-tasks.json`. `alacritree_taskwarrior` is the only code that runs `task` and owns `[integrations.taskwarrior]`, including the UDAs `alacritree task setup` and `doctor` check. In the app, `backend.rs` holds the `Backend` dispatch enum and picks the command when one is enabled, `facts.rs` asks the version control backends which checkout the cwd is in, `hook.rs` backs `alacritree hook`, and `view.rs` draws the tab. Off unless `[integrations.taskwarrior]` or `[integrations.tasks.command]` is enabled.
-- `alacritree_common::wsl` is the only module that knows WSL exists: distro enumeration, Windows ↔ Linux path translation, `wsl.exe` command construction. `alacritree_common::wsl_helper` keeps one long-lived `sh` per distro so batch scripts don't pay process startup per call. `wsl_spare.rs`, under `[wsl] warm_spare`, keeps one launched `wsl.exe` per distro parked on a terminal and hands it to the next session that opens there, so a launch stalled by WSL never holds up a tab.
-- `clipboard.rs`, `paste.rs`, `links.rs`, `mouse.rs`, `ime.rs`, `file_drop.rs` handle input around the grid: the two clipboards, bracketed paste, link detection, mouse-report encodings mirroring alacritty's, IME composition state, and where a dropped file goes.
-- `glyph_cache.rs`, `color_glyph.rs`, `builtin_font.rs` are the paint path's caches: reused single-character galleys, emoji rasterized from a font's colour tables, and hand-drawn box-drawing glyphs that must fully cover their cell.
-- `sidebar_nav.rs`, `git_nav.rs`, `row_label.rs`, `path_style.rs` are pure models behind the sidebars (cursor movement, row templating, abbreviated paths), deliberately free of egui so they can be unit-tested.
-- `checkout_hooks.rs` holds the app's `Hook` enum over every checkout hook backend (`#[derive(ambassador::Delegate)]`) and `from_config`, which decides which ones run. Worktree create, first shell open and removal run that list through the `CheckoutHooks` trait. A new backend is one variant here and one line in `from_config`.
-- `alacritree_common::command_ext` exists because alacritree is a GUI-subsystem binary with no console, so every `git`/`gh`/`cmd` child needs a flag to avoid flashing a console window on Windows. Spawn children through this, not `Command` directly.
+## Integrations
 
-## Conventions specific to this fork
+Integrations such as version control, forges, multiplexers, tasks and checkout hooks each follow one shape:
 
-- Mirror upstream alacritty wherever possible. Before implementing input handling, config parsing, terminal behavior, key bindings, clipboard, scrolling, selection, or anything else that alacritty already solves, look at how `alacritty/` does it and follow the same approach. This fork swaps the renderer (egui instead of winit/OpenGL) but should otherwise behave like alacritty. Divergence is a last resort, not the default, and should be justified in a comment when unavoidable.
-- Two TOML files: `alacritty.toml` (shared with the alacritty terminal: palette, cursor, scrolling, shell, key bindings) and `alacritree.toml` (alacritree-only options under `[ui]` and `[workspace]`). When adding a config field, decide whether it belongs in the shared file or the alacritree-only file, and document it with a doc comment on the relevant `Raw*` struct in `config.rs`, or in the integration crate that owns the section. Those doc comments are the hover text the published JSON Schema carries. Regenerate the schema afterwards with `ALACRITREE_UPDATE_SCHEMA=1 cargo test -p alacritree --test config_schema`; the test fails the build while `schema/alacritree-config.json` or `docs/config-reference.md`, which is rendered from it, is stale.
-- Schema defaults: a config key's default lives only in its `Raw*` type's `Default` impl under `#[serde(default)]`, which the schema publishes, and a key with no fixed value goes in `alacritree/tests/schema-defaults-allowlist.txt`. Docs and doc comments say what a setting does, never its default.
-- Sessions outlive workspace switches. Don't introduce code that drops a `Session` just because it isn't visible.
-- `EventProxy::send_event` calls `request_repaint`, which is what wakes the egui loop on PTY output. Anything that produces terminal events on a background thread must go through an `EventProxy` (or otherwise call `request_repaint`) or it will appear to hang until the next input event.
-- Logs use the `log` crate. `egui_winit::clipboard=error` is filtered down by default in `main.rs` because cold X11 clipboard probes warn noisily; keep that filter unless you have a reason to remove it.
-- Comments in `alacritree/` follow the "explain the *why*, not the *what*" pattern already in the file headers (e.g. `state.rs`, `config.rs`, `projects.rs`). Match that style: short, reason-giving, no rote restatements of the code.
-- Always follow clean code practices: clear naming, small focused functions, no dead code, no premature abstractions. Never add useless comments (rote what-restatements, "added by X", task references), and never remove existing comments unless they are demonstrably wrong or made obsolete by the change you are making.
-- Integration traits are `#[ambassador::delegatable_trait]` and the app dispatches through a `#[derive(Delegate)]` enum. Not `enum_dispatch`, which cannot link a trait and an enum in different crates, and not `Box<dyn>`. Trait signatures name types by absolute path, because ambassador copies them into the crate that derives. Closed sets of names use strum derives.
-- Errors are `thiserror` types, not `String`, so a caller can match on a variant instead of a message and the underlying `io::Error` or exit status travels as the source. An error becomes text only where it is shown: the error dialog, a CLI line, or an IPC reply, whose wire format carries a refusal as a string (`IpcResult`).
-- A config section belongs to the crate of the integration it configures. The app's `RawIntegrations` names it with one field.
-- Always use [Conventional Commits](https://www.conventionalcommits.org/) for commit messages (`feat:`, `fix:`, `refactor:`, `docs:`, `chore:`, etc., with an optional scope like `feat(sidebar):`). Keep the subject line imperative and under ~72 chars.
+- One crate per integration type holds the trait, shared models, a `thiserror` error type and a test fake (`alacritree_vcs`, `alacritree_multiplexer`, ...). One crate per backend implements it (`alacritree_git`, `alacritree_zellij`, ...). Only the `alacritree` app depends on backend crates.
+- The trait is `#[ambassador::delegatable_trait]` and the app dispatches through a `#[derive(ambassador::Delegate)]` enum. `enum_dispatch` cannot link a trait and an enum in different crates, and `Box<dyn>` is not used. Trait signatures name types by absolute path, because ambassador copies them into the deriving crate. Closed sets of names use strum derives.
+- A backend's config section lives in its crate. The app's `RawIntegrations` names it with one field.
+
+## Config
+
+`config.rs` loads `alacritty.toml` and deep-merges `alacritree.toml` over it with alacritty's semantics: arrays concatenate, tables merge, primitives replace. So `[[keyboard.bindings]]` in `alacritree.toml` adds to the upstream bindings.
+
+To add a config key:
+
+1. Put it in `alacritty.toml` when alacritty itself reads it, and in `alacritree.toml` otherwise.
+2. Document it with a doc comment on its `Raw*` struct, in `config.rs` or in the integration crate that owns the section. The comment becomes the JSON Schema's hover text and says what the setting does, never its default.
+3. Set its default only in the `Raw*` type's `Default` impl under `#[serde(default)]`. A key with no fixed default goes in `alacritree/tests/schema-defaults-allowlist.txt`.
+4. Regenerate the schema. The key is done when the plain `config_schema` test passes, since it fails while `schema/alacritree-config.json` or `docs/config-reference.md` is stale.
+
+```sh
+ALACRITREE_UPDATE_SCHEMA=1 cargo test -p alacritree --test config_schema
+```
+
+## Conventions
+
+- Mirror upstream alacritty. Before implementing input, config parsing, terminal behavior, key bindings, clipboard, scrolling or selection, read how `alacritty/` does it and follow that. This fork swaps the renderer and otherwise behaves like alacritty. Justify an unavoidable divergence in a comment.
+- Errors are `thiserror` types, so a caller matches on a variant and the source `io::Error` or exit status travels with it. An error becomes text only where it is shown: the error dialog, a CLI line, or an IPC reply.
+- Comments explain why, briefly, in the style of the existing module headers. Keep existing comments unless the change makes them wrong.
+- Commits follow [Conventional Commits](https://www.conventionalcommits.org/) with an optional scope (`feat(sidebar):`), imperative subject under about 72 characters.
