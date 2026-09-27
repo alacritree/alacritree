@@ -16,23 +16,15 @@ Minimalist approach, with the terminal at the center:
 
 - **Worktree management.** The sidebar lists projects and their worktrees, and one click opens a shell in one. A new worktree gets a copy of the project's AI assistant configs, such as `CLAUDE.md`, `AGENTS.md` and `.cursor/`.
 - **Sessions per workspace.** Each worktree keeps its own terminal sessions. Switching worktrees leaves them running, scrollback and all.
-- **Git status panel.** The right sidebar shows the branch, staged and unstaged files, and the changes against the base branch, refreshed in the background. With [`gh`][gh] the base is the open PR's base branch.
-- **Branch diffs.** Clicking a file opens its diff in [Delta], in [tuicr] for a review whose comments agents can read, or in a command of your own.
+- **Git status panel.** The right sidebar shows the branch, staged and unstaged files, and the changes against the base branch, refreshed in the background. Clicking a file opens its diff, in [Delta] by default.
 - **Workspace scratchpads.** `Ctrl+Backtick` opens a minimal Markdown editor with one file per workspace. It saves every change, and agents read it over MCP.
-- **Task lists.** An opt-in tab shows the workspace's [taskwarrior] lists, the same ones its agents write with `task`.
-- **Multiplexer panes.** Agents running under [herdr] appear in the sidebar with their status, and [zellij] panes can too. Opening a row attaches a session to the pane.
-- **Checkout hooks.** Commands of your own run when a worktree is created, opened or removed. Doppler scopes follow the main checkout into every worktree.
+- **Integrations.** Alacritree works with other diff viewers, task stores, multiplexers such as herdr and zellij, and checkout hooks. [`docs/integrations.md`](docs/integrations.md) lists them.
 - **Scriptable.** An MCP server and a CLI create worktrees, open sessions, type into them and read their screens from outside the window.
 
 No Chromium, no bundled agents, no telemetry. No company behind it, and there never will be.
 
 [Alacritty]: https://github.com/alacritty/alacritty
 [Delta]: https://github.com/dandavison/delta
-[gh]: https://cli.github.com
-[tuicr]: https://github.com/agavra/tuicr
-[taskwarrior]: https://taskwarrior.org
-[herdr]: https://github.com/herdrdev/herdr
-[zellij]: https://zellij.dev
 
 ## Screenshots
 
@@ -180,6 +172,7 @@ It exits non-zero only when something is broken. A missing optional tool is a wa
 ## Documentation
 
 - [`docs/alacritree.md`](docs/alacritree.md) is the full feature reference: workspaces and sessions, the project and worktree sidebar, checkout hooks, task lists, herdr agents, the git status panel, the terminal grid, the two-file config model, the MCP server, and how Alacritree compares with other tools in the space.
+- [`docs/integrations.md`](docs/integrations.md) lists the tools Alacritree integrates with, grouped by type, with links to each one's config and behavior.
 - [`docs/config-reference.md`](docs/config-reference.md) lists every config key with its type, default and effect. The doc comments that produce the JSON Schema produce it too, so the two always agree.
 - [`docs/keyboard-shortcuts.md`](docs/keyboard-shortcuts.md) lists every key binding the app understands, the `action = "..."` values `[[keyboard.bindings]]` accepts, and which Alacritty actions are intentionally not wired up.
 - [`docs/features.md`](docs/features.md) is upstream Alacritty's feature overview, covering vi mode, search, hints and selection expansion. Alacritree does not implement all of it yet.
