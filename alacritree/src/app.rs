@@ -139,6 +139,8 @@ struct Theme {
     /// historical 11.25-logical-pixel baseline so unmodified config keeps the
     /// existing layout proportions.
     ui_scale: f32,
+    /// Logical-pixel size for the scratchpad editor's text.
+    scratchpad_font: f32,
     focus_outline: FocusOutlineTheme,
     /// Per-site path abbreviation, so free-standing row painters can spell a
     /// path without taking a `&Config`.
@@ -196,6 +198,7 @@ impl Theme {
         let editor_hint = blend_toward(editor_text, terminal_bg, 0.55);
         let error = rgb_to_color32(config.palette.normal[1]);
         let (font_normal, font_heading) = ui_text_px(&config.font, &config.ui_font);
+        let ui_scale = font_normal / 11.25;
         Self {
             terminal_bg,
             sidebar_bg,
@@ -224,7 +227,11 @@ impl Theme {
             status_indicators: config.ui.status_indicators,
             font_heading,
             font_normal,
-            ui_scale: font_normal / 11.25,
+            ui_scale,
+            scratchpad_font: config
+                .font
+                .scratchpad_size
+                .map_or(20.0 * ui_scale, |pt| pt * 96.0 / 72.0),
             focus_outline: FocusOutlineTheme {
                 sidebar: config.ui.focus_outline.sidebar,
                 terminal: config.ui.focus_outline.terminal,
@@ -3330,6 +3337,7 @@ impl AlacritreeApp {
                         editor,
                         allow_focus,
                         theme.ui_scale,
+                        theme.scratchpad_font,
                         editor_text,
                         editor_hint,
                         editor_error,
@@ -7813,6 +7821,25 @@ mod tests {
         assert_eq!(theme.path_style.git_rows, PathStyle::Fish);
         assert_eq!(theme.path_style.git_header, PathStyle::Full);
         assert!(theme.path_style.filename.bold);
+    }
+
+    #[test]
+    fn scratchpad_font_derives_from_the_ui_scale_when_unset() {
+        let theme = Theme::from_config(&Config::default());
+        assert_eq!(theme.scratchpad_font, 20.0 * theme.ui_scale);
+    }
+
+    #[test]
+    fn scratchpad_size_sets_only_the_scratchpad_font() {
+        let default_theme = Theme::from_config(&Config::default());
+        let mut config = Config::default();
+        config.font.scratchpad_size = Some(12.0);
+
+        let theme = Theme::from_config(&config);
+        assert_eq!(theme.scratchpad_font, 16.0); // 12 pt × 96/72
+        assert_eq!(theme.ui_scale, default_theme.ui_scale);
+        assert_eq!(theme.font_normal, default_theme.font_normal);
+        assert_eq!(theme.font_heading, default_theme.font_heading);
     }
 
     /// With no override, `attention` reads the palette's yellow slot; a

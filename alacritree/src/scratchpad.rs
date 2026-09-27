@@ -106,13 +106,13 @@ pub(crate) fn show_editor(
     editor: &mut Editor,
     allow_focus: bool,
     ui_scale: f32,
+    font_size: f32,
     text_color: Color32,
     hint_color: Color32,
     error_color: Color32,
 ) -> Response {
     let available = ui.available_size();
     let padding = 16.0 * ui_scale;
-    let font_size = 20.0 * ui_scale;
     let editor_id = editor_id(session_id);
     if !allow_focus {
         ui.memory_mut(|memory| memory.surrender_focus(editor_id));
@@ -337,6 +337,7 @@ mod tests {
                         &mut editor,
                         true,
                         1.0,
+                        20.0,
                         Color32::WHITE,
                         Color32::GRAY,
                         Color32::RED,
