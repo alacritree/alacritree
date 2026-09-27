@@ -17,6 +17,8 @@ use crate::config::IntegrationsConfig;
 pub(crate) enum Backend {
     Taskwarrior(Taskwarrior),
     Command(TaskCommand),
+    #[cfg(test)]
+    Fake(alacritree_tasks::fake::FakeBackend),
 }
 
 impl Backend {

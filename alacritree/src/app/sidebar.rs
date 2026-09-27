@@ -226,9 +226,18 @@ impl AlacritreeApp {
 
     pub(super) fn show_project_sidebar(&mut self, ctx: &Context, panel_frame: Frame) -> egui::Rect {
         let view = self.project_sidebar_view(ctx);
+        let docks_tasks = self.docks_tasks(TasksSidebar::Left);
         let paint = SidebarPaint { view: &view, icons: &self.icons };
         let theme = view.theme;
         let mut requests = SidebarRequests::default();
+        let tasks = match docks_tasks {
+            true => tasks_panel::sidebar_view(
+                &mut self.sessions,
+                &mut self.tasks_panel,
+                &self.current_workspace,
+            ),
+            false => None,
+        };
         let panel_resp = SidePanel::left("left_sidebar")
             .resizable(true)
             .default_width(240.0 * theme.ui_scale)
@@ -239,6 +248,9 @@ impl AlacritreeApp {
                 // default I-beam-and-select on labels is the wrong affordance.
                 ui.style_mut().interaction.selectable_labels = false;
                 apply_scrollbar_style(ui, self.config.ui.scrollbar);
+                if let Some(tasks) = tasks {
+                    tasks_panel::show(ui, tasks, &theme, TasksSidebar::Left);
+                }
                 ui.horizontal(|ui| {
                     panel_header_filter_ui(
                         ui,
@@ -297,6 +309,7 @@ impl AlacritreeApp {
             });
 
         self.apply_sidebar_edits(ctx, &mut requests);
+        self.sync_task_prefs();
         let workspace_activated = self.apply_sidebar_activations(ctx, &mut requests);
         self.poll_worktree_liveness(ctx, view.probing, &requests.drawn_worktrees);
         if self.config.ui.sidebar_click_focus {

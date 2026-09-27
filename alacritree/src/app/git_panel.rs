@@ -419,6 +419,14 @@ impl AlacritreeApp {
         let view = self.git_sidebar_view(ctx);
         let theme = self.theme;
         let mut requests = GitSidebarRequests::default();
+        let tasks = match self.docks_tasks(TasksSidebar::Right) {
+            true => tasks_panel::sidebar_view(
+                &mut self.sessions,
+                &mut self.tasks_panel,
+                &self.current_workspace,
+            ),
+            false => None,
+        };
         let panel_resp = SidePanel::right("right_sidebar")
             .resizable(true)
             .default_width(300.0 * theme.ui_scale)
@@ -429,6 +437,9 @@ impl AlacritreeApp {
                 // default I-beam-and-select on labels is the wrong affordance.
                 ui.style_mut().interaction.selectable_labels = false;
                 apply_scrollbar_style(ui, self.config.ui.scrollbar);
+                if let Some(tasks) = tasks {
+                    tasks_panel::show(ui, tasks, &theme, TasksSidebar::Right);
+                }
                 ui.horizontal(|ui| {
                     panel_header_filter_ui(
                         ui,
@@ -460,6 +471,7 @@ impl AlacritreeApp {
                 }
             });
         self.apply_git_sidebar_requests(ctx, requests);
+        self.sync_task_prefs();
         if self.config.ui.sidebar_click_focus
             && self.focus != PaneFocus::GitSidebar
             && pressed_on_panel(ctx, &panel_resp.response)

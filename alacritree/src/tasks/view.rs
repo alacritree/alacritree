@@ -19,7 +19,7 @@ use alacritree_common::jobs::{self, Job, Priority};
 use alacritree_common::side::Side;
 use alacritree_common::wsl;
 use alacritree_tasks::scope::{GLOBAL, Place, node};
-use alacritree_tasks::tree::{self, Landing, Row, Section};
+use alacritree_tasks::tree::{self, Landing, Row, Section, SectionKind};
 use alacritree_tasks::{Edit, Filter, NodeMatch, Status, Task, TaskBackend, TaskError};
 
 use crate::bindings::{NamedAction, action};
@@ -30,7 +30,7 @@ use crate::tasks::backend::{self, Backend};
 use crate::tasks::facts;
 use crate::vcs::Vcs;
 
-const RELOAD_EVERY: Duration = Duration::from_secs(1);
+pub(crate) const RELOAD_EVERY: Duration = Duration::from_secs(1);
 const INDENT: f32 = 16.0;
 const CHEVRON: f32 = 12.0;
 
@@ -79,6 +79,16 @@ impl Scope {
     pub(crate) fn filter(&self) -> Filter {
         let repo = self.repo.iter().map(|repo| NodeMatch::Subtree(repo.clone()));
         Filter { nodes: repo.chain([NodeMatch::Exact(GLOBAL.to_string())]).collect() }
+    }
+
+    /// `node` without the workspace or repository it sits under, so a
+    /// session reads as its own name in a narrow panel.
+    fn short_name<'a>(&self, node: &'a str) -> &'a str {
+        [&self.workspace, &self.repo]
+            .into_iter()
+            .flatten()
+            .find_map(|parent| node.strip_prefix(parent.as_str())?.strip_prefix('.'))
+            .unwrap_or(node)
     }
 
     /// The listing's file under the cache directory. Two scopes that differ
@@ -424,6 +434,28 @@ impl TasksView {
         sections
     }
 
+    /// The sections the sidebar shows: those holding tasks, without the
+    /// global list once the workspace is in a repository, since that list
+    /// says nothing about the checkout.
+    pub(crate) fn sidebar_sections(&self) -> Vec<Section> {
+        let in_repo = self.scope.repo.is_some();
+        let mut sections = self.sections();
+        sections.retain(|s| !s.rows.is_empty() && !(in_repo && s.kind == SectionKind::Global));
+        sections
+    }
+
+    pub(crate) fn short_name<'a>(&self, node: &'a str) -> &'a str {
+        self.scope.short_name(node)
+    }
+
+    pub(crate) fn is_collapsed(&self, node: &str) -> bool {
+        self.prefs.collapsed.contains(node)
+    }
+
+    pub(crate) fn load_error(&self) -> Option<&str> {
+        self.load_error.as_deref()
+    }
+
     pub(crate) fn plain_lines(&self) -> Vec<String> {
         let mut lines = Vec::new();
         for section in self.sections() {
@@ -550,7 +582,7 @@ impl TasksView {
         self.write(Some(id.to_string()), edits);
     }
 
-    fn toggle_collapsed(&mut self, node: &str) {
+    pub(crate) fn toggle_collapsed(&mut self, node: &str) {
         let collapsed = !self.prefs.collapsed.contains(node);
         let change = PrefChange::Collapsed { node: node.to_string(), collapsed };
         self.apply_pref(&change);
@@ -650,7 +682,7 @@ impl TasksView {
 
     /// Spawns queued writes, drains finished jobs, and reloads after any
     /// write or once a second.
-    fn tick(&mut self) {
+    pub(crate) fn tick(&mut self) {
         if let Some(place) = self.resolving.as_mut().and_then(|r| r.poll(Instant::now())) {
             self.resolving = None;
             self.scope.adopt(&place);
@@ -1098,7 +1130,7 @@ fn glyph_size(ui: &Ui) -> Vec2 {
 
 /// A chevron centred on `center`, pointing down when `open` and right
 /// otherwise.
-fn paint_chevron(ui: &Ui, center: egui::Pos2, open: bool, stroke: Stroke) {
+pub(crate) fn paint_chevron(ui: &Ui, center: egui::Pos2, open: bool, stroke: Stroke) {
     let r = CHEVRON / 4.0;
     let points = if open {
         vec![center + vec2(-r, -r / 2.0), center + vec2(0.0, r / 2.0), center + vec2(r, -r / 2.0)]
@@ -1533,6 +1565,44 @@ mod tests {
             NodeMatch::Subtree("r".into()),
             NodeMatch::Exact(GLOBAL.into())
         ]);
+    }
+
+    fn in_workspace(tasks: Vec<Task>) -> TasksView {
+        let scope =
+            Scope { side: Side::Native, repo: Some("r".into()), workspace: Some("r.feat".into()) };
+        let backend = Backend::from_config(&Default::default());
+        let mut view = TasksView::new(backend, scope, None, Vec::new(), Prefs::default(), None);
+        view.tasks = tasks;
+        view
+    }
+
+    #[test]
+    fn the_sidebar_shows_the_checkout_sections_that_hold_tasks() {
+        let task = alacritree_tasks::fake::task;
+        let view = in_workspace(vec![
+            task("errand", GLOBAL),
+            task("plan", "r.feat"),
+            task("step", "r.feat.claude-1"),
+        ]);
+        let nodes: Vec<String> = view.sidebar_sections().into_iter().map(|s| s.node).collect();
+        assert_eq!(nodes, ["r.feat", "r.feat.claude-1"], "no global list, no empty project");
+    }
+
+    #[test]
+    fn a_section_is_named_below_the_workspace_it_sits_in() {
+        let view = in_workspace(Vec::new());
+        assert_eq!(view.short_name("r"), "r");
+        assert_eq!(view.short_name("r.feat"), "feat");
+        assert_eq!(view.short_name("r.feat.claude-1"), "claude-1");
+        assert_eq!(view.short_name(GLOBAL), GLOBAL);
+    }
+
+    #[test]
+    fn home_shows_the_global_list_in_the_sidebar() {
+        let mut view = view_with(Vec::new(), None);
+        view.tasks = vec![alacritree_tasks::fake::task("errand", GLOBAL)];
+        let nodes: Vec<String> = view.sidebar_sections().into_iter().map(|s| s.node).collect();
+        assert_eq!(nodes, [GLOBAL]);
     }
 
     #[test]

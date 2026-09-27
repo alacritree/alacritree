@@ -591,7 +591,22 @@
       "chevron_thickness": 1.5,
       "hidden_count": null,
       "section_chevron": null,
-      "section_chevron_thickness": 2.5
+      "section_chevron_thickness": 2.5,
+      "sidebar": "left",
+      "sidebar_colors": {
+        "bar": null,
+        "bar_background": null,
+        "chevron": null,
+        "completed": null,
+        "completed_box": null,
+        "count": null,
+        "pending": null,
+        "pending_box": null,
+        "section": null,
+        "started": null,
+        "started_box": null,
+        "tick": null
+      }
     },
     "upstream_status": false,
     "vsync": true,

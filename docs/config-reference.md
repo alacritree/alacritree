@@ -584,7 +584,7 @@ Whether session rows can be dragged, and how far a reorder may carry a session.
 
 ### `[ui.tasks]`
 
-How the tasks tab draws.
+How the tasks tab draws, and which sidebar docks the tasks.
 
 - `active_background` (string): Background behind a started task's row. Unset is a faint tint of the tab's text color over the pane; set it to the terminal background to leave started rows unfilled.
 - `active_marker` (string): The chevron marking a started task. Unset uses the tab's text color.
@@ -595,6 +595,7 @@ How the tasks tab draws.
 - `hidden_count` (string): The `+N` count of sub-tasks a collapsed task hides. Unset uses the tab's hint color.
 - `section_chevron` (string): The chevron that folds a whole section. Unset uses the tab's text color.
 - `section_chevron_thickness` (number, default `2.5`): Stroke width of the section chevron, in points.
+- `sidebar` ("left" | "right" | "off", default `"left"`): Where the current workspace's tasks show outside the tab: docked under the projects ("left"), under the git status ("right"), or nowhere ("off"). Needs a task backend, as the tab does.
 
 ### `[ui.tasks.add_button]`
 
@@ -605,6 +606,23 @@ The `+ add a task` button under each section.
 - `hover_text` (string): Label color under the pointer and while pressed. Unset uses the tab's text color.
 - `pressed_fill` (string): Background while pressed. Unset is a stronger accent tint again.
 - `text` (string): Label color. Unset uses the sidebar accent.
+
+### `[ui.tasks.sidebar_colors]`
+
+The tasks docked in a sidebar.
+
+- `bar` (string): The done part of a section's progress bar. Unset uses the palette's green.
+- `bar_background` (string): The rest of a section's progress bar. Unset is the sidebar background, lightened.
+- `chevron` (string): The chevron that folds a section. Unset uses the sidebar's muted text color.
+- `completed` (string): A completed task's text. Unset uses the sidebar's muted text color.
+- `completed_box` (string): The box before a completed task. Unset uses the palette's green.
+- `count` (string): A section's `done/total` count. Unset uses the sidebar's muted text color.
+- `pending` (string): A pending task's text. Unset uses the sidebar's dim text color.
+- `pending_box` (string): The empty box before a pending task. Unset uses the sidebar's muted text color.
+- `section` (string): A section's name. Unset uses the sidebar text color.
+- `started` (string): A started task's text. Unset uses the sidebar text color.
+- `started_box` (string): The filled box before a started task. Unset uses the sidebar accent.
+- `tick` (string): The tick inside a completed task's box. Unset uses the sidebar background.
 
 ### `[ui.wsl]`
 

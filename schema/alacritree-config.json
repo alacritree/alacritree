@@ -1723,6 +1723,107 @@
       },
       "type": "object"
     },
+    "RawTasksSidebarColors": {
+      "properties": {
+        "bar": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Color"
+            }
+          ],
+          "description": "The done part of a section's progress bar. Unset uses the palette's\ngreen."
+        },
+        "bar_background": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Color"
+            }
+          ],
+          "description": "The rest of a section's progress bar. Unset is the sidebar background,\nlightened."
+        },
+        "chevron": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Color"
+            }
+          ],
+          "description": "The chevron that folds a section. Unset uses the sidebar's muted text\ncolor."
+        },
+        "completed": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Color"
+            }
+          ],
+          "description": "A completed task's text. Unset uses the sidebar's muted text color."
+        },
+        "completed_box": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Color"
+            }
+          ],
+          "description": "The box before a completed task. Unset uses the palette's green."
+        },
+        "count": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Color"
+            }
+          ],
+          "description": "A section's `done/total` count. Unset uses the sidebar's muted text\ncolor."
+        },
+        "pending": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Color"
+            }
+          ],
+          "description": "A pending task's text. Unset uses the sidebar's dim text color."
+        },
+        "pending_box": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Color"
+            }
+          ],
+          "description": "The empty box before a pending task. Unset uses the sidebar's muted\ntext color."
+        },
+        "section": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Color"
+            }
+          ],
+          "description": "A section's name. Unset uses the sidebar text color."
+        },
+        "started": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Color"
+            }
+          ],
+          "description": "A started task's text. Unset uses the sidebar text color."
+        },
+        "started_box": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Color"
+            }
+          ],
+          "description": "The filled box before a started task. Unset uses the sidebar accent."
+        },
+        "tick": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Color"
+            }
+          ],
+          "description": "The tick inside a completed task's box. Unset uses the sidebar\nbackground."
+        }
+      },
+      "type": "object"
+    },
     "RawTaskwarrior": {
       "properties": {
         "enabled": {
@@ -2086,7 +2187,7 @@
         },
         "tasks": {
           "$ref": "#/$defs/RawUiTasks",
-          "description": "How the tasks tab draws."
+          "description": "How the tasks tab draws, and which sidebar docks the tasks."
         },
         "upstream_status": {
           "default": false,
@@ -2316,6 +2417,20 @@
           "description": "Stroke width of the section chevron, in points.",
           "format": "float",
           "type": "number"
+        },
+        "sidebar": {
+          "default": "left",
+          "description": "Where the current workspace's tasks show outside the tab: docked\nunder the projects (\"left\"), under the git status (\"right\"), or\nnowhere (\"off\"). Needs a task backend, as the tab does.",
+          "enum": [
+            "left",
+            "right",
+            "off"
+          ],
+          "type": "string"
+        },
+        "sidebar_colors": {
+          "$ref": "#/$defs/RawTasksSidebarColors",
+          "description": "The tasks docked in a sidebar."
         }
       },
       "type": "object"

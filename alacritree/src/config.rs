@@ -685,6 +685,20 @@ pub enum ScrollbarStyle {
     Solid,
 }
 
+/// Which sidebar docks the workspace's tasks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, EnumIter, IntoStaticStr)]
+#[serde(into = "&'static str")]
+#[strum(serialize_all = "snake_case")]
+pub enum TasksSidebar {
+    /// Under the projects.
+    #[default]
+    Left,
+    /// Under the git status.
+    Right,
+    /// Neither, and no sidebar lists tasks.
+    Off,
+}
+
 fn text_emphasis(raw: &RawTextEmphasis) -> TextEmphasis {
     TextEmphasis { color: raw.color.map(|v| v.0), bold: raw.bold, italic: raw.italic }
 }
@@ -1124,8 +1138,9 @@ impl Default for FocusOutline {
     }
 }
 
-/// `[ui.tasks]`: how the tasks tab draws. Each unset color falls back to
-/// one derived from the terminal palette at resolution time.
+/// `[ui.tasks]`: how the tasks tab draws, and where and how a sidebar docks
+/// the workspace's tasks. Each unset color falls back to one derived from
+/// the terminal palette at resolution time.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
 pub struct TasksUi {
     pub chevron: Option<Rgb>,
@@ -1138,6 +1153,26 @@ pub struct TasksUi {
     pub active_marker_thickness: f32,
     pub active_background: Option<Rgb>,
     pub add_button: TasksButton,
+    pub sidebar: TasksSidebar,
+    pub sidebar_colors: TasksSidebarColors,
+}
+
+/// `[ui.tasks.sidebar_colors]`. Each unset color falls back to one derived
+/// from the sidebar's colors at resolution time.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
+pub struct TasksSidebarColors {
+    pub section: Option<Rgb>,
+    pub count: Option<Rgb>,
+    pub chevron: Option<Rgb>,
+    pub bar: Option<Rgb>,
+    pub bar_background: Option<Rgb>,
+    pub pending: Option<Rgb>,
+    pub started: Option<Rgb>,
+    pub completed: Option<Rgb>,
+    pub pending_box: Option<Rgb>,
+    pub started_box: Option<Rgb>,
+    pub completed_box: Option<Rgb>,
+    pub tick: Option<Rgb>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
@@ -2852,6 +2887,12 @@ struct RawUiTasks {
     active_background: Option<RgbStr>,
     /// The `+ add a task` button under each section.
     add_button: RawTasksButton,
+    /// Where the current workspace's tasks show outside the tab: docked
+    /// under the projects ("left"), under the git status ("right"), or
+    /// nowhere ("off"). Needs a task backend, as the tab does.
+    sidebar: ClosedSet<TasksSidebar>,
+    /// The tasks docked in a sidebar.
+    sidebar_colors: RawTasksSidebarColors,
 }
 
 impl Default for RawUiTasks {
@@ -2867,6 +2908,8 @@ impl Default for RawUiTasks {
             active_marker_thickness: 2.5,
             active_background: None,
             add_button: RawTasksButton::default(),
+            sidebar: ClosedSet::default(),
+            sidebar_colors: RawTasksSidebarColors::default(),
         }
     }
 }
@@ -2875,7 +2918,23 @@ impl RawUiTasks {
     fn resolve(&self) -> TasksUi {
         let rgb = |c: &Option<RgbStr>| c.as_ref().map(|v| v.0);
         let b = &self.add_button;
+        let s = &self.sidebar_colors;
         TasksUi {
+            sidebar: self.sidebar.get(),
+            sidebar_colors: TasksSidebarColors {
+                section: rgb(&s.section),
+                count: rgb(&s.count),
+                chevron: rgb(&s.chevron),
+                bar: rgb(&s.bar),
+                bar_background: rgb(&s.bar_background),
+                pending: rgb(&s.pending),
+                started: rgb(&s.started),
+                completed: rgb(&s.completed),
+                pending_box: rgb(&s.pending_box),
+                started_box: rgb(&s.started_box),
+                completed_box: rgb(&s.completed_box),
+                tick: rgb(&s.tick),
+            },
             chevron: rgb(&self.chevron),
             chevron_hover: rgb(&self.chevron_hover),
             chevron_thickness: self.chevron_thickness.max(0.5),
@@ -2910,6 +2969,41 @@ struct RawTasksButton {
     hover_fill: Option<RgbStr>,
     /// Background while pressed. Unset is a stronger accent tint again.
     pressed_fill: Option<RgbStr>,
+}
+
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[serde(default)]
+struct RawTasksSidebarColors {
+    /// A section's name. Unset uses the sidebar text color.
+    section: Option<RgbStr>,
+    /// A section's `done/total` count. Unset uses the sidebar's muted text
+    /// color.
+    count: Option<RgbStr>,
+    /// The chevron that folds a section. Unset uses the sidebar's muted text
+    /// color.
+    chevron: Option<RgbStr>,
+    /// The done part of a section's progress bar. Unset uses the palette's
+    /// green.
+    bar: Option<RgbStr>,
+    /// The rest of a section's progress bar. Unset is the sidebar background,
+    /// lightened.
+    bar_background: Option<RgbStr>,
+    /// A pending task's text. Unset uses the sidebar's dim text color.
+    pending: Option<RgbStr>,
+    /// A started task's text. Unset uses the sidebar text color.
+    started: Option<RgbStr>,
+    /// A completed task's text. Unset uses the sidebar's muted text color.
+    completed: Option<RgbStr>,
+    /// The empty box before a pending task. Unset uses the sidebar's muted
+    /// text color.
+    pending_box: Option<RgbStr>,
+    /// The filled box before a started task. Unset uses the sidebar accent.
+    started_box: Option<RgbStr>,
+    /// The box before a completed task. Unset uses the palette's green.
+    completed_box: Option<RgbStr>,
+    /// The tick inside a completed task's box. Unset uses the sidebar
+    /// background.
+    tick: Option<RgbStr>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -3162,7 +3256,7 @@ struct RawUi {
     cursor: RawUiCursor,
     /// Outline drawn around whichever pane holds keyboard focus.
     focus_outline: RawFocusOutline,
-    /// How the tasks tab draws.
+    /// How the tasks tab draws, and which sidebar docks the tasks.
     tasks: RawUiTasks,
     /// Clicking a sidebar moves keyboard focus to it.
     sidebar_click_focus: bool,
@@ -4072,6 +4166,7 @@ show_panes = true
         closed_set_keeps_its_word::<SearchDepth>();
         closed_set_keeps_its_word::<SidebarTooltips>();
         closed_set_keeps_its_word::<ScrollbarStyle>();
+        closed_set_keeps_its_word::<TasksSidebar>();
         closed_set_keeps_its_word::<crate::path_style::PathStyle>();
     }
 
@@ -5063,6 +5158,23 @@ program = "second"
         assert_eq!(tasks.chevron, Some(Rgb { r: 0x89, g: 0xb4, b: 0xfa }));
         assert_eq!(tasks.chevron_thickness, 0.5);
         assert_eq!(tasks.add_button.hover_fill, Some(Rgb { r: 0x31, g: 0x32, b: 0x44 }));
+    }
+
+    #[test]
+    fn the_sidebar_tasks_dock_left_until_moved_or_turned_off() {
+        assert_eq!(ui_from_toml("").tasks.sidebar, TasksSidebar::Left);
+        for (word, side) in [("right", TasksSidebar::Right), ("off", TasksSidebar::Off)] {
+            let toml = format!("[ui.tasks]\nsidebar = \"{word}\"");
+            assert_eq!(ui_from_toml(&toml).tasks.sidebar, side);
+        }
+    }
+
+    #[test]
+    fn the_sidebar_tasks_parse_their_colors() {
+        let colors =
+            ui_from_toml("[ui.tasks.sidebar_colors]\nbar = \"#a6e3a1\"").tasks.sidebar_colors;
+        assert_eq!(colors.bar, Some(Rgb { r: 0xa6, g: 0xe3, b: 0xa1 }));
+        assert_eq!(colors.tick, None);
     }
 
     #[test]

@@ -32,8 +32,8 @@ use crate::config::{
     DEFAULT_UPSTREAM_DIVERGED_ICON, DEFAULT_UPSTREAM_GONE_ICON, DEFAULT_UPSTREAM_LEVEL_ICON,
     DEFAULT_UPSTREAM_UNTRACKED_ICON, DEFAULT_WORKTREE_ICON, DEFAULT_WORKTREE_MAIN_ICON, FontConfig,
     Icons, LastSessionClose, PathStyleConfig, ScrollAlign, ScrollbarStyle, SearchDepth,
-    SearchScope, SidebarFocus, SidebarTooltips, StatusIndicators, TextEmphasis, UiFont, UiTheme,
-    profile_command,
+    SearchScope, SidebarFocus, SidebarTooltips, StatusIndicators, TasksSidebar, TextEmphasis,
+    UiFont, UiTheme, profile_command,
 };
 use crate::crash_log::{self, ExitReason};
 use crate::forge::Forge;
@@ -71,6 +71,7 @@ mod palette;
 mod panes;
 mod session_list;
 mod sidebar;
+mod tasks_panel;
 mod widgets;
 
 pub(crate) use actions::{Action, ActionOrigin};
@@ -159,6 +160,7 @@ struct Theme {
     editor_text: Color32,
     editor_hint: Color32,
     tasks: crate::tasks::view::Style,
+    tasks_sidebar: tasks_panel::Colors,
     git: GitColors,
 }
 
@@ -197,16 +199,39 @@ impl Theme {
         let text_muted = blend_toward(text, sidebar_bg, 0.55);
         let editor_hint = blend_toward(editor_text, terminal_bg, 0.55);
         let error = rgb_to_color32(config.palette.normal[1]);
+        let ok = rgb_to_color32(config.palette.normal[2]);
+        let text_dim = blend_toward(text, sidebar_bg, 0.35);
+        let row_active_bg = lighten(sidebar_bg, 0.10);
         let (font_normal, font_heading) = ui_text_px(&config.font, &config.ui_font);
         let ui_scale = font_normal / 11.25;
+        let tasks_sidebar = {
+            let c = &config.ui.tasks.sidebar_colors;
+            let color = |set: Option<alacritty_terminal::vte::ansi::Rgb>, fallback| {
+                set.map_or(fallback, rgb_to_color32)
+            };
+            tasks_panel::Colors {
+                section: color(c.section, text),
+                count: color(c.count, text_muted),
+                chevron: color(c.chevron, text_muted),
+                bar: color(c.bar, ok),
+                bar_background: color(c.bar_background, row_active_bg),
+                pending: color(c.pending, text_dim),
+                started: color(c.started, text),
+                completed: color(c.completed, text_muted),
+                pending_box: color(c.pending_box, text_muted),
+                started_box: color(c.started_box, accent),
+                completed_box: color(c.completed_box, ok),
+                tick: color(c.tick, sidebar_bg),
+            }
+        };
         Self {
             terminal_bg,
             sidebar_bg,
             sidebar_border: border,
             row_hover_bg: lighten(sidebar_bg, 0.05),
-            row_active_bg: lighten(sidebar_bg, 0.10),
+            row_active_bg,
             text,
-            text_dim: blend_toward(text, sidebar_bg, 0.35),
+            text_dim,
             text_muted,
             accent,
             attention,
@@ -243,7 +268,7 @@ impl Theme {
             icon_tooltips: config.ui.icon_tooltips,
             scroll_align: egui_scroll_align(config.ui.sidebar_scroll_align),
             error,
-            ok: rgb_to_color32(config.palette.normal[2]),
+            ok,
             editor_text,
             editor_hint,
             tasks: tasks_style(
@@ -256,6 +281,7 @@ impl Theme {
                 terminal_bg,
                 config.font.tasks_size.map_or(font_heading, |pt| pt * 96.0 / 72.0),
             ),
+            tasks_sidebar,
             git: GitColors {
                 added: rgb_to_color32(config.palette.normal[2]),
                 modified: rgb_to_color32(config.palette.normal[3]),
@@ -439,6 +465,7 @@ pub struct AlacritreeApp {
     /// actually fires, so a change whose row renders nowhere is retried.
     last_followed: (WorkspaceKey, Option<SessionId>),
     git_panel: git_panel::GitPanel,
+    tasks_panel: Option<tasks_panel::TasksPanel>,
     sidebar_focus_state: focus::SidebarFocusState,
     /// `[ui] search_depth`: whether a projects-panel query also matches
     /// session titles and multiplexer pane names.  Not runtime-toggled.
@@ -588,6 +615,7 @@ impl AlacritreeApp {
                     .map(|b| (b.worktree.clone(), b.branch.clone()))
                     .collect(),
             ),
+            tasks_panel: None,
             sidebar_focus_state: focus::SidebarFocusState::new(config.ui.search_scope),
             search_depth: config.ui.search_depth,
             palette: CommandPalette::new(),
@@ -1192,28 +1220,32 @@ impl AlacritreeApp {
             }
             self.sessions.set_active(workspace, id);
         } else {
-            let (project, worktree) = self.project_and_worktree(&workspace);
-            let scope = crate::tasks::view::Scope::for_workspace(project, worktree);
             let session = Session::spawn_tasks(
                 ctx.clone(),
                 &self.config,
                 workspace.clone(),
                 TermSize::new(80, 24),
                 (8.0, 16.0),
-                crate::tasks::view::TasksView::new(
-                    crate::tasks::backend::Backend::from_config(&self.config.integrations),
-                    scope,
-                    worktree.map(|w| w.path.clone()),
-                    self.vcs_backends.clone(),
-                    crate::tasks::view::Prefs::from_state(&state::load()),
-                    crate::logdir::log_dir().map(|dir| dir.join("tasks")),
-                ),
+                self.new_tasks_view(&workspace),
             );
             let id = session.id;
             self.sessions.push(session);
             self.sessions.set_active(workspace, id);
         }
         self.focus_terminal();
+    }
+
+    /// Opens on the last listing cached for `ws`.
+    fn new_tasks_view(&self, ws: &WorkspaceKey) -> crate::tasks::view::TasksView {
+        let (project, worktree) = self.project_and_worktree(ws);
+        crate::tasks::view::TasksView::new(
+            crate::tasks::backend::Backend::from_config(&self.config.integrations),
+            crate::tasks::view::Scope::for_workspace(project, worktree),
+            worktree.map(|w| w.path.clone()),
+            self.vcs_backends.clone(),
+            crate::tasks::view::Prefs::from_state(&state::load()),
+            crate::logdir::log_dir().map(|dir| dir.join("tasks")),
+        )
     }
 
     /// Home has neither. A folder with no version control has a project but
@@ -1883,23 +1915,24 @@ impl AlacritreeApp {
         self.sessions[idx].tasks.as_mut()
     }
 
-    /// Persists what a tasks tab changed and hands it to the other tabs, so
-    /// every workspace folds the same sections.
-    fn sync_task_prefs(&mut self, from: SessionId) {
-        let Some(view) =
-            self.sessions.iter_mut().find(|s| s.id == from).and_then(|s| s.tasks.as_mut())
-        else {
-            return;
-        };
-        let changes = view.take_pref_changes();
+    /// Every tasks tab's view and the sidebar's own.
+    fn task_views(&mut self) -> impl Iterator<Item = &mut crate::tasks::view::TasksView> {
+        let sidebar = self.tasks_panel.as_mut().map(|p| &mut p.view);
+        self.sessions.iter_mut().filter_map(|s| s.tasks.as_mut()).chain(sidebar)
+    }
+
+    /// Persists what a tasks tab or the sidebar changed and hands it to every
+    /// view, so every workspace folds the same sections. Handing a change
+    /// back to the view that made it changes nothing.
+    fn sync_task_prefs(&mut self) {
+        let changes: Vec<_> = self.task_views().flat_map(|v| v.take_pref_changes()).collect();
         if changes.is_empty() {
             return;
         }
         for change in &changes {
             state::mutate(|s| change.persist(s));
         }
-        let others = self.sessions.iter_mut().filter(|s| s.id != from);
-        for view in others.filter_map(|s| s.tasks.as_mut()) {
+        for view in self.task_views() {
             changes.iter().for_each(|change| view.apply_pref(change));
         }
     }
@@ -3348,7 +3381,6 @@ impl AlacritreeApp {
                     )
                 } else if let Some(view) = session.tasks.as_mut() {
                     self.ime.clear();
-                    let id = session.id;
                     let response = crate::tasks::view::show(
                         ui,
                         view,
@@ -3356,7 +3388,7 @@ impl AlacritreeApp {
                         &self.shortcuts,
                         tasks_style,
                     );
-                    self.sync_task_prefs(id);
+                    self.sync_task_prefs();
                     response
                 } else {
                     let started = std::time::Instant::now();
@@ -6356,6 +6388,124 @@ mod tests {
 
         assert_eq!(app.sessions.active(&None), Some(watched));
         assert_eq!(app.sidebar.model.cursor(), Some(&SidebarRow::Session(watched)));
+    }
+
+    fn app_with_tasks_on() -> AlacritreeApp {
+        let mut app = test_app();
+        app.config.integrations.taskwarrior.enabled = true;
+        app
+    }
+
+    /// A view of home whose store holds `tasks`.
+    fn fake_tasks_view(tasks: Vec<alacritree_tasks::Task>) -> crate::tasks::view::TasksView {
+        crate::tasks::view::TasksView::new(
+            crate::tasks::backend::Backend::Fake(alacritree_tasks::fake::FakeBackend::with_tasks(
+                tasks,
+            )),
+            crate::tasks::view::Scope::for_workspace(None, None),
+            None,
+            Vec::new(),
+            crate::tasks::view::Prefs::default(),
+            None,
+        )
+    }
+
+    /// The texts of the sidebar on `side`, painted frame after frame until
+    /// `done` holds for them or ten seconds pass, since a listing lands from
+    /// the pool.
+    fn sidebar_texts_until(
+        app: &mut AlacritreeApp,
+        side: TasksSidebar,
+        done: impl Fn(&[String]) -> bool,
+    ) -> Vec<String> {
+        let ctx = egui::Context::default();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::Vec2::new(800.0, 600.0),
+                )),
+                ..Default::default()
+            };
+            let output = ctx.run(input, |ctx| match side {
+                TasksSidebar::Right => _ = app.show_git_sidebar(ctx, Frame::default()),
+                _ => _ = app.show_project_sidebar(ctx, Frame::default()),
+            });
+            let texts: Vec<String> =
+                painted_texts(&output.shapes).into_iter().map(|(text, _)| text).collect();
+            if done(&texts) || Instant::now() > deadline {
+                return texts;
+            }
+            std::thread::yield_now();
+        }
+    }
+
+    fn unscoped_task(id: &str) -> alacritree_tasks::Task {
+        alacritree_tasks::fake::task(id, alacritree_tasks::scope::GLOBAL)
+    }
+
+    fn shows(text: &str) -> impl Fn(&[String]) -> bool {
+        move |texts| texts.iter().any(|t| t == text)
+    }
+
+    #[test]
+    fn the_left_sidebar_shows_the_tasks_the_store_lists() {
+        let mut app = app_with_tasks_on();
+        let written = alacritree_tasks::Task {
+            status: alacritree_tasks::Status::Completed,
+            ..unscoped_task("write the panel")
+        };
+        let view = fake_tasks_view(vec![written, unscoped_task("test it")]);
+        app.tasks_panel = Some(tasks_panel::TasksPanel { workspace: None, view });
+
+        let texts = sidebar_texts_until(&mut app, TasksSidebar::Left, shows("test it"));
+        for expected in ["Tasks", "global", "1/2", "write the panel", "test it"] {
+            assert!(texts.iter().any(|t| t == expected), "{expected:?} not in {texts:?}");
+        }
+    }
+
+    #[test]
+    fn the_sidebar_draws_the_open_tasks_tab() {
+        let mut app = app_with_tasks_on();
+        let own = fake_tasks_view(vec![unscoped_task("sidebar listing")]);
+        app.tasks_panel = Some(tasks_panel::TasksPanel { workspace: None, view: own });
+        app.sessions.push(Session::spawn_tasks(
+            Context::default(),
+            &app.config,
+            None,
+            TermSize::new(80, 24),
+            (8.0, 16.0),
+            fake_tasks_view(vec![unscoped_task("tab listing")]),
+        ));
+
+        let texts = sidebar_texts_until(&mut app, TasksSidebar::Left, shows("tab listing"));
+        assert!(texts.iter().any(|t| t == "tab listing"), "{texts:?}");
+        assert!(!texts.iter().any(|t| t == "sidebar listing"), "{texts:?}");
+    }
+
+    #[test]
+    fn the_tasks_dock_in_the_right_sidebar_when_asked() {
+        let mut app = app_with_tasks_on();
+        app.config.ui.tasks.sidebar = TasksSidebar::Right;
+        let view = fake_tasks_view(vec![unscoped_task("test it")]);
+        app.tasks_panel = Some(tasks_panel::TasksPanel { workspace: None, view });
+
+        let right = sidebar_texts_until(&mut app, TasksSidebar::Right, shows("test it"));
+        assert!(right.iter().any(|t| t == "test it"), "{right:?}");
+        let left = sidebar_texts_until(&mut app, TasksSidebar::Left, |_| true);
+        assert!(!left.iter().any(|t| t == "test it"), "{left:?}");
+    }
+
+    #[test]
+    fn with_the_sidebar_tasks_off_no_sidebar_lists_them() {
+        let mut app = app_with_tasks_on();
+        app.config.ui.tasks.sidebar = TasksSidebar::Off;
+        for side in [TasksSidebar::Left, TasksSidebar::Right] {
+            let texts = sidebar_texts_until(&mut app, side, |_| true);
+            assert!(!texts.iter().any(|t| t == "Tasks"), "{texts:?}");
+        }
+        assert!(app.tasks_panel.is_none(), "a listing was started");
     }
 
     /// A move re-points both workspaces' active entries, so a close right

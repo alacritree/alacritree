@@ -91,6 +91,19 @@ Deleting a task that has subtasks deletes them too, after asking. The keys act o
 
 The tab reloads from taskwarrior every second while it is shown, so tasks an agent adds appear on their own. The last listing for each project is kept in the local state directory, so reopening the tab shows it at once while the first reload runs. A project inside WSL reads and writes that distro's taskwarrior, through `[wsl] resident_helper` when it is on, so a call skips starting `wsl.exe`. Taskwarrior 3 has no Windows build, so a Windows project uses the default distro's taskwarrior when `task` is not on the Windows `PATH`. Linux and macOS always use the native install.
 
+#### Tasks in a sidebar
+
+While the integration is on, a sidebar docks the current workspace's tasks at its bottom, so an agent's progress shows without leaving the terminal. `[ui.tasks] sidebar` picks where: under the projects (`"left"`, the default), under the git status (`"right"`), or nowhere (`"off"`). A hidden sidebar hides its tasks with it.
+
+```toml
+[ui.tasks]
+sidebar = "right"
+```
+
+The section holds the tab's sections that have tasks, less the global list, which it shows only on Home. Each section is named below the workspace, so an agent session reads as `claude-<id>`, and carries a `done/total` count and a bar. Rows are read-only: a filled box marks a started task and a ticked one a completed task. Clicking a section header folds it in the sidebar and the tab alike. Drag the divider above the section to resize it, or double-click the divider to fit the section to its tasks, up to half the sidebar. `[ui.tasks.sidebar_colors]` sets every color it draws, listed in the [config reference](config-reference.md).
+
+The section lists only while its sidebar shows it, reloading every second like the tab. When the workspace's tasks tab is open, both draw the same listing.
+
 #### A task store of your own
 
 A program you write can keep the lists instead of taskwarrior. `[integrations.tasks.command]` names it and gives one argument list per operation, the way a custom diff viewer does:
