@@ -1,21 +1,27 @@
-//! `alacritree install` — copy the running binary into a bin directory.
+//! `alacritree install` copies the running binary, and the console host
+//! beside it, into a bin directory.
 //!
 //! Reading a running image is always allowed, so the source is simply
 //! `current_exe()`.  What may be pinned is the *destination*: a window or MCP
-//! bridge still running from an earlier install.  Its image cannot be
-//! overwritten, but it can be renamed — the running process keeps working
-//! from the renamed file, and a later install sweeps it once the process has
-//! exited.
+//! bridge still running from an earlier install, or a pane's `conpty.dll` and
+//! `OpenConsole.exe`.  A pinned image cannot be overwritten, but it can be
+//! renamed.  The running process keeps working from the renamed file, and a
+//! later install sweeps it once the process has exited.
 
 use std::path::{Path, PathBuf};
 use std::{fs, io};
 
 use crate::stale_exe;
 
+/// The console host `alacritty_terminal` loads from the exe's own directory
+/// (see `dll_search`).  Installing the exe without it leaves every pane on
+/// the slower console server built into Windows.
+const CONSOLE_HOST: &[&str] = if cfg!(windows) { &["conpty.dll", "OpenConsole.exe"] } else { &[] };
+
 pub(super) fn run(dest: Option<PathBuf>, as_json: bool) -> i32 {
     let installed = std::env::current_exe().and_then(|source| {
         let dir = destination(dest)?;
-        install_file(&source, &dir)
+        install_all(&source, &dir)
             .map_err(|e| io::Error::other(format!("installing into {}: {e}", dir.display())))
     });
     match installed {
@@ -36,8 +42,9 @@ pub(super) fn run(dest: Option<PathBuf>, as_json: bool) -> i32 {
     }
 }
 
+#[derive(serde::Serialize)]
 struct Installed {
-    target: PathBuf,
+    path: PathBuf,
     renamed_aside: Option<PathBuf>,
 }
 
@@ -46,51 +53,65 @@ fn destination(dest: Option<PathBuf>) -> io::Result<PathBuf> {
         Some(dir) => Ok(dir),
         None => home::home_dir()
             .map(|home| home.join(".local").join("bin"))
-            .ok_or_else(|| io::Error::other("no home directory — pass --dest")),
+            .ok_or_else(|| io::Error::other("no home directory, pass --dest")),
     }
+}
+
+/// Install the exe and whichever console host files sit beside it.  A build
+/// without the vendored host is supported, as in `build.rs`: its panes just
+/// run slower.
+fn install_all(exe: &Path, dir: &Path) -> io::Result<Vec<Installed>> {
+    fs::create_dir_all(dir)?;
+    stale_exe::sweep_stale(dir);
+    let exe_name = format!("alacritree{}", std::env::consts::EXE_SUFFIX);
+    let mut installed = vec![install_file(exe, dir, &exe_name)?];
+    let source_dir = exe.parent().unwrap_or(Path::new(""));
+    for name in CONSOLE_HOST {
+        let source = source_dir.join(name);
+        if source.is_file() {
+            installed.push(install_file(&source, dir, name)?);
+        }
+    }
+    Ok(installed)
 }
 
 /// The target name never points at a partial file: the copy lands under a
 /// temp name and takes the target name in one rename.
-fn install_file(source: &Path, dir: &Path) -> io::Result<Installed> {
-    fs::create_dir_all(dir)?;
-    stale_exe::sweep_stale(dir);
-    let target = dir.join(format!("alacritree{}", std::env::consts::EXE_SUFFIX));
-    // The source may be the target itself — a self-install from the installed
-    // binary — so the copy must land before the target's name is freed.
-    let temp = dir.join(format!("alacritree{}{}", stale_exe::TEMP_MARKER, std::process::id()));
+fn install_file(source: &Path, dir: &Path, name: &str) -> io::Result<Installed> {
+    let path = dir.join(name);
+    // The source may be the target itself, in a self-install from the
+    // installed binary, so the copy must land before the target's name is
+    // freed.
+    let temp = dir.join(format!("{name}{}{}", stale_exe::TEMP_MARKER, std::process::id()));
     fs::copy(source, &temp)?;
-    let renamed_aside = match stale_exe::rename_aside_if_locked(&target) {
+    let renamed_aside = match stale_exe::rename_aside_if_locked(&path) {
         Ok(moved) => moved,
         Err(e) => {
             let _ = fs::remove_file(&temp);
             return Err(e);
         },
     };
-    if let Err(e) = fs::rename(&temp, &target) {
+    if let Err(e) = fs::rename(&temp, &path) {
         let _ = fs::remove_file(&temp);
         return Err(e);
     }
-    Ok(Installed { target, renamed_aside })
+    Ok(Installed { path, renamed_aside })
 }
 
-fn report(installed: &Installed, as_json: bool) {
+fn report(installed: &[Installed], as_json: bool) {
     if as_json {
-        println!(
-            "{:#}",
-            serde_json::json!({
-                "installed": &installed.target,
-                "renamed_aside": &installed.renamed_aside,
-            })
-        );
+        println!("{:#}", serde_json::json!({ "installed": installed }));
         return;
     }
-    println!("installed {}", installed.target.display());
-    if let Some(old) = &installed.renamed_aside {
-        println!(
-            "a running alacritree still holds the old binary — moved to {} until it exits",
-            old.display()
-        );
+    for file in installed {
+        println!("installed {}", file.path.display());
+        if let Some(old) = &file.renamed_aside {
+            println!(
+                "a running alacritree still holds the old {}, moved to {} until it exits",
+                file.path.file_name().unwrap_or_default().to_string_lossy(),
+                old.display()
+            );
+        }
     }
 }
 
@@ -118,11 +139,11 @@ mod tests {
         let source = source_exe(dir.path(), "v2");
         let dest = dir.path().join("bin");
 
-        let installed = install_file(&source, &dest).unwrap();
+        let installed = install_all(&source, &dest).unwrap();
 
-        assert_eq!(installed.target, target_in(&dest));
-        assert_eq!(fs::read_to_string(&installed.target).unwrap(), "v2");
-        assert_eq!(installed.renamed_aside, None);
+        assert_eq!(installed[0].path, target_in(&dest));
+        assert_eq!(fs::read_to_string(&installed[0].path).unwrap(), "v2");
+        assert_eq!(installed[0].renamed_aside, None);
     }
 
     #[test]
@@ -133,10 +154,10 @@ mod tests {
         fs::create_dir_all(&dest).unwrap();
         fs::write(target_in(&dest), "v1").unwrap();
 
-        let installed = install_file(&source, &dest).unwrap();
+        let installed = install_all(&source, &dest).unwrap();
 
-        assert_eq!(fs::read_to_string(&installed.target).unwrap(), "v2");
-        assert_eq!(installed.renamed_aside, None);
+        assert_eq!(fs::read_to_string(&installed[0].path).unwrap(), "v2");
+        assert_eq!(installed[0].renamed_aside, None);
     }
 
     /// The point of the subcommand: installing over a binary the window or a
@@ -151,11 +172,46 @@ mod tests {
         fs::write(target_in(&dest), "v1").unwrap();
         let _running = crate::test_util::hold_like_a_running_image(&target_in(&dest));
 
-        let installed = install_file(&source, &dest).unwrap();
+        let installed = install_all(&source, &dest).unwrap();
 
-        assert_eq!(fs::read_to_string(&installed.target).unwrap(), "v2");
-        let aside = installed.renamed_aside.expect("the pinned exe was moved");
+        assert_eq!(fs::read_to_string(&installed[0].path).unwrap(), "v2");
+        let aside = installed[0].renamed_aside.clone().expect("the pinned exe was moved");
         assert_eq!(fs::read_to_string(&aside).unwrap(), "v1", "the running image is intact");
+    }
+
+    /// Without the console host beside it, the installed exe opens every pane
+    /// on the slower console server.  A pane pins its host just as a window
+    /// pins the exe, so the same rename-aside applies.
+    #[cfg(windows)]
+    #[test]
+    fn the_console_host_beside_the_exe_is_installed_with_it() {
+        let dir = TempDir::new().unwrap();
+        let source = source_exe(dir.path(), "v2");
+        fs::write(dir.path().join("conpty.dll"), "dll v2").unwrap();
+        fs::write(dir.path().join("OpenConsole.exe"), "host v2").unwrap();
+        let dest = dir.path().join("bin");
+        fs::create_dir_all(&dest).unwrap();
+        fs::write(dest.join("conpty.dll"), "dll v1").unwrap();
+        let _pane = crate::test_util::hold_like_a_running_image(&dest.join("conpty.dll"));
+
+        let installed = install_all(&source, &dest).unwrap();
+
+        assert_eq!(fs::read_to_string(dest.join("conpty.dll")).unwrap(), "dll v2");
+        assert_eq!(fs::read_to_string(dest.join("OpenConsole.exe")).unwrap(), "host v2");
+        let dll = installed.iter().find(|f| f.path == dest.join("conpty.dll")).unwrap();
+        assert!(dll.renamed_aside.is_some(), "the pane's dll was moved aside");
+    }
+
+    #[test]
+    fn an_exe_without_a_console_host_installs_alone() {
+        let dir = TempDir::new().unwrap();
+        let source = source_exe(dir.path(), "v2");
+        let dest = dir.path().join("bin");
+
+        let installed = install_all(&source, &dest).unwrap();
+
+        assert_eq!(installed.len(), 1);
+        assert!(!dest.join("conpty.dll").exists());
     }
 
     #[test]
@@ -164,12 +220,15 @@ mod tests {
         let source = source_exe(dir.path(), "v2");
         let dest = dir.path().join("bin");
         fs::create_dir_all(&dest).unwrap();
-        let leftover = dest.join("alacritree.exe.stale-9-0");
-        fs::write(&leftover, "v0").unwrap();
+        let exe_leftover = dest.join("alacritree.exe.stale-9-0");
+        let host_leftover = dest.join("conpty.dll.stale-9-0");
+        fs::write(&exe_leftover, "v0").unwrap();
+        fs::write(&host_leftover, "v0").unwrap();
 
-        install_file(&source, &dest).unwrap();
+        install_all(&source, &dest).unwrap();
 
-        assert!(!leftover.exists());
+        assert!(!exe_leftover.exists());
+        assert!(!host_leftover.exists());
     }
 
     #[test]
@@ -193,9 +252,9 @@ mod tests {
         fs::write(&target, "v1").unwrap();
         let _running = crate::test_util::hold_like_a_running_image(&target);
 
-        let installed = install_file(&target, &dest).unwrap();
+        let installed = install_all(&target, &dest).unwrap();
 
-        assert_eq!(fs::read_to_string(&installed.target).unwrap(), "v1");
-        assert!(installed.renamed_aside.is_some(), "the held image was moved aside");
+        assert_eq!(fs::read_to_string(&installed[0].path).unwrap(), "v1");
+        assert!(installed[0].renamed_aside.is_some(), "the held image was moved aside");
     }
 }

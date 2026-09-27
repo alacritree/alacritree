@@ -166,6 +166,9 @@ enum Command {
 
     /// Copy this binary into a bin directory (default: ~/.local/bin).
     ///
+    /// On Windows, `conpty.dll` and `OpenConsole.exe` from beside the binary
+    /// are copied with it, so panes keep the faster console host.
+    ///
     /// A window or MCP bridge still running from the destination does not
     /// block the install: its binary is renamed aside, kept until that
     /// process exits, and cleaned up by a later install.

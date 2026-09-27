@@ -18,6 +18,9 @@ pub(crate) const STALE_MARKER: &str = ".stale-";
 /// Marks a not-yet-renamed install copy, so an interrupted install is swept
 /// like a stale exe.
 pub(crate) const TEMP_MARKER: &str = ".tmp-";
+/// The files whose leftovers are ours to sweep: the exe and the console host
+/// that is installed and staged beside it.
+const SWEPT_PREFIXES: [&str; 3] = ["alacritree", "conpty.dll", "OpenConsole.exe"];
 
 /// Delete leftovers from earlier rename-asides and interrupted installs.
 /// Best-effort on purpose: a leftover whose process still runs refuses
@@ -27,7 +30,7 @@ pub(crate) fn sweep_stale(dir: &Path) {
     for entry in entries.flatten() {
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if name.starts_with("alacritree")
+        if SWEPT_PREFIXES.iter().any(|prefix| name.starts_with(prefix))
             && (name.contains(STALE_MARKER) || name.contains(TEMP_MARKER))
         {
             let _ = fs::remove_file(entry.path());
