@@ -977,8 +977,17 @@ impl AlacritreeApp {
     /// Re-run worktree discovery for every project, the keyboard/IPC
     /// equivalent of pressing each row's refresh button in turn.
     fn refresh_all_projects(&mut self, ctx: &Context) {
-        for idx in 0..self.projects.len() {
+        self.refresh_projects_for_user(ctx, 0..self.projects.len());
+    }
+
+    /// [`Self::refresh_project`] for a user who is watching: the status row
+    /// counts these off. A root already being scanned counts too, since that
+    /// scan is the one that answers them.
+    fn refresh_projects_for_user(&mut self, ctx: &Context, idxs: impl IntoIterator<Item = usize>) {
+        self.activities.trigger(ActivityKind::ProjectScan);
+        for idx in idxs {
             self.refresh_project(ctx, idx);
+            self.activities.scan_started(self.projects[idx].root.clone());
         }
     }
 
@@ -1026,17 +1035,23 @@ impl AlacritreeApp {
     fn poll_project_refreshes(&mut self) {
         for Finished { key: root, outcome, waiters } in self.project_refreshes.take_finished() {
             let Some(found) = outcome else {
-                waiters.answer(Err("the project refresh worker panicked".to_string()));
+                let error = "the project refresh worker panicked".to_string();
+                self.activities.scan_finished(&root, Err(error.clone()));
+                waiters.answer(Err(error));
                 continue;
             };
             let reply = match self.projects.iter_mut().find(|p| p.root == root) {
                 Some(project) => {
+                    self.activities.scan_finished(&root, Ok(()));
                     let occupied: HashSet<PathBuf> =
                         self.sessions.iter().filter_map(|s| s.working_directory.clone()).collect();
                     project.apply(found, &occupied);
                     Ok(project_json(project))
                 },
-                None => Err(NotAProject(root).to_string()),
+                None => {
+                    self.activities.scan_left(&root);
+                    Err(NotAProject(root).to_string())
+                },
             };
             waiters.answer(reply);
         }
@@ -2141,6 +2156,7 @@ impl AlacritreeApp {
     /// sidebar entry the same way they outlive a workspace switch.
     fn remove_project(&mut self, idx: usize) -> PathBuf {
         let root = self.projects.remove(idx).root;
+        self.activities.scan_left(&root);
         let key = root.clone();
         state::mutate(move |s| s.projects.retain(|p| p.root != key));
         root
@@ -4425,6 +4441,72 @@ mod tests {
         );
         app.sessions.push(session);
         app
+    }
+
+    /// What the left sidebar's status row says right now.
+    fn status_text(app: &AlacritreeApp) -> String {
+        crate::activity::status_line(&app.activities, app.activities.now()).text
+    }
+
+    /// Adopt finished scans and fold them in, frame after frame, until the
+    /// row says `done` or ten seconds pass.
+    fn scan_until(app: &mut AlacritreeApp, done: &str) -> String {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            app.poll_project_refreshes();
+            app.sync_activities();
+            let text = status_text(app);
+            if text.starts_with(done) || Instant::now() > deadline {
+                return text;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn a_user_refresh_counts_its_projects_off() {
+        use crate::app::actions::Action;
+
+        let dirs: Vec<_> = (0..2).map(|_| tempfile::tempdir().expect("temp dir")).collect();
+        let mut app = test_app();
+        for dir in &dirs {
+            app.projects.push(Project::placeholder(dir.path().to_path_buf()));
+        }
+        let ctx = Context::default();
+
+        action::RefreshProjects.run(&mut app, &ctx, ActionOrigin::Keyboard);
+        app.sync_activities();
+        assert_eq!(status_text(&app), "Scanning projects 0/2");
+
+        assert_eq!(scan_until(&mut app, "Projects scanned"), "Projects scanned just now");
+    }
+
+    /// Discovery started by anything but the user, here a moved branch or
+    /// startup, is housekeeping and shows nothing.
+    #[test]
+    fn a_scan_nobody_asked_for_shows_nothing() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut app = test_app();
+        app.projects.push(Project::placeholder(dir.path().to_path_buf()));
+        app.refresh_project(&Context::default(), 0);
+        app.sync_activities();
+        assert_eq!(status_text(&app), "");
+    }
+
+    #[test]
+    fn a_project_removed_mid_scan_leaves_the_count() {
+        use crate::app::actions::Action;
+
+        let dirs: Vec<_> = (0..2).map(|_| tempfile::tempdir().expect("temp dir")).collect();
+        let mut app = test_app();
+        for dir in &dirs {
+            app.projects.push(Project::placeholder(dir.path().to_path_buf()));
+        }
+        action::RefreshProjects.run(&mut app, &Context::default(), ActionOrigin::Keyboard);
+        app.remove_project(1);
+        app.sync_activities();
+        assert_eq!(status_text(&app), "Scanning projects 0/1");
+        assert_eq!(scan_until(&mut app, "Projects scanned"), "Projects scanned just now");
     }
 
     fn checkout_at(path: &std::path::Path) -> alacritree_vcs::Checkout {

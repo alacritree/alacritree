@@ -547,7 +547,7 @@ impl AlacritreeApp {
             self.sidebar.reorder_mode = !self.sidebar.reorder_mode;
         }
         if let Some(idx) = requests.refresh {
-            self.refresh_project(ctx, idx);
+            self.refresh_projects_for_user(ctx, [idx]);
         }
         if let Some(req) = requests.remove.take() {
             self.modals.pending_project_remove = Some(req);
