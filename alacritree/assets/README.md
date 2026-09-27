@@ -38,8 +38,7 @@ The sources of the glyphs `[integrations.herdr] icon` and `[integrations.zellij]
 
 ## `FONT-LICENSE.txt`
 
-The complete upstream DejaVu notice. It must accompany any distribution of
-the binary, which is why `alacritree --licenses` prints it.
+The complete upstream DejaVu notice. It must accompany any distribution of the binary, which is why `alacritree --licenses` prints it.
 
 ## `icon-256.png`
 

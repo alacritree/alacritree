@@ -2,12 +2,8 @@
 
 Alacritree has two layers of shortcuts:
 
-1. **Key bindings** — parsed from your `[[keyboard.bindings]]` tables in
-   `alacritty.toml` / `alacritree.toml`. Alacritty's defaults are preloaded,
-   and so are alacritree's own (sidebars, workspaces, sessions, palette).
-   Everything in this layer is rebindable.
-2. **Modal keys** — `Enter` and `Escape` while a dialog is open. The modal
-   consumes them directly; they are not bindings and cannot be rebound.
+1. **Key bindings** — parsed from your `[[keyboard.bindings]]` tables in `alacritty.toml` / `alacritree.toml`. Alacritty's defaults are preloaded, and so are alacritree's own (sidebars, workspaces, sessions, palette). Everything in this layer is rebindable.
+2. **Modal keys** — `Enter` and `Escape` while a dialog is open. The modal consumes them directly; they are not bindings and cannot be rebound.
 
 ---
 
@@ -24,14 +20,9 @@ These only fire while a modal is open and never reach the terminal grid.
 
 ## Key bindings
 
-These are parsed from `[[keyboard.bindings]]` and matched against egui key
-events before the terminal sees them. The default set is preloaded, and your
-TOML entries are checked first — so any default can be rebound, or freed for
-the shell with `action = "ReceiveChar"`. Use `action = "None"` when the key
-should be consumed without running an action or reaching the shell.
+These are parsed from `[[keyboard.bindings]]` and matched against egui key events before the terminal sees them. The default set is preloaded, and your TOML entries are checked first — so any default can be rebound, or freed for the shell with `action = "ReceiveChar"`. Use `action = "None"` when the key should be consumed without running an action or reaching the shell.
 
-The alacritree-specific defaults are ordinary bindings like the rest. Nothing
-below is hard-coded.
+The alacritree-specific defaults are ordinary bindings like the rest. Nothing below is hard-coded.
 
 ### Defaults on every platform
 
@@ -105,15 +96,12 @@ below is hard-coded.
 
 ## Supported actions
 
-Use any of these as the `action = "..."` value in a `[[keyboard.bindings]]`
-entry. Names match alacritty's own action names, so existing configs port over.
+Use any of these as the `action = "..."` value in a `[[keyboard.bindings]]` entry. Names match alacritty's own action names, so existing configs port over.
 
 ### Clipboard
 
 - `Paste` — paste from the system clipboard.
-- `Copy` — copy the current selection to the clipboard. *(Selection isn't wired
-  up in the alacritree grid yet; this becomes a no-op when there's nothing
-  selected.)*
+- `Copy` — copy the current selection to the clipboard. *(Selection isn't wired up in the alacritree grid yet; this becomes a no-op when there's nothing selected.)*
 - `PasteSelection` — paste from the primary (X11) selection.
 
 ### Font size
@@ -128,43 +116,22 @@ entry. Names match alacritty's own action names, so existing configs port over.
 - `ScrollHalfPageUp` / `ScrollHalfPageDown`
 - `ScrollLineUp` / `ScrollLineDown`
 - `ScrollToTop` / `ScrollToBottom`
-- `ClearHistory` — drop the scrollback buffer (does not clear the visible
-  screen; pair with `chars = "\x0c"` on a separate binding if you also want a
-  `Ctrl+L`-style screen clear).
+- `ClearHistory` — drop the scrollback buffer (does not clear the visible screen; pair with `chars = "\x0c"` on a separate binding if you also want a `Ctrl+L`-style screen clear).
 
 ### Window / sessions
 
-- `SpawnNewInstance` / `CreateNewWindow` / `CreateNewTab` — all three open a
-  new shell session in the current workspace. (Alacritty distinguishes
-  windows from tabs; alacritree has a single window with sessions per
-  workspace, so they collapse to the same action.)
-- `OpenScratchpad` — open or select the current workspace's persistent
-  Markdown scratchpad tab in Alacritree's minimal built-in editor, or close it
-  without confirmation when already active. Every text change is saved
-  immediately; closing the tab keeps its backing file. With
-  `ui.return_to_previous_session`, closing it goes back to the session it was
-  opened over, as closing the tasks tab does. Default: `Ctrl+Backtick`.
-- `SelectNextTab` / `SelectPreviousTab` — cycle through sessions in the
-  current workspace.
-- `SelectNextSession` / `SelectPreviousSession` — cycle through every open
-  session across all workspaces: one flat ring with workspaces in sidebar
-  order, switching workspace when the cycle crosses a boundary. Unbound by
-  default; example binding:
+- `SpawnNewInstance` / `CreateNewWindow` / `CreateNewTab` — all three open a new shell session in the current workspace. (Alacritty distinguishes windows from tabs; alacritree has a single window with sessions per workspace, so they collapse to the same action.)
+- `OpenScratchpad` — open or select the current workspace's persistent Markdown scratchpad tab in Alacritree's minimal built-in editor, or close it without confirmation when already active. Every text change is saved immediately; closing the tab keeps its backing file. With `ui.return_to_previous_session`, closing it goes back to the session it was opened over, as closing the tasks tab does. Default: `Ctrl+Backtick`.
+- `SelectNextTab` / `SelectPreviousTab` — cycle through sessions in the current workspace.
+- `SelectNextSession` / `SelectPreviousSession` — cycle through every open session across all workspaces: one flat ring with workspaces in sidebar order, switching workspace when the cycle crosses a boundary. Unbound by default; example binding:
   ```toml
   [[keyboard.bindings]]
   key = "PageDown"
   mods = "Control|Shift"
   action = "SelectNextSession"
   ```
-- `SelectNextAgentSession` / `SelectPreviousAgentSession` — the same ring,
-  visiting only sessions with an agent running in them: the rows that draw an
-  agent mark in the sidebar, whether the agent is idle, working or blocked.
-  Plain shells, diffs, the scratchpad and tasks tabs, and exited sessions are
-  skipped, as are multiplexer panes no session is attached to. From a shell,
-  the press lands on the nearest agent in its direction. Default:
-  `Shift+Alt+Down` / `Shift+Alt+Up`.
-- `SelectTab1` … `SelectTab9` — select the Nth session in the current
-  workspace. Out-of-range indices are ignored.
+- `SelectNextAgentSession` / `SelectPreviousAgentSession`: the same ring, visiting only sessions with an agent running in them, which are the rows that draw an agent mark in the sidebar, whether the agent is idle, working or blocked. Plain shells, diffs, the scratchpad and tasks tabs, and exited sessions are skipped, as are multiplexer panes no session is attached to. From a shell, the press lands on the nearest agent in its direction. Default: `Shift+Alt+Down` / `Shift+Alt+Up`.
+- `SelectTab1` … `SelectTab9` — select the Nth session in the current workspace. Out-of-range indices are ignored.
 - `SelectLastTab` — select the last session in the current workspace.
 - `CloseSession` — close the session under the sidebar cursor when the sidebar is focused on one, otherwise the active session in the current workspace. Honors the `confirm_session_close` policy (may open a confirmation dialog; `"busy"` prompts only while a process is running). When the on-screen workspace stops having sessions, whether this close or a worktree deletion took the last one, `ui.last_session_close` decides what follows: `"respawn"` recycles a shell in place, `"navigate"` moves to the project's main checkout or home, and `"ring_global"` / `"ring_project"` move along the flat session ring instead.
 - `CloseExitedSession` — close the session on screen once its child has exited. Default: unmodified `Enter`, which is only affordable because the action is scoped to an exited session: in a live one the key goes to the PTY like any other. Nothing to confirm and no sidebar cursor involved — the child is already gone. Which exits leave a session on screen to be closed this way is `[ui] hold_exited_sessions`; a session held that way writes one line into its own grid naming this key, or the command palette when nothing is bound to it.
@@ -172,61 +139,20 @@ entry. Names match alacritty's own action names, so existing configs port over.
 - `AttachAllMultiplexerPanes`, open a session on every detected multiplexer (herdr) pane no session holds yet, one per row the sidebar lists, leaving the panes that already hold one alone. It skips the herdr-core panes, since another client uses them. Each session files under the workspace its own pane belongs to, and the workspace on screen does not change. No default key. Also reachable from the command palette.
 - `DetachAllMultiplexerPanes`, end every session attached to a multiplexer pane. The panes keep running under the multiplexer and their rows come back unattached. `[ui] confirm_session_detach` is asked once for the whole batch rather than once per session. No default key. Also reachable from the command palette.
 - `KillTerminal`, end the program in a herdr-core terminal that alacritree did not create, after a confirmation. It acts on the pane row under the sidebar cursor while the sidebar has focus, and otherwise on the active session's terminal. The row's own menu offers the same kill. No default key. Also reachable from the command palette.
-- `SidebarTop` / `SidebarBottom` — move the sidebar cursor to the first / last
-  visible row.
-- `SidebarPreviousProject` / `SidebarNextProject` — jump the sidebar cursor to
-  the nearest project header above / below.
-- `RefreshProjects` — re-run worktree discovery for every project in the
-  sidebar. Default: unmodified `R`.
-- `DeleteSelected` — act on the sidebar-cursored row: a session gets the
-  close flow, a worktree the delete/prune dialog, a project the
-  remove-from-sidebar prompt. Default: unmodified `Delete`.
-- `RenameSelected` — rename the sidebar-cursored project (the same rename
-  dialog as its right-click menu). Only project rows have an editable label;
-  on other rows this does nothing. Default: `Shift+R`.
-- `ToggleProjectExpanded` — expand or collapse the project owning the
-  sidebar cursor, showing or hiding its worktrees and sessions. Works from
-  the project header or from any of its worktree/session rows; collapsing
-  from a child moves the cursor up to the header. Default: unmodified `O`.
-  (The arrow keys and `Enter` also expand/collapse a cursored project
-  without a binding.)
+- `SidebarTop` / `SidebarBottom` — move the sidebar cursor to the first / last visible row.
+- `SidebarPreviousProject` / `SidebarNextProject` — jump the sidebar cursor to the nearest project header above / below.
+- `RefreshProjects` — re-run worktree discovery for every project in the sidebar. Default: unmodified `R`.
+- `DeleteSelected` — act on the sidebar-cursored row: a session gets the close flow, a worktree the delete/prune dialog, a project the remove-from-sidebar prompt. Default: unmodified `Delete`.
+- `RenameSelected` — rename the sidebar-cursored project (the same rename dialog as its right-click menu). Only project rows have an editable label; on other rows this does nothing. Default: `Shift+R`.
+- `ToggleProjectExpanded` — expand or collapse the project owning the sidebar cursor, showing or hiding its worktrees and sessions. Works from the project header or from any of its worktree/session rows; collapsing from a child moves the cursor up to the header. Default: unmodified `O`. (The arrow keys and `Enter` also expand/collapse a cursored project without a binding.)
 
-These sidebar actions act only while the projects sidebar has keyboard
-focus; anywhere else their keys pass through to the terminal untouched, so
-the unmodified defaults don't shadow Home/End/PageUp/PageDown, `r`, `R`, or
-forward-delete in TUIs.
-- `TogglePalette` — open (or close) the command palette: one fuzzy-searchable,
-  executable list of every keyboard action, every open session, and every
-  switchable workspace. The same fzf-style matcher the sidebars use ranks the
-  rows, so the full action vocabulary stays discoverable without the docs. Rows
-  are grouped under section headings and laid out in three columns —
-  description, action name, and every key bound to that action — so a
-  multi-bound action reads as one row listing all its keys. A query promotes
-  whichever section holds the best match. Type to filter, `Up`/`Down` move the
-  selection, `Enter` runs the highlighted row (dispatching an action, jumping to
-  a session, or switching workspace), `Escape` clears the query and then closes,
-  and a click outside dismisses it. On a window too narrow for the palette's
-  usual width it takes four fifths of the window instead, and the three columns
-  shrink together and wrap their text rather than running off the edge. Anything
-  a column still has to cut short shows in full on hover. The default is
-  `Ctrl+K` (which shadows
-  `Ctrl+K` for terminal apps; rebind or free it with `ReceiveChar` if you need it
-  there).
-- `PaletteTop` / `PaletteBottom` — move the palette cursor to the first / last
-  row. Defaults: unmodified `Home` / `End`.
-- `PalettePageUp` / `PalettePageDown` — move the palette cursor a screenful (ten
-  rows) up / down. Defaults: unmodified `PageUp` / `PageDown`.
+These sidebar actions act only while the projects sidebar has keyboard focus; anywhere else their keys pass through to the terminal untouched, so the unmodified defaults don't shadow Home/End/PageUp/PageDown, `r`, `R`, or forward-delete in TUIs.
+- `TogglePalette` — open (or close) the command palette: one fuzzy-searchable, executable list of every keyboard action, every open session, and every switchable workspace. The same fzf-style matcher the sidebars use ranks the rows, so the full action vocabulary stays discoverable without the docs. Rows are grouped under section headings and laid out in three columns — description, action name, and every key bound to that action — so a multi-bound action reads as one row listing all its keys. A query promotes whichever section holds the best match. Type to filter, `Up`/`Down` move the selection, `Enter` runs the highlighted row (dispatching an action, jumping to a session, or switching workspace), `Escape` clears the query and then closes, and a click outside dismisses it. On a window too narrow for the palette's usual width it takes four fifths of the window instead, and the three columns shrink together and wrap their text rather than running off the edge. Anything a column still has to cut short shows in full on hover. The default is `Ctrl+K` (which shadows `Ctrl+K` for terminal apps; rebind or free it with `ReceiveChar` if you need it there).
+- `PaletteTop` / `PaletteBottom` — move the palette cursor to the first / last row. Defaults: unmodified `Home` / `End`.
+- `PalettePageUp` / `PalettePageDown` — move the palette cursor a screenful (ten rows) up / down. Defaults: unmodified `PageUp` / `PageDown`.
 
-These four act only while the palette is open — it is a modal that owns every
-key while it is up — so they share the sidebar's unmodified defaults without
-shadowing them, and pass through to the terminal whenever the palette is
-closed. Rebinding one replaces the whole default trigger, sidebar action
-included: `key = "End"` bound to `PaletteTop` also unbinds `SidebarBottom`.
-Because the palette's query box has focus, `Home`/`End` no longer move the text
-caret there; bind them elsewhere if you want the caret back.
-- `SpawnProfile1` … `SpawnProfile9` — spawn the Nth `[[ui.profiles]]` entry
-  in the current workspace. Out-of-range indices show an error toast.
-  Example binding:
+These four act only while the palette is open — it is a modal that owns every key while it is up — so they share the sidebar's unmodified defaults without shadowing them, and pass through to the terminal whenever the palette is closed. Rebinding one replaces the whole default trigger, sidebar action included: `key = "End"` bound to `PaletteTop` also unbinds `SidebarBottom`. Because the palette's query box has focus, `Home`/`End` no longer move the text caret there; bind them elsewhere if you want the caret back.
+- `SpawnProfile1` … `SpawnProfile9` — spawn the Nth `[[ui.profiles]]` entry in the current workspace. Out-of-range indices show an error toast. Example binding:
   ```toml
   [[keyboard.bindings]]
   key = "2"
@@ -240,31 +166,16 @@ caret there; bind them elsewhere if you want the caret back.
 
 ### Sidebars and workspaces
 
-- `ToggleLeftSidebar` — show or hide the projects/worktrees sidebar.
-  Default: `Ctrl+B`.
+- `ToggleLeftSidebar` — show or hide the projects/worktrees sidebar. Default: `Ctrl+B`.
 - `ToggleRightSidebar` — show or hide the git status sidebar. Default: `Ctrl+G`.
-- `ToggleTasksSidebar`: show or hide the tasks docked in a sidebar, leaving the
-  rest of the sidebar. No default key.
-- `SelectNextWorkspace` / `SelectPreviousWorkspace` — move between the home tab
-  and the worktrees. Defaults: `Alt+Right` / `Alt+Left`.
-- `AddProject` — open the picker that adds a project to the sidebar.
-  Default: `Ctrl+Shift+O`.
-- `SetBaseBranch` — open the base-branch picker for the sidebar-cursored
-  worktree, or the current one when the terminal has focus. No default key.
-- `ReviewStaged` / `ReviewUnstaged` / `ReviewBranch`: open the git panel's
-  Staged, Unstaged, or `Changes vs` section as a whole in the diff viewer, or
-  close that pane when it is already open. No default keys.
-- `ToggleSessionRows` / `ToggleSessionTabs` — flip the runtime
-  `session_display.sidebar_always` / `session_display.tabs_always` values, which
-  control whether a lone session still gets its own sidebar row or tab segment.
-  No default keys.
-- `ToggleSessionDrag` — flip whether a session row can be dragged with the mouse
-  to reorder it. Starts from `[ui.session_reorder] drag`. No default key.
-- `MoveSessionUp` / `MoveSessionDown` — move a session one position in the sidebar
-  and the tab strip. With the sidebar focused this moves the cursored session, or
-  the cursored workspace's active session when the cursor is on a Home or worktree
-  row; from the terminal it moves the session on screen. How far a session may
-  travel is `[ui.session_reorder] scope`. No default keys.
+- `ToggleTasksSidebar`: show or hide the tasks docked in a sidebar, leaving the rest of the sidebar. No default key.
+- `SelectNextWorkspace` / `SelectPreviousWorkspace` — move between the home tab and the worktrees. Defaults: `Alt+Right` / `Alt+Left`.
+- `AddProject` — open the picker that adds a project to the sidebar. Default: `Ctrl+Shift+O`.
+- `SetBaseBranch` — open the base-branch picker for the sidebar-cursored worktree, or the current one when the terminal has focus. No default key.
+- `ReviewStaged` / `ReviewUnstaged` / `ReviewBranch`: open the git panel's Staged, Unstaged, or `Changes vs` section as a whole in the diff viewer, or close that pane when it is already open. No default keys.
+- `ToggleSessionRows` / `ToggleSessionTabs` — flip the runtime `session_display.sidebar_always` / `session_display.tabs_always` values, which control whether a lone session still gets its own sidebar row or tab segment. No default keys.
+- `ToggleSessionDrag` — flip whether a session row can be dragged with the mouse to reorder it. Starts from `[ui.session_reorder] drag`. No default key.
+- `MoveSessionUp` / `MoveSessionDown` — move a session one position in the sidebar and the tab strip. With the sidebar focused this moves the cursored session, or the cursored workspace's active session when the cursor is on a Home or worktree row; from the terminal it moves the session on screen. How far a session may travel is `[ui.session_reorder] scope`. No default keys.
 
 ### Tasks tab
 
@@ -277,109 +188,49 @@ These act on the tasks tab's current task: the row being edited, or the last one
 
 ### Focus navigation
 
-- `ToggleSidebarFocus` — flip keyboard focus between the terminal and the
-  projects sidebar. Focusing a hidden sidebar shows it; returning focus
-  hides it again unless you toggled it open yourself.
-- `FocusProjectsSidebar` / `FocusGitSidebar` / `FocusTerminal` — move focus to
-  one specific panel. `FocusGitSidebar` defaults to `Ctrl+Shift+G`; the other
-  two have no default key.
-- `FocusLeft` / `FocusRight`: directional focus moves between panels. While
-  vim, nvim, tmux, zellij or herdr runs in the terminal, the terminal gets
-  `Ctrl+Left` / `Ctrl+Right` instead, so it can move between its own splits.
-  Each of them needs a binding that runs `alacritree action FocusLeft` or
-  `alacritree action FocusRight` when it has no split left in that direction.
-  Without one, focus stays inside it. A session attached to a single herdr
-  agent moves panel focus directly. No default keys.
+- `ToggleSidebarFocus` — flip keyboard focus between the terminal and the projects sidebar. Focusing a hidden sidebar shows it; returning focus hides it again unless you toggled it open yourself.
+- `FocusProjectsSidebar` / `FocusGitSidebar` / `FocusTerminal` — move focus to one specific panel. `FocusGitSidebar` defaults to `Ctrl+Shift+G`; the other two have no default key.
+- `FocusLeft` / `FocusRight`: directional focus moves between panels. While vim, nvim, tmux, zellij or herdr runs in the terminal, the terminal gets `Ctrl+Left` / `Ctrl+Right` instead, so it can move between its own splits. Each of them needs a binding that runs `alacritree action FocusLeft` or `alacritree action FocusRight` when it has no split left in that direction. Without one, focus stays inside it. A session attached to a single herdr agent moves panel focus directly. No default keys.
 
-While the sidebar has focus: `Up`/`Down` move between rows, `Right`/`Left`
-expand/collapse a project (`Left` on a worktree jumps to its project),
-`Enter` activates the selected workspace and returns to the terminal (on
-a project header it toggles expansion instead), `Escape` returns without
-switching. All other keys keep their bindings; unbound keys reach
-neither the shell nor the UI.
+While the sidebar has focus: `Up`/`Down` move between rows, `Right`/`Left` expand/collapse a project (`Left` on a worktree jumps to its project), `Enter` activates the selected workspace and returns to the terminal (on a project header it toggles expansion instead), `Escape` returns without switching. All other keys keep their bindings; unbound keys reach neither the shell nor the UI.
 
 ### Sidebar search
 
-Typing `/` in a focused sidebar opens a fuzzy-search prompt. The confirm and
-cancel keys are rebindable, **search-scoped** actions — they act only while the
-focused panel is in search mode, so their default keys pass straight through to
-the terminal whenever it owns focus (the terminal's own `Enter`/`Esc` are never
-affected):
+Typing `/` in a focused sidebar opens a fuzzy-search prompt. The confirm and cancel keys are rebindable, **search-scoped** actions — they act only while the focused panel is in search mode, so their default keys pass straight through to the terminal whenever it owns focus (the terminal's own `Enter`/`Esc` are never affected):
 
-- `SidebarSearchConfirm` (default `Enter`) — leave search with the cursor on the
-  highlighted row, scrolled into view. Selecting never opens the row: press
-  `Enter` again, outside search, to activate it. A worktree or session matched
-  under a collapsed project expands that project so the row stays selectable.
-- `SidebarSearchCancel` (default `Esc`) — leave search, staying in the sidebar on
-  the previously active row.
-- `SidebarSearchCancelToTerminal` (default `Shift+Esc`) — leave search and return
-  focus to the terminal.
+- `SidebarSearchConfirm` (default `Enter`) — leave search with the cursor on the highlighted row, scrolled into view. Selecting never opens the row: press `Enter` again, outside search, to activate it. A worktree or session matched under a collapsed project expands that project so the row stays selectable.
+- `SidebarSearchCancel` (default `Esc`) — leave search, staying in the sidebar on the previously active row.
+- `SidebarSearchCancelToTerminal` (default `Shift+Esc`) — leave search and return focus to the terminal.
 
-Rebind them to any non-text-producing key or chord (`Enter`, `Esc`, `Shift+Esc`,
-function keys, `Ctrl`/`Shift` chords). Binding a search action to a key that also
-produces text (a bare, `Shift`-, or `AltGr`-printable) is unsupported: the
-keystroke would both type into the query and fire the action.
+Rebind them to any non-text-producing key or chord (`Enter`, `Esc`, `Shift+Esc`, function keys, `Ctrl`/`Shift` chords). Binding a search action to a key that also produces text (a bare, `Shift`-, or `AltGr`-printable) is unsupported: the keystroke would both type into the query and fire the action.
 
 ### Sidebar filters
 
-Toggle actions that narrow a sidebar's rows. Defaults act only while the
-owning sidebar has keyboard focus, the same way `R` and `O` do above.
+Toggle actions that narrow a sidebar's rows. Defaults act only while the owning sidebar has keyboard focus, the same way `R` and `O` do above.
 
-Projects sidebar — the session filter and the attention filter are
-independent dimensions that AND together; the four PR filters are one
-dimension whose active states union (an open-or-draft filter shows both);
-and that PR dimension in turn ANDs with the other two, so a worktree must
-satisfy the session/attention conjunction and match one active PR state to
-survive:
+Projects sidebar — the session filter and the attention filter are independent dimensions that AND together; the four PR filters are one dimension whose active states union (an open-or-draft filter shows both); and that PR dimension in turn ANDs with the other two, so a worktree must satisfy the session/attention conjunction and match one active PR state to survive:
 
-- `ToggleSessionsFilter` (default `S`) narrows to workspaces with a live
-  session and lists only their sessions. With
-  `[ui] sessions_filter_counts_detached` on, a listed detached herdr agent
-  also counts and stays listed.
-- `ToggleDetachedSessionsFilter` flips the runtime
-  `sessions_filter_counts_detached` value. No default key; a binding acts
-  only while the projects sidebar has focus, like the other filters.
-- `ToggleAttentionFilter` (default `A`) — narrow to workspaces whose session
-  wants attention.
-- `TogglePrOpenFilter` / `TogglePrDraftFilter` / `TogglePrMergedFilter` /
-  `TogglePrClosedFilter` (no default key) — narrow to worktrees with an open,
-  draft, merged, or closed PR. These four exist only when `[integrations.gh]
-  pr_status = true`; a query against `gh` runs per worktree, so
-  filtered rows fill in as each answer arrives rather than appearing all at
-  once.
-- `ClearProjectFilters` (no default key) — drop every projects-sidebar
-  toggle at once.
-- `RefreshPrStatus` (no default key) — invalidate every worktree's cached PR
-  state and re-query `gh`. Acts while the projects sidebar has focus.
+- `ToggleSessionsFilter` (default `S`) narrows to workspaces with a live session and lists only their sessions. With `[ui] sessions_filter_counts_detached` on, a listed detached herdr agent also counts and stays listed.
+- `ToggleDetachedSessionsFilter` flips the runtime `sessions_filter_counts_detached` value. No default key; a binding acts only while the projects sidebar has focus, like the other filters.
+- `ToggleAttentionFilter` (default `A`) — narrow to workspaces whose session wants attention.
+- `TogglePrOpenFilter` / `TogglePrDraftFilter` / `TogglePrMergedFilter` / `TogglePrClosedFilter` (no default key) — narrow to worktrees with an open, draft, merged, or closed PR. These four exist only when `[integrations.gh] pr_status = true`; a query against `gh` runs per worktree, so filtered rows fill in as each answer arrives rather than appearing all at once.
+- `ClearProjectFilters` (no default key) — drop every projects-sidebar toggle at once.
+- `RefreshPrStatus` (no default key) — invalidate every worktree's cached PR state and re-query `gh`. Acts while the projects sidebar has focus.
 
-Git sidebar — one dimension (a file only ever matches one change kind), so
-the active toggles union:
+Git sidebar — one dimension (a file only ever matches one change kind), so the active toggles union:
 
-- `ToggleModifiedFilter` (default `M`) — narrow to modified and renamed
-  files.
+- `ToggleModifiedFilter` (default `M`) — narrow to modified and renamed files.
 - `ToggleDeletedFilter` (default `D`) — narrow to deleted files.
-- `ToggleUntrackedFilter` (default `U`) — narrow to untracked and added
-  files.
-- `ClearGitFilters` (no default key) — drop every git-sidebar toggle at
-  once.
+- `ToggleUntrackedFilter` (default `U`) — narrow to untracked and added files.
+- `ClearGitFilters` (no default key) — drop every git-sidebar toggle at once.
 
 Not scoped to either panel:
 
-- `ToggleSearchScope` (no default key) — switch a sidebar's fuzzy-search
-  query between confined-by-the-active-toggles and reaching every row.
-  Runtime-only: restarting returns to `[ui] search_scope`.
+- `ToggleSearchScope` (no default key) — switch a sidebar's fuzzy-search query between confined-by-the-active-toggles and reaching every row. Runtime-only: restarting returns to `[ui] search_scope`.
 
-Widening PR lookups to cover a collapsed project happens only while the
-projects sidebar is painted, so hiding that sidebar stops *that* widening. It
-does not stop PR lookups altogether: the git sidebar still polls the active
-workspace's PR state, and a lookup already running still finishes and is
-still banked by the frame-start drain.
+Widening PR lookups to cover a collapsed project happens only while the projects sidebar is painted, so hiding that sidebar stops *that* widening. It does not stop PR lookups altogether: the git sidebar still polls the active workspace's PR state, and a lookup already running still finishes and is still banked by the frame-start drain.
 
-A binding you write replaces the built-in binding on the same key. If you bind
-a key that a filter toggle uses by default, that toggle loses its key —
-silently. Two of your own bindings on one key both stay, and each runs only in
-the panel it belongs to, so you can give a key back its old meaning alongside
-the new one:
+A binding you write replaces the built-in binding on the same key. If you bind a key that a filter toggle uses by default, that toggle loses its key — silently. Two of your own bindings on one key both stay, and each runs only in the panel it belongs to, so you can give a key back its old meaning alongside the new one:
 
 ```toml
 [[keyboard.bindings]]
@@ -393,8 +244,7 @@ action = "ToggleDeletedFilter"   # git sidebar
 
 ### Misc
 
-- `None` — consume the key without doing anything. Useful to unbind a
-  default shortcut.
+- `None` — consume the key without doing anything. Useful to unbind a default shortcut.
 
 ---
 
@@ -402,33 +252,21 @@ action = "ToggleDeletedFilter"   # git sidebar
 
 These alacritty actions exist but are intentionally not wired up:
 
-- **Vi mode** (`ToggleViMode`, all `ViAction`/`ViMotion` variants) — alacritree
-  does not track terminal modes, so any binding gated by `mode = "Vi"` or
-  `mode = "~Vi"` is dropped at parse time.
-- **Search mode** (`SearchForward`, `SearchBackward`, all `SearchAction`
-  variants) — no in-app search UI yet.
+- **Vi mode** (`ToggleViMode`, all `ViAction`/`ViMotion` variants) — alacritree does not track terminal modes, so any binding gated by `mode = "Vi"` or `mode = "~Vi"` is dropped at parse time.
+- **Search mode** (`SearchForward`, `SearchBackward`, all `SearchAction` variants) — no in-app search UI yet.
 - **Hints** (`Hint(...)`) — regex hinting is an alacritty renderer feature.
-- **Mouse-only actions** (`CopySelection`, `ClearSelection`,
-  `ExpandSelection`) — depend on the selection model alacritree's grid does
-  not have.
-- **Platform-specific window actions** (`Hide`, `HideOtherApplications`,
-  `ToggleSimpleFullscreen`) — alacritty calls into AppKit directly; eframe
-  doesn't expose the equivalent.
+- **Mouse-only actions** (`CopySelection`, `ClearSelection`, `ExpandSelection`) — depend on the selection model alacritree's grid does not have.
+- **Platform-specific window actions** (`Hide`, `HideOtherApplications`, `ToggleSimpleFullscreen`) — alacritty calls into AppKit directly; eframe doesn't expose the equivalent.
 - **`ClearLogNotice`** — alacritree has no in-app log notice.
-- **`Command`** (`command = { ... }`) — spawning arbitrary external processes
-  from a keybinding is a security surface we haven't designed for yet.
+- **`Command`** (`command = { ... }`) — spawning arbitrary external processes from a keybinding is a security surface we haven't designed for yet.
 
-Bindings with these actions are still parsed; they just log at `debug` and
-otherwise do nothing.
+Bindings with these actions are still parsed; they just log at `debug` and otherwise do nothing.
 
 ---
 
 ## Customizing
 
-Add `[[keyboard.bindings]]` tables to `alacritty.toml` or `alacritree.toml`
-under your config directory (typically `~/.config/alacritty/`). Both files are
-deep-merged, so alacritree-specific overrides can live in `alacritree.toml`
-without touching the alacritty config.
+Add `[[keyboard.bindings]]` tables to `alacritty.toml` or `alacritree.toml` under your config directory (typically `~/.config/alacritty/`). Both files are deep-merged, so alacritree-specific overrides can live in `alacritree.toml` without touching the alacritty config.
 
 ```toml
 # Example: bind Ctrl+Shift+T to open a new session, and disable Cmd+M on macOS.
@@ -443,8 +281,7 @@ mods = "Command"
 action = "None"
 ```
 
-Modifier names: `Control` / `Ctrl`, `Shift`, `Alt` / `Option`, `Super` /
-`Command` / `Meta`. Combine with `|`.
+Modifier names: `Control` / `Ctrl`, `Shift`, `Alt` / `Option`, `Super` / `Command` / `Meta`. Combine with `|`.
 
 For raw byte sequences, use `chars = "..."` instead of `action`:
 
