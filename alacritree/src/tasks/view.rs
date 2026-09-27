@@ -814,7 +814,6 @@ pub(crate) struct Style {
     /// Behind a selected row.
     pub selection: Color32,
     pub selected_text: Color32,
-    pub split_lines: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1293,7 +1292,8 @@ fn show_confirm(ctx: &egui::Context, view: &mut TasksView) {
 }
 
 /// A store may reject an empty description, so a new row exists only here
-/// until it has text; leaving it empty drops it.
+/// until it has text; leaving it empty drops it. Each non-empty line of the
+/// text becomes its own task, so a pasted list adds one task per line.
 fn show_new_row(ui: &mut Ui, view: &mut TasksView, tasks: &[Task], c: Style) {
     let Some(new) = view.new_row.as_mut() else { return };
     let mut committed = None;
@@ -1321,7 +1321,8 @@ fn show_new_row(ui: &mut Ui, view: &mut TasksView, tasks: &[Task], c: Style) {
         }
         focused = edit.has_focus();
         if edit.lost_focus() {
-            let lines = new_task_lines(&new.text, c.split_lines);
+            let lines: Vec<String> =
+                new.text.lines().map(one_line).filter(|l| !l.is_empty()).collect();
             if lines.is_empty() { dropped = true } else { committed = Some(lines) }
         }
     });
@@ -1338,13 +1339,6 @@ fn show_new_row(ui: &mut Ui, view: &mut TasksView, tasks: &[Task], c: Style) {
         view.write(None, edits);
         view.added.extend(lines.into_iter().map(|text| NewRow { text, ..new.clone() }));
     }
-}
-
-/// The descriptions a new row's text makes: one per non-empty line with
-/// `split`, else the whole text as one line.
-fn new_task_lines(text: &str, split: bool) -> Vec<String> {
-    let lines = if split { text.lines().map(one_line).collect() } else { vec![one_line(text)] };
-    lines.into_iter().filter(|l| !l.is_empty()).collect()
 }
 
 #[cfg(test)]
@@ -1549,7 +1543,6 @@ mod tests {
             },
             selection: Color32::from_rgb(200, 200, 120),
             selected_text: Color32::BLACK,
-            split_lines: false,
         }
     }
 
@@ -1870,7 +1863,6 @@ mod tests {
     #[test]
     fn pasted_lines_become_one_task_each() {
         let mut h = Harness::new(Vec::new());
-        h.style.split_lines = true;
         let rect = h.text("+ add a task");
         h.click(rect.center());
         h.frame(vec![Event::Paste("milk\r\neggs\n\n  bread \n".into())]);
@@ -1884,7 +1876,6 @@ mod tests {
     #[test]
     fn pasted_lines_land_in_order_between_rows() {
         let mut h = two_rows();
-        h.style.split_lines = true;
         h.edit_end("one");
         h.key(Key::Enter);
         h.frame(vec![Event::Paste("x\ny".into())]);
@@ -1899,16 +1890,6 @@ mod tests {
         let orders: Vec<_> = added(&h).into_iter().map(|(_, o)| o).collect();
         assert!(orders.windows(2).all(|w| w[0] < w[1]), "{:?}", h.ops);
         assert!(orders.iter().all(|&o| o < 2048), "{:?}", h.ops);
-    }
-
-    #[test]
-    fn without_split_lines_a_paste_is_one_task() {
-        let mut h = Harness::new(Vec::new());
-        let rect = h.text("+ add a task");
-        h.click(rect.center());
-        h.frame(vec![Event::Paste("milk\neggs".into())]);
-        h.key(Key::Enter);
-        assert_eq!(h.view.plain_lines(), ["## global", "- [ ] milk eggs"]);
     }
 
     #[test]

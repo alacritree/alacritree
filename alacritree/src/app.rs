@@ -305,7 +305,6 @@ fn tasks_style(
             Some(_) => text,
             None => background,
         }),
-        split_lines: tasks.split_lines,
     }
 }
 

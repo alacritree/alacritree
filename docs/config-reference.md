@@ -587,7 +587,6 @@ How the tasks tab draws.
 - `hidden_count` (string): The `+N` count of sub-tasks a collapsed task hides. Unset uses the tab's hint color.
 - `section_chevron` (string): The chevron that folds a whole section. Unset uses the tab's text color.
 - `section_chevron_thickness` (number, default `2.5`): Stroke width of the section chevron, in points.
-- `split_lines` (boolean, default `false`): Make a new task whose text holds several lines, such as a pasted list, into one task per non-empty line, in order. Off joins the lines into one task.
 
 ### `[ui.tasks.add_button]`
 
