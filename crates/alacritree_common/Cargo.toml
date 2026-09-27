@@ -17,7 +17,7 @@ base64 = "0.22"
 log = "0.4"
 schemars = "1.2"
 serde = { version = "1", features = ["derive"] }
-strum = { version = "0.26", features = ["derive"] }
+strum = { version = "0.28", features = ["derive"] }
 thiserror.workspace = true
 # The color type the terminal's own palette uses, so an icon color configured
 # here needs no conversion on its way to the app.

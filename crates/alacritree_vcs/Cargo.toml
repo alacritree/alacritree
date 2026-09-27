@@ -14,5 +14,5 @@ test-support = []
 [dependencies]
 alacritree_common.workspace = true
 ambassador.workspace = true
-strum = { version = "0.26", features = ["derive"] }
+strum = { version = "0.28", features = ["derive"] }
 thiserror.workspace = true

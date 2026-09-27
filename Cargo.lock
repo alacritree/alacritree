@@ -109,7 +109,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shlex",
- "strum 0.26.3",
+ "strum 0.28.0",
  "subst",
  "swash",
  "sysinfo",
@@ -146,7 +146,7 @@ dependencies = [
  "log",
  "schemars",
  "serde",
- "strum 0.26.3",
+ "strum 0.28.0",
  "tempfile",
  "thiserror 2.0.17",
  "vte",
@@ -163,7 +163,7 @@ dependencies = [
  "log",
  "schemars",
  "serde",
- "strum 0.26.3",
+ "strum 0.28.0",
  "tempfile",
  "toml",
 ]
@@ -179,7 +179,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
- "strum 0.26.3",
+ "strum 0.28.0",
  "tempfile",
  "toml",
 ]
@@ -230,7 +230,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
- "strum 0.26.3",
+ "strum 0.28.0",
  "tempfile",
  "thiserror 2.0.17",
  "toml",
@@ -243,7 +243,7 @@ dependencies = [
  "alacritree_common",
  "ambassador",
  "serde_json",
- "strum 0.26.3",
+ "strum 0.28.0",
  "thiserror 2.0.17",
 ]
 
@@ -257,7 +257,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
- "strum 0.26.3",
+ "strum 0.28.0",
  "tempfile",
  "thiserror 2.0.17",
  "toml",
@@ -281,7 +281,7 @@ version = "0.0.0"
 dependencies = [
  "alacritree_common",
  "ambassador",
- "strum 0.26.3",
+ "strum 0.28.0",
  "thiserror 2.0.17",
 ]
 

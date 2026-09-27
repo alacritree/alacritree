@@ -83,7 +83,7 @@ nucleo-matcher = "0.3"
 enum_dispatch = "0.3"
 # Spells each closed set of config values and action names, and reads it back,
 # off the enum that holds it, so the two cannot disagree.
-strum = { version = "0.26", features = ["derive"] }
+strum = { version = "0.28", features = ["derive"] }
 thiserror.workspace = true
 
 [dev-dependencies]
