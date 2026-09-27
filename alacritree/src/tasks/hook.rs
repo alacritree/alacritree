@@ -8,12 +8,14 @@ use std::path::{Path, PathBuf};
 use alacritree_common::{jobs, wsl};
 use alacritree_tasks::scope::{GLOBAL, Harness, Place, SessionRef, node, sanitize};
 use alacritree_tasks::{Filter, NodeMatch, Status, Task, TaskBackend, tree};
-use serde::Deserialize;
+use pabal::{AddContext, AnyHarness, AnyPayload, AnyView, Fields};
 
 use crate::digest::stable_digest;
 use crate::tasks::facts;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+/// The event a hook config names. It fills in a payload that leaves out
+/// `hook_event_name`, and a payload that sends one wins.
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
 pub(crate) enum Event {
     SessionStart,
     UserPromptSubmit,
@@ -26,22 +28,6 @@ impl Event {
             Self::UserPromptSubmit => "UserPromptSubmit",
         }
     }
-}
-
-#[derive(Deserialize, Default)]
-struct Payload {
-    session_id: Option<String>,
-    cwd: Option<PathBuf>,
-}
-
-pub(crate) fn output(event: Event, context: &str) -> String {
-    serde_json::json!({
-        "hookSpecificOutput": {
-            "hookEventName": event.wire_name(),
-            "additionalContext": context,
-        }
-    })
-    .to_string()
 }
 
 /// The agent's own session and every scope above it. Other agents' lists
@@ -116,14 +102,24 @@ pub(crate) fn run(
     state_dir: Option<&Path>,
     backends: &[crate::vcs::Vcs],
 ) -> Option<String> {
-    let payload: Payload = serde_json::from_str(stdin).unwrap_or_default();
+    let kind = match harness {
+        Harness::Claude => AnyHarness::ClaudeCode,
+        Harness::Codex => AnyHarness::Codex,
+    };
+    let payload = AnyPayload::parse_named(kind, event.wire_name(), stdin).ok()?;
+    let view = payload.view();
+    if !matches!(view, AnyView::SessionStart(_) | AnyView::UserPromptSubmit(_)) {
+        return None;
+    }
     let here = std::env::current_dir().ok();
-    let cwd = match payload.cwd {
-        Some(cwd) => on_this_host(cwd, here)?,
+    let cwd = match payload.cwd() {
+        Some(cwd) => on_this_host(cwd.to_path_buf(), here)?,
         None => here?,
     };
-    let session =
-        payload.session_id.filter(|id| !id.trim().is_empty()).map(|id| SessionRef { harness, id });
+    let session = payload
+        .session_id()
+        .filter(|id| !id.trim().is_empty())
+        .map(|id| SessionRef { harness, id: id.to_string() });
     let (place, tasks) = jobs::on_this_thread(|b| {
         let (side, place) = facts::place_for(&cwd, backends, b);
         let nodes = visible_nodes(&place, session.as_ref()).into_iter().map(NodeMatch::Exact);
@@ -138,7 +134,7 @@ pub(crate) fn run(
         let path = digest_path(dir, session);
         let digest = format!("{:016x}", stable_digest(text.as_bytes()));
         let seen = std::fs::read_to_string(&path).is_ok_and(|s| s == digest);
-        if seen && event == Event::UserPromptSubmit {
+        if seen && matches!(view, AnyView::UserPromptSubmit(_)) {
             return None;
         }
         if !seen {
@@ -146,7 +142,12 @@ pub(crate) fn run(
             let _ = std::fs::write(&path, digest);
         }
     }
-    Some(output(event, &text))
+    let response = match view {
+        AnyView::SessionStart(start) => Some(start.add_context(&text)),
+        AnyView::UserPromptSubmit(prompt) => prompt.add_context(&text),
+        _ => None,
+    };
+    response.map(|r| r.to_string())
 }
 
 #[cfg(test)]
@@ -185,14 +186,5 @@ mod tests {
     fn without_a_session_the_workspace_is_the_write_target() {
         let place = Place::Workspace { repo: "r".into(), branch: "main".into() };
         assert!(context(&FakeBackend::default(), &place, None, &[]).contains("`r.main`"));
-    }
-
-    #[test]
-    fn output_is_one_json_object_for_the_event() {
-        let json: serde_json::Value =
-            serde_json::from_str(&output(Event::UserPromptSubmit, "ctx")).unwrap();
-        assert_eq!(json["hookSpecificOutput"]["hookEventName"], "UserPromptSubmit");
-        assert_eq!(json["hookSpecificOutput"]["additionalContext"], "ctx");
-        assert_eq!(json.as_object().unwrap().len(), 1);
     }
 }
