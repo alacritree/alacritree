@@ -320,7 +320,7 @@ The picker lists local and `origin/*` branches. Picking *Auto* returns to automa
 
 ## Terminal grid
 
-Alacritree paints its grid with the egui font system by default, with the cell size computed from the configured font. `[ui] gpu_grid = true` draws it with an OpenGL shader instead, and falls back to the egui painter where the GL context cannot build it. Resizing the window resizes the PTY on the fly. The terminal drains pending events on every frame and handles:
+Alacritree draws its grid with an instanced OpenGL shader, with the cell size computed from the configured font. It needs a GL 3 or GLES 3 context. Where the driver cannot build the shader, the grid stays blank and the error dialog says why, while the rest of the window keeps drawing. Resizing the window resizes the PTY on the fly. The terminal drains pending events on every frame and handles:
 
 - `Title`, which sets the session's title in its tab and sidebar row. A spinner title changing to a plain one also marks an agent as done.
 - `ChildExit`. By default the session closes. `[ui] hold_exited_sessions` can keep it on screen with a line naming the key that closes it.
