@@ -21,12 +21,12 @@ use std::path::{Path, PathBuf};
 /// Both beat pointing at `master`, which would validate every config against
 /// unreleased keys.
 pub(super) const ID: &str =
-    "https://github.com/mathix420/alacritree/releases/latest/download/alacritree-config.json";
+    "https://github.com/alacritree/alacritree/releases/latest/download/alacritree-config.json";
 
 /// Where the shape of a task command's `list` output is published, attached
 /// to every release beside the config schema for the same reasons.
 const TASKS_ID: &str =
-    "https://github.com/mathix420/alacritree/releases/latest/download/alacritree-tasks.json";
+    "https://github.com/alacritree/alacritree/releases/latest/download/alacritree-tasks.json";
 
 /// The schema document, pretty-printed with a trailing newline.
 pub fn document() -> String {

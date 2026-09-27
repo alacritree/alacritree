@@ -77,7 +77,7 @@
       "type": "object"
     }
   },
-  "$id": "https://github.com/mathix420/alacritree/releases/latest/download/alacritree-tasks.json",
+  "$id": "https://github.com/alacritree/alacritree/releases/latest/download/alacritree-tasks.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "description": "What `[integrations.tasks.command] list` prints: the store's pending and completed tasks, as one JSON array.",
   "items": {

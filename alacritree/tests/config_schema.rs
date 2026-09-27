@@ -72,7 +72,7 @@ fn the_committed_schema_names_where_it_is_published() {
         serde_json::from_str(&std::fs::read_to_string(schema_path()).unwrap()).unwrap();
     assert_eq!(
         committed["$id"],
-        "https://github.com/mathix420/alacritree/releases/latest/download/alacritree-config.json"
+        "https://github.com/alacritree/alacritree/releases/latest/download/alacritree-config.json"
     );
 }
 

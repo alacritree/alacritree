@@ -574,7 +574,7 @@ alacritree schema init path/to/alacritty.toml # or a specific file
 which prepends a header naming the published schema:
 
 ```toml
-#:schema https://github.com/mathix420/alacritree/releases/latest/download/alacritree-config.json
+#:schema https://github.com/alacritree/alacritree/releases/latest/download/alacritree-config.json
 ```
 
 `latest/download` always resolves to the newest released schema. To validate

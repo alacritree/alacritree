@@ -2424,7 +2424,7 @@
       "type": "object"
     }
   },
-  "$id": "https://github.com/mathix420/alacritree/releases/latest/download/alacritree-config.json",
+  "$id": "https://github.com/alacritree/alacritree/releases/latest/download/alacritree-config.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "description": "Everything alacritree reads out of alacritty.toml and alacritree.toml. Unknown keys are allowed: the two files are layers, and alacritty.toml legitimately carries keys only the real alacritty acts on.",
   "properties": {
