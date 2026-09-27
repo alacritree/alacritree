@@ -206,6 +206,12 @@ fn filter_args(filter: &Filter) -> Option<Vec<String>> {
     Some(vec![format!("({})", nodes.join(" or ")), "(status:pending or status:completed)".into()])
 }
 
+/// A description as a `task` argument. Taskwarrior reads a backslash as an
+/// escape and drops it, even after `--`, so each one is doubled.
+fn escaped(description: &str) -> String {
+    description.replace('\\', r"\\")
+}
+
 /// The arguments for any edit but `Add`, which has to read back the uuid it
 /// made. `--` stops taskwarrior reading `+tag` or `due:` out of a
 /// description.
@@ -221,7 +227,7 @@ fn edit_args(edit: &Edit) -> Vec<String> {
             format!("order:{order}"),
         ]),
         Edit::Reorder { id, order } => modify(id, &[format!("order:{order}")]),
-        Edit::Describe { id, description } => modify(id, &["--".into(), description.clone()]),
+        Edit::Describe { id, description } => modify(id, &["--".into(), escaped(description)]),
         Edit::Done(id) => verb(id, "done"),
         Edit::Undone(id) => modify(id, &["status:pending".into()]),
         Edit::Start(id) => verb(id, "start"),
@@ -366,7 +372,7 @@ impl Cli<'_> {
         ];
         args.extend(parent.map(|p| format!("subof:{p}")));
         args.push("--".into());
-        args.push(description.to_string());
+        args.push(escaped(description));
         let output = self.run(&args)?;
         created_uuid(&String::from_utf8_lossy(&output.stdout)).ok_or_else(|| TaskError::Failed {
             program: self.program.clone(),
@@ -511,6 +517,17 @@ mod tests {
         let id = add(&tw, &side, "r", "old", None);
         apply(&tw, &side, Edit::Describe { id: id.clone(), description: "new +not-a-tag".into() });
         assert_eq!(find(&tw, &side, &id).unwrap().description, "new +not-a-tag");
+    }
+
+    #[test]
+    fn backslashes_in_a_description_are_kept() {
+        let Some((_dir, side, tw)) = private() else { return };
+        let text = r"open C:\Users\me\x.log on \\.\pipe\a \\n and a\";
+        let id = add(&tw, &side, "r", text, None);
+        assert_eq!(find(&tw, &side, &id).unwrap().description, text);
+        let text = r"now D:\tmp\y";
+        apply(&tw, &side, Edit::Describe { id: id.clone(), description: text.into() });
+        assert_eq!(find(&tw, &side, &id).unwrap().description, text);
     }
 
     #[test]
