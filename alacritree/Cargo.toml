@@ -3,8 +3,8 @@ name = "alacritree"
 version = "0.13.0"
 authors = ["Arnaud Gissinger"]
 license = "Apache-2.0"
-description = "Alacritty fork with worktree-aware sidebars"
-repository = "https://github.com/mathix420/alacritree"
+description = "Native terminal that turns Git worktrees into workspaces, built on Alacritty"
+repository = "https://github.com/alacritree/alacritree"
 edition.workspace = true
 rust-version.workspace = true
 

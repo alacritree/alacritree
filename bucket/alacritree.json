@@ -1,11 +1,11 @@
 {
     "version": "0.13.0",
-    "description": "Alacritty fork with worktree-aware sidebars",
-    "homepage": "https://github.com/mathix420/alacritree",
+    "description": "Native terminal that turns Git worktrees into workspaces, built on Alacritty",
+    "homepage": "https://github.com/alacritree/alacritree",
     "license": "Apache-2.0",
     "architecture": {
         "64bit": {
-            "url": "https://github.com/mathix420/alacritree/releases/download/v0.13.0/alacritree-x86_64-pc-windows-msvc.zip",
+            "url": "https://github.com/alacritree/alacritree/releases/download/v0.13.0/alacritree-x86_64-pc-windows-msvc.zip",
             "hash": "b77b24010920afa11a7f26a5e4f8bd40adea35b09eb66ca664aa07986d597a04"
         }
     },
@@ -21,12 +21,12 @@
         ]
     ],
     "checkver": {
-        "github": "https://github.com/mathix420/alacritree"
+        "github": "https://github.com/alacritree/alacritree"
     },
     "autoupdate": {
         "architecture": {
             "64bit": {
-                "url": "https://github.com/mathix420/alacritree/releases/download/v$version/alacritree-x86_64-pc-windows-msvc.zip"
+                "url": "https://github.com/alacritree/alacritree/releases/download/v$version/alacritree-x86_64-pc-windows-msvc.zip"
             }
         }
     }

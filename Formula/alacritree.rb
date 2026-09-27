@@ -1,6 +1,6 @@
 class Alacritree < Formula
-  desc "Alacritty fork with worktree-aware sidebars"
-  homepage "https://github.com/mathix420/alacritree"
+  desc "Native terminal that turns Git worktrees into workspaces, built on Alacritty"
+  homepage "https://github.com/alacritree/alacritree"
   version "0.13.0"
   license "Apache-2.0"
 
@@ -21,7 +21,7 @@ class Alacritree < Formula
   # unsupported arches instead of silently downloading nothing.
   on_macos do
     on_arm do
-      url "https://github.com/mathix420/alacritree/releases/download/v#{version}/alacritree-aarch64-apple-darwin.tar.gz"
+      url "https://github.com/alacritree/alacritree/releases/download/v#{version}/alacritree-aarch64-apple-darwin.tar.gz"
       sha256 "ed995f1a029e96535640b7254511168d0974121d7571aa92c826fcc2f6db61b2"
     end
   end

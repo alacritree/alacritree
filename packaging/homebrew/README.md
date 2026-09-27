@@ -6,7 +6,7 @@ dedicated `homebrew-alacritree` tap repo. That keeps everything in one
 place at the cost of one extra step for users:
 
 ```sh
-brew tap mathix420/alacritree https://github.com/mathix420/alacritree
+brew tap alacritree/alacritree https://github.com/alacritree/alacritree
 brew install alacritree
 ```
 
@@ -21,8 +21,4 @@ secret is required; the shared `ALACRITREE_BOT_TOKEN` covers it.
 
 ## Why a formula, not a cask?
 
-Casks expect a `.app` bundle (or a `.dmg`/`.pkg` containing one).
-Alacritree's macOS release tarball is just the bare binary today — the
-desktop metadata and icons in the release workflow are gated on Linux.
-If/when we start building a proper `Alacritree.app` (à la upstream
-alacritty's `make app`), switching to a cask becomes worthwhile.
+The formula installs the bare binary from the macOS release tarball. Releases also carry `Alacritree.app`, built by [`release-macos-app.yml`](../../.github/workflows/release-macos-app.yml), and only the bundle gets desktop notifications. A cask that installs that bundle would replace the formula, and none exists yet.
