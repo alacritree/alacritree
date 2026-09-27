@@ -323,7 +323,7 @@
         },
         "on_removed": {
           "default": [],
-          "description": "Arguments after a worktree is removed. Runs in the main checkout,\nsince the worktree is gone. Empty skips it.",
+          "description": "Arguments after a worktree is removed, including one pruned because\nits directory was already deleted. Runs in the main checkout, since\nthe worktree is gone. Empty skips it.",
           "items": {
             "type": "string"
           },

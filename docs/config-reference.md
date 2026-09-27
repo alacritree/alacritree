@@ -187,7 +187,7 @@ One hook: the program to run, and its arguments for each worktree event.
 - `enabled` (boolean, default `true`): Run this hook.
 - `on_created` (array of string, default `[]`): Arguments when alacritree creates a worktree. `{checkout}` is the new worktree and `{main}` the project's main checkout. Empty skips it.
 - `on_opened` (array of string, default `[]`): Arguments the first time this process opens a shell in a worktree, including ones created outside alacritree. Runs again after a restart, so the command must be safe to repeat. Empty skips it.
-- `on_removed` (array of string, default `[]`): Arguments after a worktree is removed. Runs in the main checkout, since the worktree is gone. Empty skips it.
+- `on_removed` (array of string, default `[]`): Arguments after a worktree is removed, including one pruned because its directory was already deleted. Runs in the main checkout, since the worktree is gone. Empty skips it.
 - `path` (string): The program to run on Windows or natively. A bare name is looked up on PATH.
 - `wsl_path` (string, default `""`): The program to run inside a WSL distro for a worktree there, as written. Empty looks up the file name of `path`, without directory or extension, through the distro's login shell, and a distro where that finds nothing skips the hook. A Windows `path` is never run there.
 

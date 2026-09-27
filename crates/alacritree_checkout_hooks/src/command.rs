@@ -47,8 +47,9 @@ pub struct RawCommandHook {
     /// so the command must be safe to repeat. Empty skips it.
     #[serde(default)]
     pub on_opened: Vec<String>,
-    /// Arguments after a worktree is removed. Runs in the main checkout,
-    /// since the worktree is gone. Empty skips it.
+    /// Arguments after a worktree is removed, including one pruned because
+    /// its directory was already deleted. Runs in the main checkout, since
+    /// the worktree is gone. Empty skips it.
     #[serde(default)]
     pub on_removed: Vec<String>,
 }

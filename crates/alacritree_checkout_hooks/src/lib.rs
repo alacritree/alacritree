@@ -64,8 +64,9 @@ pub trait CheckoutHook {
         blocking: &::alacritree_common::jobs::Blocking,
     ) -> ::alacritree_checkout_hooks::Outcome;
 
-    /// The worktree at `event.checkout` was removed. The path was resolved
-    /// before git deleted the directory, which cannot be canonicalized after.
+    /// The worktree at `event.checkout` was removed, or pruned once its
+    /// directory was already gone. The path is canonical as far as its
+    /// surviving ancestors allow, since a deleted directory can't be resolved.
     fn on_removed(
         &self,
         event: &::alacritree_checkout_hooks::CheckoutEvent<'_>,

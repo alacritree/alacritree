@@ -342,8 +342,7 @@ fn copy_path(src: &Path, dst: &Path) -> std::io::Result<()> {
     }
 }
 
-/// Remove `req.checkout` and tell the hooks, or forget it when it is gone,
-/// which runs no hook.
+/// Remove `req.checkout`, or prune it when it is gone, and tell the hooks.
 pub(crate) fn delete_worktree<H: CheckoutHooks + ?Sized>(
     vcs: &Vcs,
     req: &RemoveCheckout,
@@ -352,17 +351,26 @@ pub(crate) fn delete_worktree<H: CheckoutHooks + ?Sized>(
 ) -> Result<(), WorktreeError> {
     // Resolve before removal: canonicalize needs the directory to still
     // exist, and the checkout hooks below run after git has deleted it.
-    let path = &req.checkout.path;
-    let scope_root = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
+    let scope_root = resolve_through_ancestors(&req.checkout.path);
     vcs.remove_checkout(req, blocking)?;
-    if req.checkout.gone {
-        return Ok(());
-    }
     let event = CheckoutEvent { main: &req.main, checkout: &scope_root };
     crate::checkout_hooks::report(hooks.removed(&event, blocking), |level, line| {
         log::log!(level, "{line} (removed {})", scope_root.display())
     });
     Ok(())
+}
+
+/// Canonicalize `path` through its nearest ancestor that still exists. A
+/// gone checkout's directory can't be canonicalized, but a symlink above it
+/// still resolves to what the path meant while the directory existed.
+fn resolve_through_ancestors(path: &Path) -> PathBuf {
+    path.ancestors()
+        .find_map(|dir| {
+            let canonical = std::fs::canonicalize(dir).ok()?;
+            let rest = path.strip_prefix(dir).ok()?;
+            Some(if rest.as_os_str().is_empty() { canonical } else { canonical.join(rest) })
+        })
+        .unwrap_or_else(|| path.to_path_buf())
 }
 
 /// Run [`delete_worktree`] on the pool, waking the window when it finishes.
@@ -414,26 +422,55 @@ mod tests {
         }
     }
 
-    /// A gone checkout is forgotten, never removed, so no removal hook runs
-    /// for it.
+    /// Prune `repo`'s one gone checkout the way the delete dialog does, with
+    /// the checkout as discovery reports it.
+    fn prune_gone_checkout(repo: &Path, hook: &FakeHook) {
+        let discovered =
+            jobs::on_this_thread(|b| git().discover(repo, &[], false, b)).expect("discover");
+        let checkout = discovered.checkouts.into_iter().find(|c| c.gone).expect("a gone checkout");
+        let req =
+            RemoveCheckout { main: repo.to_path_buf(), checkout, force: false, delete_name: false };
+        jobs::on_this_thread(|b| delete_worktree(&git(), &req, &[hook.clone()][..], b))
+            .expect("prune succeeds");
+    }
+
+    /// A pruned checkout's tools still hold state for it, such as doppler's
+    /// scopes, so the removal hooks run for it as for a live one.
     #[test]
-    fn forgetting_a_gone_checkout_runs_no_hook() {
-        let fake = FakeVcs::new("/r");
+    fn pruning_a_gone_checkout_runs_the_removal_hooks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo_dir = init_repo(&tmp.path().join("repo"));
+        let wt_path = add_worktree(&repo_dir, "stale");
+        let canonical = wt_path.canonicalize().unwrap();
+        std::fs::remove_dir_all(&wt_path).unwrap();
         let hook = FakeHook::silent();
-        let mut checkout = live_checkout(Path::new("/r-wt"), "gone");
-        checkout.gone = true;
-        let req = RemoveCheckout {
-            main: PathBuf::from("/r"),
-            checkout,
-            force: false,
-            delete_name: false,
-        };
-        jobs::on_this_thread(|b| {
-            delete_worktree(&crate::vcs::Vcs::Fake(fake.clone()), &req, &[hook.clone()][..], b)
-        })
-        .expect("forget succeeds");
-        assert_eq!(fake.calls(), ["remove /r-wt"]);
-        assert_eq!(hook.events(), []);
+
+        prune_gone_checkout(&repo_dir, &hook);
+
+        assert!(!worktree_exists(&repo_dir, "stale"));
+        assert_eq!(hook.events(), [Event::Removed { main: repo_dir, checkout: canonical }]);
+    }
+
+    /// Git records the path the worktree was added under, and a symlink in
+    /// it would hand hooks a spelling that names no state they keyed by
+    /// canonical path.
+    #[cfg(unix)]
+    #[test]
+    fn pruning_resolves_symlinks_in_the_recorded_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let repo_dir = init_repo(&link.join("repo"));
+        let wt_path = add_worktree(&repo_dir, "stale");
+        let canonical = wt_path.canonicalize().unwrap();
+        std::fs::remove_dir_all(&wt_path).unwrap();
+        let hook = FakeHook::silent();
+
+        prune_gone_checkout(&repo_dir, &hook);
+
+        assert_eq!(hook.events(), [Event::Removed { main: repo_dir, checkout: canonical }]);
     }
 
     fn abs(tail: &str) -> PathBuf {
