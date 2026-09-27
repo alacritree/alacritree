@@ -19,6 +19,9 @@ pub struct PersistedState {
     pub show_left_sidebar: bool,
     #[serde(default = "default_true")]
     pub show_right_sidebar: bool,
+    /// Whether the sidebar that docks the tasks leaves them out.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hide_tasks_sidebar: bool,
     /// Per-worktree override of the branch the git panel diffs against.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub base_branches: Vec<PersistedBaseBranch>,
@@ -38,6 +41,7 @@ impl Default for PersistedState {
             projects: Vec::new(),
             show_left_sidebar: true,
             show_right_sidebar: true,
+            hide_tasks_sidebar: false,
             base_branches: Vec::new(),
             collapsed_task_sections: Vec::new(),
             hide_completed_tasks: false,

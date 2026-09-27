@@ -39,6 +39,7 @@ unit_actions!(
     SelectPreviousSession,
     ToggleLeftSidebar,
     ToggleRightSidebar,
+    ToggleTasksSidebar,
     SelectNextWorkspace,
     SelectPreviousWorkspace,
     OpenScratchpad,

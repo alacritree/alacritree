@@ -233,6 +233,8 @@ caret there; bind them elsewhere if you want the caret back.
 - `ToggleLeftSidebar` — show or hide the projects/worktrees sidebar.
   Default: `Ctrl+B`.
 - `ToggleRightSidebar` — show or hide the git status sidebar. Default: `Ctrl+G`.
+- `ToggleTasksSidebar`: show or hide the tasks docked in a sidebar, leaving the
+  rest of the sidebar. No default key.
 - `SelectNextWorkspace` / `SelectPreviousWorkspace` — move between the home tab
   and the worktrees. Defaults: `Alt+Right` / `Alt+Left`.
 - `AddProject` — open the picker that adds a project to the sidebar.

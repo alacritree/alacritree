@@ -114,7 +114,7 @@ fn section_of(a: NamedAction) -> PaletteSection {
         ToggleSessionRows(_) | ToggleSessionTabs(_) | ToggleSessionDrag(_) => Sessions,
         MoveSessionUp(_) | MoveSessionDown(_) => Sessions,
         IndentTask(_) | DedentTask(_) | MoveTaskUp(_) | MoveTaskDown(_) => Tasks,
-        DeleteTask(_) | ToggleCompletedTasks(_) => Tasks,
+        DeleteTask(_) | ToggleCompletedTasks(_) | ToggleTasksSidebar(_) => Tasks,
         SelectNextWorkspace(_) | SelectPreviousWorkspace(_) => Workspaces,
         AddProject(_) | RefreshProjects(_) | SetBaseBranch(_) | ReviewStaged(_)
         | ReviewUnstaged(_) | ReviewBranch(_) => Workspaces,
@@ -319,7 +319,8 @@ fn is_hidden(a: NamedAction) -> bool {
 pub(crate) fn action_items(shortcuts: &Shortcuts, tasks_enabled: bool) -> Vec<PaletteItem> {
     // A tasks action while the integration is off would open nothing.
     let listed = |a: &NamedAction| {
-        let tasks = matches!(a, NamedAction::OpenTasks(_)) || a.is_tasks_scoped();
+        let tasks = matches!(a, NamedAction::OpenTasks(_) | NamedAction::ToggleTasksSidebar(_))
+            || a.is_tasks_scoped();
         !is_hidden(*a) && (tasks_enabled || !tasks)
     };
     let mut order: Vec<NamedAction> = NamedAction::iter().filter(listed).collect();

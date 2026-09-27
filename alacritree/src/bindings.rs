@@ -262,6 +262,7 @@ pub enum NamedAction {
     ToggleCompletedTasks(action::ToggleCompletedTasks),
     ToggleLeftSidebar(action::ToggleLeftSidebar),
     ToggleRightSidebar(action::ToggleRightSidebar),
+    ToggleTasksSidebar(action::ToggleTasksSidebar),
     AddProject(action::AddProject),
     ToggleSidebarFocus(action::ToggleSidebarFocus),
     CloseSession(action::CloseSession),
@@ -558,6 +559,7 @@ impl NamedAction {
             },
             Self::ToggleLeftSidebar(_) => "Toggle the projects sidebar".into(),
             Self::ToggleRightSidebar(_) => "Toggle the git sidebar".into(),
+            Self::ToggleTasksSidebar(_) => "Toggle the tasks in the sidebar".into(),
             Self::SelectNextWorkspace(_) => "Switch to the next workspace".into(),
             Self::SelectPreviousWorkspace(_) => "Switch to the previous workspace".into(),
             Self::OpenScratchpad(_) => "Toggle the workspace scratchpad tab".into(),
@@ -1699,6 +1701,7 @@ mod tests {
         for (name, expected) in [
             ("ToggleLeftSidebar", NamedAction::ToggleLeftSidebar(action::ToggleLeftSidebar)),
             ("ToggleRightSidebar", NamedAction::ToggleRightSidebar(action::ToggleRightSidebar)),
+            ("ToggleTasksSidebar", NamedAction::ToggleTasksSidebar(action::ToggleTasksSidebar)),
             ("SelectNextWorkspace", NamedAction::SelectNextWorkspace(action::SelectNextWorkspace)),
             (
                 "SelectPreviousWorkspace",

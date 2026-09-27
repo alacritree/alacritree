@@ -93,7 +93,7 @@ The tab reloads from taskwarrior every second while it is shown, so tasks an age
 
 #### Tasks in a sidebar
 
-While the integration is on, a sidebar docks the current workspace's tasks at its bottom, so an agent's progress shows without leaving the terminal. `[ui.tasks] sidebar` picks where: under the projects (`"left"`, the default), under the git status (`"right"`), or nowhere (`"off"`). A hidden sidebar hides its tasks with it.
+While the integration is on, a sidebar docks the current workspace's tasks at its bottom, so an agent's progress shows without leaving the terminal. `[ui.tasks] sidebar` picks where: under the projects (`"left"`, the default), under the git status (`"right"`), or nowhere (`"off"`). A hidden sidebar hides its tasks with it, and `ToggleTasksSidebar` hides the tasks alone, remembered across restarts.
 
 ```toml
 [ui.tasks]

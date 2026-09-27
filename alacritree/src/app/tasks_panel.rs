@@ -2,7 +2,7 @@
 //! agent's progress shows beside the terminal. `[ui.tasks] sidebar` picks the
 //! sidebar. The section draws the workspace's tasks tab when one is open, so
 //! the two never list twice, and keeps a listing of its own otherwise.
-//! Either lists only while drawn.
+//! Either lists only while drawn. `ToggleTasksSidebar` hides the section.
 
 use alacritree_tasks::Status;
 use alacritree_tasks::tree::{self, Row, Section};
@@ -46,7 +46,10 @@ impl AlacritreeApp {
     /// sidebar gets a listing for the workspace on screen unless a tasks tab
     /// there already has one.
     pub(super) fn docks_tasks(&mut self, side: TasksSidebar) -> bool {
-        if self.config.ui.tasks.sidebar != side || !self.config.integrations.tasks_enabled() {
+        if !self.show_tasks_sidebar
+            || self.config.ui.tasks.sidebar != side
+            || !self.config.integrations.tasks_enabled()
+        {
             return false;
         }
         let ws = &self.current_workspace;
@@ -56,6 +59,13 @@ impl AlacritreeApp {
             self.tasks_panel = Some(TasksPanel { workspace: ws.clone(), view });
         }
         true
+    }
+}
+
+impl Action for action::ToggleTasksSidebar {
+    fn run(&self, app: &mut AlacritreeApp, _: &Context, _: ActionOrigin) {
+        app.show_tasks_sidebar = !app.show_tasks_sidebar;
+        app.persist_sidebars();
     }
 }
 

@@ -443,6 +443,8 @@ type AppSession = Session<Context>;
 pub struct AlacritreeApp {
     show_left_sidebar: bool,
     show_right_sidebar: bool,
+    /// Whether the sidebar `[ui.tasks] sidebar` picks draws the tasks.
+    show_tasks_sidebar: bool,
     focus: PaneFocus,
     /// Runtime copies of `[ui.session_display]`.  The config is only the
     /// startup default; toggles flip these and are never persisted.
@@ -598,6 +600,7 @@ impl AlacritreeApp {
         Self {
             show_left_sidebar: persisted.show_left_sidebar,
             show_right_sidebar: persisted.show_right_sidebar,
+            show_tasks_sidebar: !persisted.hide_tasks_sidebar,
             focus: PaneFocus::Terminal,
             session_rows_always: config.ui.session_display.sidebar_always,
             session_tabs_always: config.ui.session_display.tabs_always,
@@ -814,9 +817,11 @@ impl AlacritreeApp {
         // reappear on next launch.
         let left = self.show_left_sidebar && !self.sidebar_auto_shown;
         let right = self.show_right_sidebar && !self.git_panel.auto_shown;
+        let hide_tasks = !self.show_tasks_sidebar;
         state::mutate(|s| {
             s.show_left_sidebar = left;
             s.show_right_sidebar = right;
+            s.hide_tasks_sidebar = hide_tasks;
         });
     }
 
@@ -6506,6 +6511,18 @@ mod tests {
             assert!(!texts.iter().any(|t| t == "Tasks"), "{texts:?}");
         }
         assert!(app.tasks_panel.is_none(), "a listing was started");
+    }
+
+    #[test]
+    fn a_hidden_tasks_section_leaves_the_sidebar() {
+        let mut app = app_with_tasks_on();
+        let view = fake_tasks_view(vec![unscoped_task("test it")]);
+        app.tasks_panel = Some(tasks_panel::TasksPanel { workspace: None, view });
+        sidebar_texts_until(&mut app, TasksSidebar::Left, shows("test it"));
+
+        app.show_tasks_sidebar = false;
+        let texts = sidebar_texts_until(&mut app, TasksSidebar::Left, |_| true);
+        assert!(!texts.iter().any(|t| t == "test it"), "{texts:?}");
     }
 
     /// A move re-points both workspaces' active entries, so a close right
