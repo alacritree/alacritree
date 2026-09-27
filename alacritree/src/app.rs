@@ -990,6 +990,9 @@ impl AlacritreeApp {
             self.refresh_project(ctx, idx);
             self.activities.scan_started(self.projects[idx].root.clone());
         }
+        // A click lands after its frame has painted, and a scan can run for
+        // seconds before its own repaint, so the row asks for its frame now.
+        ctx.request_repaint();
     }
 
     /// Re-discover every project holding a checkout whose `HEAD` has left the
@@ -4500,6 +4503,25 @@ mod tests {
         let text = scan_until(&mut app, "Project scan");
         assert!(text.starts_with("Project scan: 1 of 1 failed: "), "{text}");
         assert!(text.contains("the distro is stopped"), "{text}");
+    }
+
+    /// A click starts the scan after its frame has painted, so without a
+    /// frame of its own the row would say nothing until the scan ended.
+    #[test]
+    fn a_user_scan_asks_for_the_frame_that_shows_it() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut app = test_app();
+        app.projects.push(Project::placeholder(dir.path().to_path_buf()));
+        let ctx = Context::default();
+        // egui asks for a few frames of its own after the first.
+        for _ in 0..5 {
+            let _ = ctx.run(egui::RawInput::default(), |_| {});
+        }
+        assert!(!ctx.has_requested_repaint());
+
+        app.refresh_projects_for_user(&ctx, [0]);
+
+        assert!(ctx.has_requested_repaint());
     }
 
     /// Discovery started by anything but the user, here a moved branch or
