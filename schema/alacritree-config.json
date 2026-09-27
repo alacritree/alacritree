@@ -2291,6 +2291,11 @@
           "description": "Stroke width of the section chevron, in points.",
           "format": "float",
           "type": "number"
+        },
+        "split_lines": {
+          "default": false,
+          "description": "Make a new task whose text holds several lines, such as a pasted\nlist, into one task per non-empty line, in order. Off joins the lines\ninto one task.",
+          "type": "boolean"
         }
       },
       "type": "object"

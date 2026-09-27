@@ -1131,6 +1131,7 @@ pub struct TasksUi {
     pub active_marker_thickness: f32,
     pub active_background: Option<Rgb>,
     pub add_button: TasksButton,
+    pub split_lines: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
@@ -2832,6 +2833,10 @@ struct RawUiTasks {
     active_background: Option<RgbStr>,
     /// The `+ add a task` button under each section.
     add_button: RawTasksButton,
+    /// Make a new task whose text holds several lines, such as a pasted
+    /// list, into one task per non-empty line, in order. Off joins the lines
+    /// into one task.
+    split_lines: bool,
 }
 
 impl Default for RawUiTasks {
@@ -2847,6 +2852,7 @@ impl Default for RawUiTasks {
             active_marker_thickness: 2.5,
             active_background: None,
             add_button: RawTasksButton::default(),
+            split_lines: false,
         }
     }
 }
@@ -2872,6 +2878,7 @@ impl RawUiTasks {
                 hover_fill: rgb(&b.hover_fill),
                 pressed_fill: rgb(&b.pressed_fill),
             },
+            split_lines: self.split_lines,
         }
     }
 }

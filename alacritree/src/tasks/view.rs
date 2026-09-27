@@ -242,6 +242,7 @@ type PendingWrite = (Option<String>, Job<Result<(), TaskError>>);
 type PendingReload = (u64, Job<Result<Vec<Task>, TaskError>>);
 
 /// A row being typed that the store has not got yet.
+#[derive(Clone)]
 struct NewRow {
     node: String,
     after: Option<String>,
@@ -405,7 +406,11 @@ impl TasksView {
                 let rows = &section.rows;
                 let anchor =
                     add.after.as_ref().and_then(|id| rows.iter().position(|r| &r.id == id));
-                let at = anchor.map_or(rows.len(), |i| i + 1 + tree::descendants(rows, i));
+                let mut at = anchor.map_or(rows.len(), |i| i + 1 + tree::descendants(rows, i));
+                // Rows added earlier after the same anchor stay above this one.
+                while rows.get(at).is_some_and(|r| r.id.is_empty()) {
+                    at += 1;
+                }
                 section.rows.insert(at, Row {
                     id: String::new(),
                     depth: add.depth,
@@ -809,6 +814,7 @@ pub(crate) struct Style {
     /// Behind a selected row.
     pub selection: Color32,
     pub selected_text: Color32,
+    pub split_lines: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1315,8 +1321,8 @@ fn show_new_row(ui: &mut Ui, view: &mut TasksView, tasks: &[Task], c: Style) {
         }
         focused = edit.has_focus();
         if edit.lost_focus() {
-            let text = one_line(&new.text);
-            if text.is_empty() { dropped = true } else { committed = Some(text) }
+            let lines = new_task_lines(&new.text, c.split_lines);
+            if lines.is_empty() { dropped = true } else { committed = Some(lines) }
         }
     });
     if focused {
@@ -1325,13 +1331,20 @@ fn show_new_row(ui: &mut Ui, view: &mut TasksView, tasks: &[Task], c: Style) {
     if dropped {
         view.new_row = None;
     }
-    if let Some(text) = committed {
+    if let Some(lines) = committed {
         let new = view.new_row.take().expect("present above");
         let refs: Vec<&Task> = tasks.iter().collect();
-        let edits = tree::insert_after(&refs, &new.node, new.after.as_deref(), &text);
+        let edits = tree::insert_after(&refs, &new.node, new.after.as_deref(), &lines);
         view.write(None, edits);
-        view.added.push(NewRow { text, ..new });
+        view.added.extend(lines.into_iter().map(|text| NewRow { text, ..new.clone() }));
     }
+}
+
+/// The descriptions a new row's text makes: one per non-empty line with
+/// `split`, else the whole text as one line.
+fn new_task_lines(text: &str, split: bool) -> Vec<String> {
+    let lines = if split { text.lines().map(one_line).collect() } else { vec![one_line(text)] };
+    lines.into_iter().filter(|l| !l.is_empty()).collect()
 }
 
 #[cfg(test)]
@@ -1536,6 +1549,7 @@ mod tests {
             },
             selection: Color32::from_rgb(200, 200, 120),
             selected_text: Color32::BLACK,
+            split_lines: false,
         }
     }
 
@@ -1841,6 +1855,60 @@ mod tests {
         assert_eq!(h.view.plain_lines(), ["## global", "- [ ] milk"]);
         let grips = h.texts.iter().filter(|(t, _)| t == "⠿").count();
         assert_eq!(grips, 1, "the new row has its grip before the store answers");
+    }
+
+    fn added(h: &Harness) -> Vec<(&str, i64)> {
+        fn add(e: &Edit) -> Option<(&str, i64)> {
+            match e {
+                Edit::Add { description, order, .. } => Some((description.as_str(), *order)),
+                _ => None,
+            }
+        }
+        h.ops.iter().flat_map(|(_, edits)| edits).filter_map(add).collect()
+    }
+
+    #[test]
+    fn pasted_lines_become_one_task_each() {
+        let mut h = Harness::new(Vec::new());
+        h.style.split_lines = true;
+        let rect = h.text("+ add a task");
+        h.click(rect.center());
+        h.frame(vec![Event::Paste("milk\r\neggs\n\n  bread \n".into())]);
+        h.key(Key::Enter);
+        assert_eq!(h.ops.len(), 1, "one write for the whole paste: {:?}", h.ops);
+        let names: Vec<_> = added(&h).into_iter().map(|(d, _)| d).collect();
+        assert_eq!(names, ["milk", "eggs", "bread"]);
+        assert_eq!(h.view.plain_lines(), ["## global", "- [ ] milk", "- [ ] eggs", "- [ ] bread"]);
+    }
+
+    #[test]
+    fn pasted_lines_land_in_order_between_rows() {
+        let mut h = two_rows();
+        h.style.split_lines = true;
+        h.edit_end("one");
+        h.key(Key::Enter);
+        h.frame(vec![Event::Paste("x\ny".into())]);
+        h.key(Key::Enter);
+        assert_eq!(h.view.plain_lines(), [
+            "## global",
+            "- [ ] one",
+            "- [ ] x",
+            "- [ ] y",
+            "- [ ] two"
+        ]);
+        let orders: Vec<_> = added(&h).into_iter().map(|(_, o)| o).collect();
+        assert!(orders.windows(2).all(|w| w[0] < w[1]), "{:?}", h.ops);
+        assert!(orders.iter().all(|&o| o < 2048), "{:?}", h.ops);
+    }
+
+    #[test]
+    fn without_split_lines_a_paste_is_one_task() {
+        let mut h = Harness::new(Vec::new());
+        let rect = h.text("+ add a task");
+        h.click(rect.center());
+        h.frame(vec![Event::Paste("milk\neggs".into())]);
+        h.key(Key::Enter);
+        assert_eq!(h.view.plain_lines(), ["## global", "- [ ] milk eggs"]);
     }
 
     #[test]

@@ -196,52 +196,62 @@ fn siblings<'a>(tasks: &[&'a Task], parent: Option<&str>) -> Vec<&'a Task> {
     list
 }
 
-/// The `order` for a new sibling placed after `list[index]`, or first when
-/// `index` is `None`. When no integer fits between the neighbours, or a
-/// sibling has no `order` to place against, the whole set is renumbered at
-/// the stride first.
 fn slot(list: &[&Task], index: Option<usize>) -> (Vec<Edit>, i64) {
+    let (edits, orders) = slots(list, index, 1);
+    (edits, orders[0])
+}
+
+/// Ascending `order`s for `count` new siblings placed after `list[index]`,
+/// or first when `index` is `None`, spread evenly over the gap. When too few
+/// integers fit between the neighbours, or a sibling has no `order` to place
+/// against, the whole set is renumbered far enough apart first.
+fn slots(list: &[&Task], index: Option<usize>, count: usize) -> (Vec<Edit>, Vec<i64>) {
+    let n = count as i64;
+    let spread = |low: i64, step: i64| (1..=n).map(|k| low + k * step).collect();
     let ordered: Option<Vec<i64>> = list.iter().map(|t| t.order).collect();
     let gap = ordered.and_then(|orders| {
         let low = index.map_or(0, |i| orders[i]);
         match orders.get(index.map_or(0, |i| i + 1)) {
-            None => Some(low + STRIDE),
-            Some(&high) if high - low >= 2 => Some(low + (high - low) / 2),
+            None => Some(spread(low, STRIDE)),
+            Some(&high) if high - low > n => Some(spread(low, (high - low) / (n + 1))),
             Some(_) => None,
         }
     });
     match gap {
-        Some(order) => (Vec::new(), order),
+        Some(orders) => (Vec::new(), orders),
         None => {
+            let stride = STRIDE.max(n + 1);
             let renumber = list
                 .iter()
                 .enumerate()
-                .map(|(i, t)| Edit::Reorder { id: t.id.clone(), order: (i as i64 + 1) * STRIDE })
+                .map(|(i, t)| Edit::Reorder { id: t.id.clone(), order: (i as i64 + 1) * stride })
                 .collect();
-            let low = index.map_or(0, |i| (i as i64 + 1) * STRIDE);
-            (renumber, low + STRIDE / 2)
+            let low = index.map_or(0, |i| (i as i64 + 1) * stride);
+            (renumber, spread(low, stride / (n + 1)))
         },
     }
 }
 
+/// One task per description, in order, as siblings of `after` right below
+/// it, or first in the section when `after` is `None`.
 pub fn insert_after(
     tasks: &[&Task],
     project: &str,
     after: Option<&str>,
-    description: &str,
+    descriptions: &[impl AsRef<str>],
 ) -> Vec<Edit> {
     let present = present(tasks);
     let anchor = after.and_then(|u| tasks.iter().copied().find(|t| t.id == u));
     let parent = anchor.and_then(|t| parent_of(t, &present));
     let list = siblings(tasks, parent);
     let index = anchor.and_then(|a| list.iter().position(|t| t.id == a.id));
-    let (mut edits, order) = slot(&list, index);
-    edits.push(Edit::Add {
+    let (mut edits, orders) = slots(&list, index, descriptions.len());
+    edits.extend(descriptions.iter().zip(orders).map(|(description, order)| Edit::Add {
         project: project.to_string(),
-        description: description.to_string(),
+        description: description.as_ref().to_string(),
         parent: parent.map(str::to_string),
         order,
-    });
+    }));
     edits
 }
 
@@ -471,7 +481,7 @@ mod tests {
     #[test]
     fn insert_takes_the_midpoint_of_the_gap() {
         let t = [task("a", "r", None, Some(1024)), task("b", "r", None, Some(2048))];
-        assert_eq!(insert_after(&refs(&t), "r", Some("a"), "new"), [Edit::Add {
+        assert_eq!(insert_after(&refs(&t), "r", Some("a"), &["new"]), [Edit::Add {
             project: "r".into(),
             description: "new".into(),
             parent: None,
@@ -481,7 +491,7 @@ mod tests {
 
     #[test]
     fn insert_into_an_empty_section_starts_at_one_stride() {
-        let Some(Edit::Add { order, .. }) = insert_after(&[], "r", None, "x").pop() else {
+        let Some(Edit::Add { order, .. }) = insert_after(&[], "r", None, &["x"]).pop() else {
             panic!()
         };
         assert_eq!(order, STRIDE);
@@ -490,7 +500,7 @@ mod tests {
     #[test]
     fn insert_at_the_end_adds_a_stride() {
         let t = [task("a", "r", None, Some(1024))];
-        let Some(Edit::Add { order, .. }) = insert_after(&refs(&t), "r", Some("a"), "x").pop()
+        let Some(Edit::Add { order, .. }) = insert_after(&refs(&t), "r", Some("a"), &["x"]).pop()
         else {
             panic!()
         };
@@ -500,7 +510,7 @@ mod tests {
     #[test]
     fn a_closed_gap_renumbers_the_siblings_first() {
         let t = [task("a", "r", None, Some(10)), task("b", "r", None, Some(11))];
-        let edits = insert_after(&refs(&t), "r", Some("a"), "x");
+        let edits = insert_after(&refs(&t), "r", Some("a"), &["x"]);
         assert_eq!(edits[..2], [Edit::Reorder { id: "a".into(), order: 1024 }, Edit::Reorder {
             id: "b".into(),
             order: 2048
@@ -510,9 +520,20 @@ mod tests {
     }
 
     #[test]
+    fn several_inserts_into_a_closed_gap_keep_their_order() {
+        let t = [task("a", "r", None, Some(10)), task("b", "r", None, Some(11))];
+        let names: Vec<String> = (0..STRIDE).map(|i| format!("x{i}")).collect();
+        let got = applied(&t, &insert_after(&refs(&t), "r", Some("a"), &names));
+        let ids: Vec<String> = rows(&refs(&got)).into_iter().map(|r| r.id).collect();
+        let want: Vec<String> =
+            ["a".to_string()].into_iter().chain(names).chain(["b".to_string()]).collect();
+        assert_eq!(ids, want);
+    }
+
+    #[test]
     fn a_task_added_after_an_unordered_sibling_lands_below_it() {
         let t = [task("a", "r", None, Some(5000)), task("b", "r", None, None)];
-        let edits = insert_after(&refs(&t), "r", Some("b"), "new");
+        let edits = insert_after(&refs(&t), "r", Some("b"), &["new"]);
         let got = applied(&t, &edits);
         assert_eq!(shape(&rows(&refs(&got))), [("a", 0), ("b", 0), ("new", 0)]);
     }
@@ -532,7 +553,7 @@ mod tests {
     #[test]
     fn insert_below_a_child_stays_a_sibling_of_that_child() {
         let t = [task("a", "r", None, Some(1024)), task("a1", "r", Some("a"), Some(1024))];
-        let Some(Edit::Add { parent, .. }) = insert_after(&refs(&t), "r", Some("a1"), "x").pop()
+        let Some(Edit::Add { parent, .. }) = insert_after(&refs(&t), "r", Some("a1"), &["x"]).pop()
         else {
             panic!()
         };
