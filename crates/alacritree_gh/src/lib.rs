@@ -30,21 +30,45 @@ impl RemoteForge for GhForge {
     /// Group a whole burst and ask for each group in turn. The requests
     /// block.
     fn pull_requests(&self, heads: Vec<Head>, blocking: &Blocking) -> PullRequests {
-        let mut out = HashMap::new();
-        for group in groups(heads, blocking) {
-            // A cancel landing between groups has no child to kill, since
-            // neither the request nor the sweep registers one, so each group
-            // asks before starting rather than forking `gh` for a caller that
-            // is gone.
-            if blocking.cancelled() {
-                break;
-            }
-            out.extend(query_group(&group, graphql::run, |m, head_owner| {
-                query_gh(&m.path, &m.branch, head_owner, blocking)
-            }));
-        }
-        out
+        pull_requests_with(
+            heads,
+            blocking,
+            |cwd| resolve_repo(cwd, blocking),
+            graphql::run,
+            |m, head_owner| query_gh(&m.path, &m.branch, head_owner, blocking),
+        )
     }
+}
+
+/// The burst behind [`GhForge::pull_requests`], reporting one step per
+/// request so a refresh counts repositories off as each lands. `resolve`,
+/// `request` and `per_branch` are injected so a test can run it without `gh`.
+fn pull_requests_with(
+    heads: Vec<Head>,
+    blocking: &Blocking,
+    resolve: impl Fn(&Path) -> Option<(String, String)>,
+    request: impl Fn(&Path, &str) -> Option<Vec<u8>>,
+    per_branch: impl Fn(&Head, Option<&str>) -> Result<Option<PrInfo>, ForgeError>,
+) -> PullRequests {
+    // Resolving costs a `gh` process per repository, and runs before any
+    // step exists, so it is charged to none.
+    let groups = groups_with(heads, resolve);
+    blocking.set_steps(groups.iter().map(|g| g.label.clone()).collect());
+    let mut out = HashMap::new();
+    for group in groups {
+        // A cancel landing between groups has no child to kill, since
+        // neither the request nor the sweep registers one, so each group
+        // asks before starting rather than forking `gh` for a caller that
+        // is gone.
+        if blocking.cancelled() {
+            break;
+        }
+        let found = query_group(&group, &request, &per_branch);
+        let failed = group.members.iter().find_map(|m| found.get(&m.path)?.as_ref().err());
+        blocking.step_done(&group.label, failed.map_or(Ok(()), |e| Err(e.to_string())));
+        out.extend(found);
+    }
+    out
 }
 
 /// What one request covers: the branches asked about, and one worktree inside
@@ -57,18 +81,18 @@ struct Group {
     members: Vec<Head>,
     /// The owner each branch pushes to, where one could be read.
     head_owners: HashMap<String, String>,
+    /// What this request's progress step is called: `owner/repo`, or the
+    /// checkout for a group with no repository. Unique within a burst.
+    label: String,
 }
 
 /// One request per repository, chunked, plus one per path that cannot be
 /// grouped. Resolving costs a `gh` process per repository, which is why this
 /// runs on a worker rather than on the frame.
-fn groups(due: Vec<Head>, blocking: &Blocking) -> Vec<Group> {
-    groups_with(due, |cwd| resolve_repo(cwd, blocking))
-}
-
+///
 /// `resolve` names the repository a group asks about, given any worktree of
-/// it. Separate from [`groups`] so a test can pin which repository a group
-/// ends up asking without a `gh` process deciding it.
+/// it, injected so a test can pin which repository a group ends up asking
+/// without a `gh` process deciding it.
 fn groups_with(due: Vec<Head>, resolve: impl Fn(&Path) -> Option<(String, String)>) -> Vec<Group> {
     let mut by_repo: HashMap<(String, String), Group> = HashMap::new();
     let mut ungrouped = Vec::new();
@@ -91,6 +115,7 @@ fn groups_with(due: Vec<Head>, resolve: impl Fn(&Path) -> Option<(String, String
                     slug: Some((owner, name)),
                     members: Vec::new(),
                     head_owners: HashMap::new(),
+                    label: String::new(),
                 })
             },
             None => {
@@ -99,6 +124,7 @@ fn groups_with(due: Vec<Head>, resolve: impl Fn(&Path) -> Option<(String, String
                     slug: None,
                     members: Vec::new(),
                     head_owners: HashMap::new(),
+                    label: wsl::display_path(&m.path),
                 });
                 ungrouped.last_mut().expect("just pushed")
             },
@@ -117,13 +143,21 @@ fn groups_with(due: Vec<Head>, resolve: impl Fn(&Path) -> Option<(String, String
             // under the repository it targets. One resolve per repository, so
             // a project's worktrees still cost one process between them.
             g.slug = resolve(&g.cwd);
+            let name = match &g.slug {
+                Some((owner, name)) => format!("{owner}/{name}"),
+                None => wsl::display_path(&g.cwd),
+            };
+            // Later chunks carry their position, so each keeps a timing of
+            // its own under a label no other step shares.
             g.members
                 .chunks(graphql::CHUNK)
-                .map(|c| Group {
+                .enumerate()
+                .map(|(i, c)| Group {
                     cwd: g.cwd.clone(),
                     slug: g.slug.clone(),
                     members: c.to_vec(),
                     head_owners: g.head_owners.clone(),
+                    label: if i == 0 { name.clone() } else { format!("{name} ({})", i + 1) },
                 })
                 .collect::<Vec<_>>()
         })
@@ -688,6 +722,7 @@ mod tests {
                 })
                 .collect(),
             head_owners: HashMap::new(),
+            label: "owner/repo".to_string(),
         }
     }
 
@@ -1008,6 +1043,81 @@ mod tests {
         assert!(parse_name_with_owner(b"{}").is_none());
         assert!(parse_name_with_owner(br#"{"nameWithOwner":"alacritree"}"#).is_none());
         assert!(parse_name_with_owner(br#"{"nameWithOwner":"/alacritree"}"#).is_none());
+    }
+
+    /// The label of each step a burst reported, with whether it failed.
+    fn reported(snap: &jobs::ProgressSnapshot) -> Vec<(String, Option<Result<(), String>>)> {
+        let mut out: Vec<_> =
+            snap.steps.iter().map(|s| (s.label.clone(), s.outcome.clone())).collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
+    }
+
+    /// One step per request, so a refresh across repositories counts them off
+    /// as each lands. A repository's second chunk keeps a label of its own, so
+    /// its timing is not folded into the first's.
+    #[test]
+    fn a_burst_reports_one_step_per_request() {
+        let one = "https://github.com/owner/repo.git";
+        let two = "https://github.com/other/tool.git";
+        let mut due: Vec<Head> = (0..graphql::CHUNK + 1)
+            .map(|i| Head {
+                path: PathBuf::from(format!("/r/{i}")),
+                branch: format!("b{i}"),
+                remotes: remotes(one, one),
+            })
+            .collect();
+        due.push(Head {
+            path: PathBuf::from("/t"),
+            branch: "x".into(),
+            remotes: remotes(two, two),
+        });
+        let answer = |_: &Path, _: &str| Some(br#"{"data":{"repository":{}}}"#.to_vec());
+
+        let (_, snap) = jobs::recorded(|b| {
+            pull_requests_with(
+                due,
+                b,
+                |cwd| {
+                    Some(if cwd == Path::new("/t") {
+                        ("other".to_string(), "tool".to_string())
+                    } else {
+                        ("owner".to_string(), "repo".to_string())
+                    })
+                },
+                answer,
+                |_, _| Ok(None),
+            )
+        });
+
+        assert_eq!(reported(&snap), [
+            ("other/tool".to_string(), Some(Ok(()))),
+            ("owner/repo".to_string(), Some(Ok(()))),
+            ("owner/repo (2)".to_string(), Some(Ok(()))),
+        ]);
+        assert!(snap.steps.iter().all(|s| s.took.is_some()), "every step is timed");
+    }
+
+    /// A request whose lookups failed says so, with what went wrong, and a
+    /// group with no repository is labelled by the checkout it runs from.
+    #[test]
+    fn a_failed_lookup_fails_its_step() {
+        let due = vec![Head { path: PathBuf::from("/wt"), branch: "topic".into(), remotes: None }];
+
+        let (_, snap) = jobs::recorded(|b| {
+            pull_requests_with(
+                due,
+                b,
+                |_| panic!("an ungrouped head resolves nothing"),
+                |_, _| panic!("an ungrouped head asks for no batch"),
+                |_, _| Err(ForgeError::Malformed { program: GH }),
+            )
+        });
+
+        assert_eq!(reported(&snap), [(
+            wsl::display_path(Path::new("/wt")),
+            Some(Err(ForgeError::Malformed { program: GH }.to_string())),
+        )]);
     }
 
     /// Branches of one repository share a request; a chunk boundary splits them
