@@ -14,7 +14,7 @@ The first ultrafast, FOSS alternative to the LLM/worktree management apps croppi
 
 Minimalist approach, with the terminal at the center:
 
-- **Worktree management.** The sidebar lists projects and their worktrees, and one click opens a shell in one. A new worktree takes seconds and gets a copy of the project's AI assistant configs, such as `CLAUDE.md`, `AGENTS.md` and `.cursor/`.
+- **Worktree management.** The sidebar lists projects and their worktrees, and one click opens a shell in one. A new worktree gets a copy of the project's AI assistant configs, such as `CLAUDE.md`, `AGENTS.md` and `.cursor/`.
 - **Sessions per workspace.** Each worktree keeps its own terminal sessions. Switching worktrees leaves them running, scrollback and all.
 - **Git status panel.** The right sidebar shows the branch, staged and unstaged files, and the changes against the base branch, refreshed in the background. With [`gh`][gh] the base is the open PR's base branch.
 - **Branch diffs.** Clicking a file opens its diff in [Delta], in [tuicr] for a review whose comments agents can read, or in a command of your own.
@@ -22,7 +22,7 @@ Minimalist approach, with the terminal at the center:
 - **Task lists.** An opt-in tab shows the workspace's [taskwarrior] lists, the same ones its agents write with `task`.
 - **Multiplexer panes.** Agents running under [herdr] appear in the sidebar with their status, and [zellij] panes can too. Opening a row attaches a session to the pane.
 - **Checkout hooks.** Commands of your own run when a worktree is created, opened or removed. Doppler scopes follow the main checkout into every worktree.
-- **Scriptable.** An MCP server and a CLI reach everything the sidebar does.
+- **Scriptable.** An MCP server and a CLI create worktrees, open sessions, type into them and read their screens from outside the window.
 
 No Chromium, no bundled agents, no telemetry. No company behind it, and there never will be.
 
@@ -69,7 +69,7 @@ brew tap alacritree/alacritree https://github.com/alacritree/alacritree
 brew install alacritree
 ```
 
-The formula lives in [`Formula/alacritree.rb`](Formula/alacritree.rb) and is bumped on every release. It ships only `aarch64-apple-darwin`. Intel Macs take `Alacritree-x86_64-apple-darwin.app.tar.gz` from the release, which holds an app bundle, or use the shell installer below.
+The formula lives in [`Formula/alacritree.rb`](Formula/alacritree.rb), and every release bumps it. It ships only `aarch64-apple-darwin`. Intel Macs take `Alacritree-x86_64-apple-darwin.app.tar.gz` from the release, which holds an app bundle, or use the shell installer below.
 
 ### Linux and macOS shell installer
 
@@ -86,7 +86,7 @@ scoop bucket add alacritree https://github.com/alacritree/alacritree
 scoop install alacritree
 ```
 
-The manifest lives in [`bucket/alacritree.json`](bucket/alacritree.json) and is bumped on every release. The release zip works without Scoop too. Keep `conpty.dll` and `OpenConsole.exe` next to `alacritree.exe`, because Alacritree loads its console host from its own directory.
+The manifest lives in [`bucket/alacritree.json`](bucket/alacritree.json), and every release bumps it. The release zip works without Scoop too. Keep `conpty.dll` and `OpenConsole.exe` next to `alacritree.exe`, because Alacritree loads its console host from its own directory.
 
 ### From source
 
@@ -94,7 +94,7 @@ See the [Build](#build) section.
 
 ## Build
 
-The minimum Rust version is the `rust-version` in the root `Cargo.toml`. System packages required on Debian/Ubuntu:
+The minimum Rust version is the `rust-version` in the root `Cargo.toml`. Debian and Ubuntu need these system packages:
 
 ```sh
 sudo apt install \
@@ -129,7 +129,7 @@ On Windows it reads `%APPDATA%\alacritty\alacritty.toml`.
 
 After loading `alacritty.toml`, Alacritree deep-merges an optional `alacritree.toml` from the same locations on top. The merge follows Alacritty's rules. Arrays concatenate, so `[[keyboard.bindings]]` in `alacritree.toml` adds to the upstream bindings instead of replacing them. Tables merge recursively, and primitives replace.
 
-Alacritree-only options live in `alacritree.toml`, under `[ui]`, `[workspace]` and `[integrations]`. [`docs/config-reference.md`](docs/config-reference.md) lists every key with its type, default and effect. `alacritree schema init` adds a header pointing the file at the published JSON Schema, so editors that run the TOML language server complete and validate it.
+Alacritree-only options live in `alacritree.toml`, under `[ui]`, `[workspace]` and `[integrations]`. [`docs/config-reference.md`](docs/config-reference.md) lists every key. `alacritree schema init` adds a header pointing the file at the published JSON Schema, so editors that run the TOML language server complete and validate it.
 
 ## MCP server
 
@@ -159,7 +159,7 @@ alacritree session read-screen 3
 
 Commands print a short human summary. `--json` prints the raw reply instead, which is what a script or an agent wants.
 
-Anything that needs a window, such as sessions or workspace selection, requires a running Alacritree. The rest do not. With no instance listening, projects, git status and worktree creation are served straight from `state.toml` and git, so an agent can set Alacritree up before anyone has opened it.
+Anything that needs a window, such as sessions or workspace selection, requires a running Alacritree. The rest do not. With no instance listening, the CLI answers project, git status and worktree commands straight from `state.toml` and git, so an agent can set Alacritree up before anyone has opened it.
 
 `alacritree completions <shell>` writes a completion script to stdout, and `alacritree --help` lists the other subcommands.
 
@@ -180,9 +180,9 @@ It exits non-zero only when something is broken. A missing optional tool is a wa
 ## Documentation
 
 - [`docs/alacritree.md`](docs/alacritree.md) is the full feature reference: workspaces and sessions, the project and worktree sidebar, checkout hooks, task lists, herdr agents, the git status panel, the terminal grid, the two-file config model, the MCP server, and how Alacritree compares with other tools in the space.
-- [`docs/config-reference.md`](docs/config-reference.md) lists every config key with its type, default and effect. It is generated from the same doc comments as the JSON Schema.
+- [`docs/config-reference.md`](docs/config-reference.md) lists every config key with its type, default and effect. The doc comments that produce the JSON Schema produce it too, so the two always agree.
 - [`docs/keyboard-shortcuts.md`](docs/keyboard-shortcuts.md) lists every key binding the app understands, the `action = "..."` values `[[keyboard.bindings]]` accepts, and which Alacritty actions are intentionally not wired up.
-- [`docs/features.md`](docs/features.md) is upstream Alacritty's feature overview, covering vi mode, search, hints and selection expansion. It is kept for reference, and not everything in it is implemented in Alacritree.
+- [`docs/features.md`](docs/features.md) is upstream Alacritty's feature overview, covering vi mode, search, hints and selection expansion. Alacritree does not implement all of it yet.
 
 ## Repository layout
 
