@@ -148,7 +148,7 @@ pub struct DebugConfig {
     /// paint callback costs: the wall time of issuing a frame, and the GPU's
     /// own time for the upload and each of the three draws. Timer queries are
     /// cheap but not free, and the line is only meaningful to someone reading
-    /// it.  Needs `[ui] gpu_grid` and a GL 3.3 context.
+    /// it.  Needs a GL 3.3 context.
     /// Keeps this session's log file for as long as it is on, since the
     /// report has nowhere else to go.
     pub gpu_timing: bool,
@@ -1337,17 +1337,8 @@ pub struct UiTheme {
     /// Mouse-drag gate and travel limit for reordering sessions
     /// ([`SessionReorder`]).
     pub session_reorder: SessionReorder,
-    /// Draw the terminal grid through an OpenGL paint callback instead of
-    /// handing epaint a mesh: one twelve-byte record per cell, and the vertex
-    /// shader derives the quads. It needs a GL 3 context and bypasses the
-    /// renderer every other panel goes through, so an unmodified config keeps
-    /// the path that has always drawn the grid.  A context too
-    /// old for instanced arrays logs once, costs the frame it was found on,
-    /// and paints the mesh from the next one.
-    pub gpu_grid: bool,
     /// Corrections applied to the underline and strikeout the font placed
-    /// ([`Decorations`]).  Only the GPU grid reads these; the mesh path draws
-    /// a straight rule at a fixed offset either way.
+    /// ([`Decorations`]).
     pub decorations: Decorations,
     /// Paint a badge showing each worktree branch's upstream state. An
     /// unmodified config does no extra ref work. The state comes from local
@@ -1438,7 +1429,6 @@ impl Default for UiTheme {
             icon_tooltips: true,
             session_display: SessionDisplay::default(),
             session_reorder: SessionReorder::default(),
-            gpu_grid: false,
             decorations: Decorations::default(),
             upstream_status: false,
             worktree_liveness: true,
@@ -1958,9 +1948,9 @@ struct RawDebug {
     /// issuing a frame, and the GPU's own time for the upload and each of
     /// the three draws.  alacritree-only, so it belongs in
     /// `alacritree.toml`.  Timer queries are cheap but not free, and the
-    /// line is only meaningful to someone reading it.  Needs `[ui] gpu_grid`
-    /// and a GL 3.3 context.  Keeps this session's log file for as long as
-    /// it is on, since the report has nowhere else to go.
+    /// line is only meaningful to someone reading it.  Needs a GL 3.3
+    /// context.  Keeps this session's log file for as long as it is on,
+    /// since the report has nowhere else to go.
     gpu_timing: bool,
     /// Measure whole frames and report the period, CPU time, grid share and
     /// keystroke echo every few seconds.  alacritree-only, so it belongs in
@@ -3107,12 +3097,6 @@ struct RawUi {
     icons: RawIcons,
     /// Sidebar scrollbar style: "floating" | "solid".
     scrollbar: ClosedSet<ScrollbarStyle>,
-    /// Draw the terminal grid through an OpenGL paint callback instead of
-    /// handing epaint a mesh.  It needs a GL 3 context and bypasses the
-    /// renderer every other panel goes through, so an unmodified config keeps
-    /// the path that has always drawn the grid.  A context too old for
-    /// instanced arrays logs once and paints the mesh from the next frame on.
-    gpu_grid: bool,
     /// Corrections to the underline and strikeout the font placed
     /// ([`RawDecorations`]).
     decorations: RawDecorations,
@@ -3212,7 +3196,6 @@ impl Default for RawUi {
             delta_path: None,
             icons: RawIcons::default(),
             scrollbar: ClosedSet::default(),
-            gpu_grid: false,
             decorations: RawDecorations::default(),
             pr_status: None,
             upstream_status: false,
@@ -3396,7 +3379,6 @@ impl RawConfig {
                 drag: self.ui.session_reorder.drag,
                 scope: self.ui.session_reorder.scope.get(),
             },
-            gpu_grid: self.ui.gpu_grid,
             decorations: Decorations {
                 underline_position: parse_adjust(
                     "underline_position",
@@ -3706,7 +3688,7 @@ mod tests {
     /// silently mix the machine's real config into a run meant to be isolated.
     #[test]
     fn a_file_absent_from_the_named_directory_is_not_looked_up_elsewhere() {
-        let dir = config_dir(&[("alacritree.toml", "[ui]\ngpu_grid = true\n")]);
+        let dir = config_dir(&[("alacritree.toml", "[ui]\nupstream_status = true\n")]);
 
         let (_, files) = super::load(Some(dir.path()), &[]);
 
@@ -3717,12 +3699,12 @@ mod tests {
     /// A fragment is a whole TOML document, so a dotted key nests on its own.
     #[test]
     fn an_override_beats_the_file_that_set_the_same_key() {
-        let dir = config_dir(&[("alacritree.toml", "[ui]\ngpu_grid = true\n")]);
-        let off = toml::from_str("ui.gpu_grid=false").expect("a valid fragment");
+        let dir = config_dir(&[("alacritree.toml", "[ui]\nupstream_status = true\n")]);
+        let off = toml::from_str("ui.upstream_status=false").expect("a valid fragment");
 
         let (config, _) = super::load(Some(dir.path()), &[off]);
 
-        assert!(!config.ui.gpu_grid, "the file won over the override");
+        assert!(!config.ui.upstream_status, "the file won over the override");
     }
 
     /// Automated runs vary one key against no config at all, so an override
@@ -3742,12 +3724,12 @@ mod tests {
     #[test]
     fn the_last_override_of_a_key_wins() {
         let dir = config_dir(&[]);
-        let first = toml::from_str("ui.gpu_grid=true").expect("a valid fragment");
-        let second = toml::from_str("ui.gpu_grid=false").expect("a valid fragment");
+        let first = toml::from_str("ui.upstream_status=true").expect("a valid fragment");
+        let second = toml::from_str("ui.upstream_status=false").expect("a valid fragment");
 
         let (config, _) = super::load(Some(dir.path()), &[first, second]);
 
-        assert!(!config.ui.gpu_grid);
+        assert!(!config.ui.upstream_status);
     }
 
     /// The startup log diffs the resolved config, so an override reaches it
@@ -3818,9 +3800,9 @@ mod tests {
 
     #[test]
     fn one_changed_key_brings_nothing_else_with_it() {
-        let json = changed("[ui]\ngpu_grid = true\n");
+        let json = changed("[ui]\nupstream_status = true\n");
 
-        assert_eq!(json["ui"]["gpu_grid"], serde_json::json!(true));
+        assert_eq!(json["ui"]["upstream_status"], serde_json::json!(true));
         assert!(json.get("palette").is_none(), "an untouched section must not be dumped");
         assert!(
             json["ui"].get("async_session_spawn").is_none(),
@@ -3860,7 +3842,7 @@ mod tests {
 
     #[test]
     fn the_dump_is_one_line() {
-        let dump = config_from("[ui]\ngpu_grid = true\n")
+        let dump = config_from("[ui]\nupstream_status = true\n")
             .changed_from_defaults()
             .expect("something changed");
 

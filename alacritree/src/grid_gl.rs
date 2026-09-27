@@ -8,17 +8,16 @@
 //!
 //! Nothing here owns a glyph atlas.  `egui_glow::Painter::texture` hands over
 //! the raw texture epaint already packed its glyphs into, so the shader samples
-//! the same artwork the mesh path would have.
+//! the same artwork egui's own text shapes do.
 //!
 //! Three draws over one buffer, none of them carrying any geometry: a quad
 //! instanced once per cell for the backgrounds, the same again for the glyphs,
 //! then a band per cell for underlines and strikeouts.  Decorations go last
 //! because alacritty draws its rects over the text (`display::draw`), so a
 //! descender crossing an underline has to come out the same way here.
-//! Emoji and box-drawing glyphs stay on egui's painter — they carry their own
-//! textures or their own geometry, and they are rare enough to leave.
+//! Emoji, box-drawing glyphs and over-wide icons are rare, and each needs its
+//! own texture or its neighbours, so they stay on egui's painter.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use eframe::egui_glow::ShaderVersion;
@@ -46,6 +45,8 @@ pub(crate) struct Frame {
     /// Grid rect in points, relative to the callback viewport's top-left.
     pub origin: [f32; 2],
     pub cell: [f32; 2],
+    /// `font.glyph_offset`, in points.
+    pub glyph_offset: [f32; 2],
     pub grid: [u32; 2],
     /// The decoration strip, and how many tiles wide it is.  `None` leaves
     /// the decoration pass unrun, which is what a grid with no font yet has.
@@ -104,11 +105,6 @@ impl GridState {
 pub(crate) struct GpuGrid {
     pub state: Arc<Mutex<GridState>>,
     gl: Arc<Mutex<GlSlot>>,
-    /// Set by the paint callback when the GL side will not build.  Only the
-    /// callback holds a `glow::Context`, so the caller cannot learn this
-    /// before it has asked for one frame it will not get; from the next frame
-    /// on it paints the mesh instead.
-    failed: Arc<AtomicBool>,
 }
 
 /// Why the GL side will not build. glow reports each GL failure as the
@@ -139,22 +135,7 @@ impl GpuGrid {
         Self {
             state: Arc::new(Mutex::new(GridState::default())),
             gl: Arc::new(Mutex::new(GlSlot::Unbuilt)),
-            failed: Arc::new(AtomicBool::new(false)),
         }
-    }
-
-    /// Whether the GL side is known not to build, so the caller can paint the
-    /// mesh instead of a shape that draws nothing.
-    pub(crate) fn unavailable(&self) -> bool {
-        self.failed.load(Ordering::Relaxed)
-    }
-
-    /// Stand in for a driver that rejects the shaders.  Nothing headless has a
-    /// `glow::Context` for the callback to fail against, so the state it would
-    /// have reached has to be set from outside.
-    #[cfg(test)]
-    pub(crate) fn mark_unavailable(&self) {
-        self.failed.store(true, Ordering::Relaxed);
     }
 
     /// The shape to hand egui.  Everything it draws comes from `state`, which
@@ -162,7 +143,6 @@ impl GpuGrid {
     /// which only the atlas live at paint time can give.
     pub(crate) fn callback(&self, rect: Rect, ctx: &egui::Context, time_gpu: bool) -> egui::Shape {
         let (state, resources, ctx) = (self.state.clone(), self.gl.clone(), ctx.clone());
-        let failed = self.failed.clone();
         egui::Shape::Callback(egui::epaint::PaintCallback {
             rect,
             callback: Arc::new(eframe::egui_glow::CallbackFn::new(move |_info, painter| {
@@ -172,8 +152,7 @@ impl GpuGrid {
                     *held = match GlResources::new(&gl, time_gpu) {
                         Ok(resources) => GlSlot::Ready(Box::new(resources)),
                         Err(err) => {
-                            log::error!("gpu grid disabled: {err}");
-                            failed.store(true, Ordering::Relaxed);
+                            log::error!("the terminal grid cannot be drawn: {err}");
                             GlSlot::Failed
                         },
                     };
@@ -233,7 +212,8 @@ impl GlResources {
     fn new(gl: &glow::Context, time_gpu: bool) -> Result<Self, BuildError> {
         let version = ShaderVersion::get(gl);
         // Instanced arrays, `texelFetch` and integer vertex attributes all
-        // arrive together in GL 3 / GLES 3.  Older contexts keep the mesh path.
+        // arrive together in GL 3 / GLES 3, so an older context leaves the
+        // terminal undrawn.
         let header = match version {
             ShaderVersion::Gl140 => "#version 140\n",
             ShaderVersion::Es300 => "#version 300 es\nprecision highp float;\n",
@@ -526,6 +506,7 @@ impl GlResources {
             set_i32(gl, glyph, "u_cols", state.frame.grid[0] as i32);
             set_vec2(gl, glyph, "u_origin", state.frame.origin);
             set_vec2(gl, glyph, "u_cell", state.frame.cell);
+            set_vec2(gl, glyph, "u_glyph_offset", state.frame.glyph_offset);
             set_vec2(gl, glyph, "u_atlas_size", atlas_size);
             set_vec2(gl, glyph, "u_viewport", viewport_points(state));
 
@@ -645,6 +626,7 @@ unsafe fn link(
 const GLYPH_VERT: &str = r#"
 uniform vec2 u_origin;
 uniform vec2 u_cell;
+uniform vec2 u_glyph_offset;
 uniform vec2 u_viewport;
 uniform vec2 u_atlas_size;
 uniform int u_cols;
@@ -670,7 +652,7 @@ void main() {
     vec2 grid_cell = vec2(gl_InstanceID % u_cols, gl_InstanceID / u_cols);
     // 0 = top-left, 1 = top-right, 2 = bottom-left, 3 = bottom-right.
     vec2 corner = vec2(float(gl_VertexID & 1), float(gl_VertexID >> 1));
-    vec2 pos = u_origin + grid_cell * u_cell + geom.xy + corner * geom.zw;
+    vec2 pos = u_origin + grid_cell * u_cell + u_glyph_offset + geom.xy + corner * geom.zw;
 
     gl_Position = vec4(
         2.0 * pos.x / u_viewport.x - 1.0,

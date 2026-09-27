@@ -34,8 +34,8 @@ pub use schema::{document as schema_document, tasks_document as task_list_schema
 const FONT_LICENSE: &str = include_str!("../../assets/FONT-LICENSE.txt");
 
 /// One `-o` fragment, which is a whole TOML document rather than a bare
-/// `key=value`, so a dotted key does the nesting: `ui.gpu_grid=false` parses to
-/// `{ui = {gpu_grid = false}}`.  Mirrors alacritty's `ParsedOptions`.
+/// `key=value`, so a dotted key does the nesting: `ui.upstream_status=true` parses
+/// to `{ui = {upstream_status = true}}`.  Mirrors alacritty's `ParsedOptions`.
 ///
 /// Alacritty warns and skips a fragment it cannot parse, because the same
 /// values also arrive at runtime over IPC, where refusing would kill a live
@@ -71,7 +71,7 @@ pub struct Cli {
     #[arg(long, global = true, value_name = "PATH")]
     pub log_file: Option<PathBuf>,
 
-    /// Override a config value, repeatable: `-o 'ui.gpu_grid=false'`. Merged
+    /// Override a config value, repeatable: `-o 'ui.upstream_status=true'`. Merged
     /// over both config files.
     #[arg(
         short = 'o',
@@ -674,10 +674,11 @@ mod tests {
     /// without writing a file, and `-o` twice is two independent settings.
     #[test]
     fn repeated_options_each_become_a_document() {
-        let options = options_of(&["alacritree", "-o", "ui.gpu_grid=false", "-o", "font.size=14"]);
+        let options =
+            options_of(&["alacritree", "-o", "ui.upstream_status=true", "-o", "font.size=14"]);
 
         assert_eq!(options.len(), 2);
-        assert_eq!(options[0]["ui"]["gpu_grid"].as_bool(), Some(false));
+        assert_eq!(options[0]["ui"]["upstream_status"].as_bool(), Some(true));
         assert_eq!(options[1]["font"]["size"].as_integer(), Some(14));
     }
 
@@ -685,14 +686,14 @@ mod tests {
     /// measurement of the default and calls it the feature.
     #[test]
     fn a_fragment_that_is_not_toml_fails_the_launch() {
-        assert!(Cli::try_parse_from(["alacritree", "-o", "ui.gpu_grid"]).is_err());
+        assert!(Cli::try_parse_from(["alacritree", "-o", "ui.upstream_status"]).is_err());
     }
 
     /// Global, so it reaches `doctor`, which resolves the same config a launch
     /// would.
     #[test]
     fn options_are_accepted_after_a_subcommand() {
-        let options = options_of(&["alacritree", "doctor", "-o", "ui.gpu_grid=false"]);
+        let options = options_of(&["alacritree", "doctor", "-o", "ui.upstream_status=true"]);
 
         assert_eq!(options.len(), 1);
     }

@@ -1,6 +1,6 @@
-//! Per-cell instance records for the GPU grid path.
+//! Per-cell instance records for the GPU grid.
 //!
-//! The mesh path writes four 20-byte vertices per cell, and almost all of that
+//! An epaint mesh spends four 20-byte vertices on a cell, and almost all of that
 //! is position arithmetic a vertex shader does for free.  One [`GlyphInstance`]
 //! per cell carries the same information in twelve bytes, so the CPU writes
 //! under a sixth of them and no geometry at all.
@@ -12,7 +12,7 @@
 
 use egui::{Color32, Galley};
 
-use crate::glyph_cache::{AtlasState, Face};
+use crate::glyph_cache::{AtlasState, Face, MAX_EXTRA_CELLS};
 
 /// Slot 0 is reserved for a cell with nothing to draw.  Its size is zero, so
 /// the vertex shader collapses the quad and the rasterizer discards it.
@@ -36,8 +36,8 @@ pub(crate) struct GlyphSlot {
     pub size: [f32; 2],
 }
 
-/// One cell, glyph and background together. Twelve bytes against the mesh
-/// path's eighty.
+/// One cell, glyph and background together. Twelve bytes against an epaint
+/// mesh's eighty.
 ///
 /// It carries no coordinates: records sit at a fixed row stride, so the cell a
 /// record belongs to is its own index, which the vertex shader reads from
@@ -205,15 +205,19 @@ impl GlyphTable {
 
 /// A cell the grid deliberately leaves blank because something else draws it.
 ///
-/// Colour emoji and built-in box-drawing shapes carry their own textures, so
-/// they go on egui's painter over the callback rather than through the atlas.
-/// The character and colour are kept here because the overlay is repainted
-/// every frame while the records behind it are only rewritten on damage.
+/// Colour emoji and built-in box-drawing shapes carry their own textures, and
+/// an over-wide icon is placed by the blanks after it, so they go on egui's
+/// painter over the callback rather than through the atlas.  What painting
+/// needs is kept here because the overlay is repainted every frame while the
+/// records behind it are only rewritten on damage.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Overlay {
     pub col: usize,
     pub ch: char,
+    pub face: Face,
     pub fg: [u8; 4],
+    /// Blanks following the cell on its run, up to [`MAX_EXTRA_CELLS`].
+    pub spare: usize,
 }
 
 /// A frame's instance buffers, reused across frames.
@@ -326,7 +330,7 @@ impl GridInstances {
                 self.deco_rows[run.row] = true;
             }
             let mut col = run.start_col;
-            for ch in run.text.chars() {
+            for (at, ch) in run.text.char_indices() {
                 if col >= self.cols {
                     break;
                 }
@@ -340,7 +344,14 @@ impl GridInstances {
                     match slot_for(ch, run.face) {
                         Some(slot) => slot,
                         None => {
-                            self.overlays[run.row].push(Overlay { col, ch, fg });
+                            let rest = &run.text[at + ch.len_utf8()..];
+                            let spare = rest
+                                .chars()
+                                .take(MAX_EXTRA_CELLS)
+                                .take_while(|&c| c == ' ')
+                                .count();
+                            let face = run.face;
+                            self.overlays[run.row].push(Overlay { col, ch, face, fg, spare });
                             BLANK_SLOT
                         },
                     }
@@ -380,7 +391,7 @@ mod tests {
     }
 
     /// The whole point of the instance record: a cell costs twelve bytes
-    /// where the mesh path spends four twenty-byte vertices on the same cell.
+    /// where an epaint mesh spends four twenty-byte vertices on the same cell.
     #[test]
     fn a_cell_costs_twelve_bytes() {
         assert_eq!(size_of::<GlyphInstance>(), 12);
@@ -597,8 +608,33 @@ mod tests {
         assert_eq!(overlays, [(1, Overlay {
             col: 2,
             ch: '\u{1f600}',
-            fg: Color32::WHITE.to_array()
+            face: Face::Normal,
+            fg: Color32::WHITE.to_array(),
+            spare: 0,
         })]);
+    }
+
+    /// An over-wide icon is centred on the blanks after it, which the painter
+    /// only learns from the overlay: it stops counting at the next character
+    /// and at the most cells growth may claim.
+    #[test]
+    fn an_overlay_counts_the_blanks_it_may_grow_across() {
+        let mut grid = GridInstances::default();
+        grid.resize(12, 1, Color32::BLACK);
+        let runs = [RunView {
+            text: "\u{e600}  x\u{e600}      ",
+            start_col: 0,
+            row: 0,
+            face: Face::Normal,
+            deco: 0,
+            fg: Color32::WHITE,
+            bg: Color32::BLACK,
+        }];
+
+        grid.write_rows([0], runs, Color32::BLACK, |ch, _| (ch != '\u{e600}').then_some(7));
+
+        let spare: Vec<_> = grid.overlays().map(|(_, o)| (o.col, o.spare)).collect();
+        assert_eq!(spare, [(0, 2), (4, MAX_EXTRA_CELLS)]);
     }
 
     /// Overlays live as long as the records they stand in for, so a row that is

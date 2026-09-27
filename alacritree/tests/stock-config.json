@@ -306,7 +306,6 @@
       "thickness": 1.0
     },
     "focus_priority_boost": false,
-    "gpu_grid": false,
     "hold_exited_sessions": "never",
     "icon_tooltips": true,
     "icons": {

@@ -464,9 +464,8 @@ pub struct AlacritreeApp {
     /// Scratch buffers the painter copies the visible grid into, so the
     /// terminal lock is released before any shape is built.
     grid_snapshot: crate::terminal_view::GridSnapshot,
-    /// Buffers and GL objects for `[ui] gpu_grid`.  Held whether or not the
-    /// option is on: it allocates nothing until a frame writes to it, and
-    /// the GL side is built on the first paint that needs it.
+    /// Buffers and GL objects the terminal grid is drawn with.  The GL side is
+    /// built on the first paint, the first time a GL context is reachable.
     gpu_grid: crate::grid_gl::GpuGrid,
     /// Present only when frame timing was asked for; `None` is the normal run.
     frame_log: Option<crate::frame_log::FrameLog>,
@@ -3348,7 +3347,7 @@ impl AlacritreeApp {
                         &mut self.color_glyphs,
                         &mut self.glyph_cache,
                         &mut self.grid_snapshot,
-                        Some(&self.gpu_grid),
+                        &self.gpu_grid,
                         &mut self.detached_jobs,
                     );
                     self.grid_paint += started.elapsed();

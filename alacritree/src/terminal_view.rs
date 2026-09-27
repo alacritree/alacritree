@@ -18,7 +18,7 @@ use crate::colors::{TerminalColors, default_background, resolve, rgb_to_color32}
 use crate::config::{Config, Palette};
 use crate::cursor::anim::{Corners, within};
 use crate::cursor::{self};
-use crate::glyph_cache::{Face, GlyphCache, MAX_EXTRA_CELLS, growth_offset, may_grow};
+use crate::glyph_cache::{Face, GlyphCache, MAX_EXTRA_CELLS, grown_cells, growth_offset, may_grow};
 use crate::grid_gl::{Frame as GridFrame, GpuGrid};
 use crate::grid_instances::RunView;
 use crate::input::{associated_text, event_to_bytes};
@@ -39,7 +39,7 @@ pub(crate) fn show(
     color_glyphs: &mut ColorGlyphCache,
     glyphs: &mut GlyphCache,
     snapshot: &mut GridSnapshot,
-    gpu: Option<&GpuGrid>,
+    gpu: &GpuGrid,
     detached_jobs: &mut Vec<jobs::Job<()>>,
 ) -> Response {
     let font_id = FontId::monospace(config.font.logical_size());
@@ -168,57 +168,30 @@ pub(crate) fn show(
         snapshot.display_offset,
         now,
     );
-    match gpu.filter(|gpu| config.ui.gpu_grid && !gpu.unavailable()) {
-        Some(gpu) => {
-            paint_grid_gpu(
-                gpu,
-                &painter,
-                rect,
-                snapshot,
-                config,
-                face_metrics,
-                font_ascent_pt,
-                cell_w,
-                cell_h,
-                cols,
-                rows,
-                ppp,
-                &metrics,
-                builtin_glyphs,
-                color_glyphs,
-                glyphs,
-                ui.ctx(),
-            );
-        },
-        None => paint_grid(
-            &painter,
-            rect,
-            snapshot,
-            config,
-            &font_id,
-            cell_w,
-            cell_h,
-            ppp,
-            &metrics,
-            builtin_glyphs,
-            color_glyphs,
-            glyphs,
-            ui.ctx(),
-        ),
-    }
+    let mut sources = GlyphPainter {
+        ctx: ui.ctx(),
+        config,
+        metrics: &metrics,
+        builtin: builtin_glyphs,
+        color: color_glyphs,
+        galleys: glyphs,
+        cell_w,
+        cell_h,
+        ppp,
+        size: font_id.size,
+    };
+    paint_grid(
+        gpu,
+        &painter,
+        rect,
+        snapshot,
+        face_metrics,
+        font_ascent_pt,
+        cols,
+        rows,
+        &mut sources,
+    );
     if let Some(cursor) = &snapshot.cursor {
-        let mut sources = GlyphPainter {
-            ctx: ui.ctx(),
-            config,
-            metrics: &metrics,
-            builtin: builtin_glyphs,
-            color: color_glyphs,
-            galleys: glyphs,
-            cell_w,
-            cell_h,
-            ppp,
-            size: font_id.size,
-        };
         paint_cursor(&painter, rect, cursor, smear.as_ref(), cell_w, cell_h, &mut sources);
     }
     // Nothing else wakes egui while the cursor moves or blinks on its own.
@@ -962,7 +935,6 @@ struct Run {
     flags: Flags,
     fg: Color32,
     bg: Color32,
-    selected: bool,
 }
 
 struct CursorSnapshot {
@@ -997,6 +969,7 @@ impl GridSnapshot {
     }
 
     /// Every run in the snapshot, paired with the text it covers.
+    #[cfg(test)]
     fn runs(&self) -> impl Iterator<Item = (&str, &Run)> {
         self.rows.iter().flat_map(row_runs)
     }
@@ -1013,7 +986,7 @@ impl GridSnapshot {
         rows.into_iter().filter(move |&row| row < len).flat_map(|row| row_runs(&self.rows[row]))
     }
 
-    /// Rows the last capture rewrote, merged into one span.  The GPU path
+    /// Rows the last capture rewrote, merged into one span.  The grid
     /// uploads exactly this much.
     fn dirty_rows(&self) -> std::ops::Range<usize> {
         self.dirty_rows.clone()
@@ -1168,7 +1141,6 @@ impl GridSnapshot {
                     flags: style.flags,
                     fg,
                     bg,
-                    selected,
                 });
             }
         }
@@ -1269,14 +1241,6 @@ fn run_colors(
     (sel_fg, sel_bg)
 }
 
-/// Fill the GPU grid's buffers from this frame's snapshot and hand egui the
-/// callback that draws them.
-///
-/// Only the glyph and background layers move to the GPU.  Emoji and
-/// box-drawing glyphs carry their own textures and underlines are their own
-/// geometry, so those stay ordinary shapes emitted after the callback — which
-/// also keeps them above every background, the order `paint_grid` enforces by
-/// running its two passes separately.
 /// The rows a frame owes new records: the ones the terminal damaged, or
 /// every row when the glyph table renumbered under records already written.
 ///
@@ -1313,28 +1277,28 @@ fn decoration_tile(flags: Flags) -> u16 {
     decoration_sprites::tile(underline, flags.contains(Flags::STRIKEOUT))
 }
 
+/// Fill the GPU grid's buffers from this frame's snapshot and hand egui the
+/// callback that draws them.
+///
+/// Backgrounds, font glyphs and decorations are drawn on the GPU.  A cell
+/// [`GlyphPainter::overlays`] claims is left blank there and painted as an
+/// ordinary shape after the callback, which keeps it above every background,
+/// including those of the blanks an icon grows across.
 #[allow(clippy::too_many_arguments)]
-fn paint_grid_gpu(
+fn paint_grid(
     gpu: &GpuGrid,
     painter: &egui::Painter,
     rect: Rect,
     snapshot: &GridSnapshot,
-    config: &Config,
     face_metrics: &crate::fonts::FaceMetrics,
     font_ascent_pt: f32,
-    cell_w: f32,
-    cell_h: f32,
     cols: usize,
     rows: usize,
-    ppp: f32,
-    metrics: &Metrics,
-    builtin_glyphs: &mut BuiltinGlyphCache,
-    color_glyphs: &mut ColorGlyphCache,
-    glyphs: &mut GlyphCache,
-    ctx: &egui::Context,
+    sources: &mut GlyphPainter<'_>,
 ) {
     let default_bg = snapshot.default_bg();
-    let size = config.font.logical_size();
+    let (ctx, config, size, ppp) = (sources.ctx, sources.config, sources.size, sources.ppp);
+    let (cell_w, cell_h) = (sources.cell_w, sources.cell_h);
     // Collected under the lock and drawn after it: painting needs the glyph
     // caches, and the grid state has no business being held while they work.
     let mut overlays = Vec::new();
@@ -1344,10 +1308,6 @@ fn paint_grid_gpu(
         state.instances.resize(cols, rows, default_bg);
         // The strip is rasterized in physical pixels so its lines land on whole
         // ones; the quad sampling it is a cell in points, as everything else is.
-        let ppp = ctx.pixels_per_point();
-        // The mesh path still draws a straight rule at a fixed offset, so the
-        // two paths deliberately disagree; it is on its way out rather than
-        // waiting to be brought along.
         let geometry = decoration_sprites::Geometry::resolve(
             [(cell_w * ppp) as usize, (cell_h * ppp) as usize],
             font_ascent_pt,
@@ -1356,11 +1316,13 @@ fn paint_grid_gpu(
             &config.ui.decorations,
         );
         let strip = state.decorations.texture(ctx, geometry);
+        let offset = &config.font.glyph_offset;
         state.frame = GridFrame {
             // egui sets the GL viewport to the callback's rect, so the grid
             // starts at its own corner rather than the window's.
             origin: [0.0, 0.0],
             cell: [cell_w, cell_h],
+            glyph_offset: [offset.x as f32, offset.y as f32],
             grid: [cols as u32, rows as u32],
             decorations: strip,
             decoration_tiles: decoration_sprites::TILES as u32,
@@ -1368,7 +1330,7 @@ fn paint_grid_gpu(
         };
         let (instances, table) = state.buffers();
         // Only the rows this frame's capture rewrote need new records; the
-        // rest of the buffer still holds what the GPU already has — unless the
+        // rest of the buffer still holds what the GPU already has, unless the
         // table just renumbered itself, which leaves those records pointing at
         // whatever character now holds their old index.
         let renumbered = table.begin_frame(ctx, size);
@@ -1390,131 +1352,29 @@ fn paint_grid_gpu(
             bg: run.bg,
         });
         instances.write_rows(touched, runs, default_bg, |ch, face| {
-            // ASCII is neither box drawing nor emoji, and it is most of
-            // what a terminal holds, so it never reaches the caches.
-            if !ch.is_ascii() {
-                if config.font.builtin_box_drawing && is_builtin_glyph(ch) {
-                    return None;
-                }
-                if config.font.color_glyphs
-                    && color_glyphs.get(ctx, ch, metrics, char_cells(ch)).is_some()
-                {
-                    return None;
-                }
+            // ASCII is never an overlay, and it is most of what a terminal
+            // holds, so it never reaches the caches.
+            if !ch.is_ascii() && sources.overlays(ch, face) {
+                return None;
             }
-            Some(table.slot(ch, face, || glyphs.get(ctx, ch, face, size)))
+            Some(table.slot(ch, face, || sources.galleys.get(ctx, ch, face, size)))
         });
         overlays.extend(instances.overlays());
         state.mark_rows_dirty(upload);
     }
     painter.add(gpu.callback(rect, ctx, config.debug.gpu_timing));
-    // After the callback, so they land over the grid the way the mesh path
-    // draws them over its own backgrounds.  Both caches are consulted again
-    // rather than held across the lock; every lookup here is a cache hit,
-    // because deciding to overlay the cell is what put it in the atlas.
+    // Every lookup here is a cache hit, because deciding to overlay the cell
+    // is what put it in the cache.
     for (row, cell) in overlays {
-        let (cell_x, cell_y) =
-            (rect.min.x + cell.col as f32 * cell_w, rect.min.y + row as f32 * cell_h);
-        if config.font.builtin_box_drawing
-            && is_builtin_glyph(cell.ch)
-            && let Some(cached) = builtin_glyphs.get(
-                ctx,
-                cell.ch,
-                metrics,
-                &config.font.offset,
-                &config.font.glyph_offset,
-            )
-        {
-            paint_builtin_glyph(
-                painter,
-                cached,
-                cell_x,
-                cell_y,
-                cell_h,
-                ppp,
-                Color32::from_rgba_premultiplied(cell.fg[0], cell.fg[1], cell.fg[2], cell.fg[3]),
-            );
-            continue;
-        }
-        if let Some(cached) = color_glyphs.get(ctx, cell.ch, metrics, char_cells(cell.ch)) {
-            paint_color_glyph(painter, cached, cell_x, cell_y, ppp);
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn paint_grid(
-    painter: &egui::Painter,
-    rect: Rect,
-    snapshot: &GridSnapshot,
-    config: &Config,
-    font_id: &FontId,
-    cell_w: f32,
-    cell_h: f32,
-    ppp: f32,
-    metrics: &Metrics,
-    builtin_glyphs: &mut BuiltinGlyphCache,
-    color_glyphs: &mut ColorGlyphCache,
-    glyphs: &mut GlyphCache,
-    ctx: &egui::Context,
-) {
-    let bg_color = snapshot.default_bg();
-    // Every background goes down before any glyph does.  A background is an
-    // opaque fill over the whole run, so painting one run at a time cuts off
-    // whatever the run before it overhung into its first cell — which is how a
-    // Nerd Font icon a shade wider than its cell loses its right edge.
-    // Alacritty's renderer already works this way: one background pass over
-    // the whole batch, then the text passes (`renderer/text/gles2.rs`).
-    for (text, run) in snapshot.runs() {
-        paint_run_background(painter, rect, text, run, cell_w, cell_h, bg_color);
-    }
-    for (text, run) in snapshot.runs() {
-        paint_run_glyphs(
-            painter,
-            rect,
-            text,
-            run,
-            config,
-            font_id,
-            cell_w,
-            cell_h,
-            ppp,
-            metrics,
-            builtin_glyphs,
-            color_glyphs,
-            glyphs,
-            ctx,
-        );
+        let at = Pos2::new(rect.min.x + cell.col as f32 * cell_w, rect.min.y + row as f32 * cell_h);
+        let [r, g, b, a] = cell.fg;
+        let fg = Color32::from_rgba_premultiplied(r, g, b, a);
+        sources.paint(painter, cell.ch, cell.face, fg, at, cell.spare);
     }
 }
 
 fn is_selected(range: Option<&SelectionRange>, line: Line, column: Column) -> bool {
     range.is_some_and(|r| r.contains(Point::new(line, column)))
-}
-
-/// The cells `style` covers, in screen points.
-fn run_rect(rect: Rect, run: &str, style: &Run, cell_w: f32, cell_h: f32) -> Rect {
-    let width = run.chars().count() as f32 * cell_w;
-    let x = rect.min.x + style.start_col as f32 * cell_w;
-    let y = rect.min.y + style.row as f32 * cell_h;
-    Rect::from_min_size(Pos2::new(x, y), Vec2::new(width, cell_h))
-}
-
-/// A run matching the terminal's own background needs no fill: the window is
-/// already that colour, and emitting one shape per run would multiply the
-/// frame's geometry for nothing.
-fn paint_run_background(
-    painter: &egui::Painter,
-    rect: Rect,
-    run: &str,
-    style: &Run,
-    cell_w: f32,
-    cell_h: f32,
-    default_bg: Color32,
-) {
-    if style.bg != default_bg || style.selected {
-        painter.rect_filled(run_rect(rect, run, style, cell_w, cell_h), 0.0, style.bg);
-    }
 }
 
 /// The three places a character's artwork can come from, tried in the order
@@ -1538,9 +1398,23 @@ struct GlyphPainter<'a> {
 }
 
 impl GlyphPainter<'_> {
-    /// Draw `ch` in the cell whose top-left corner is `at`.  `rest` is what
-    /// follows it on the same run; its leading blanks are the cells an
-    /// over-wide icon may grow across, and an empty one grows nothing.
+    /// Whether `ch` is painted over the GPU grid rather than sampled from the
+    /// font atlas.  A box-drawing glyph and an emoji carry their own textures,
+    /// and an icon too wide for its cell moves by how many blanks follow it,
+    /// which one slot shared by every cell showing that icon cannot say.
+    fn overlays(&mut self, ch: char, face: Face) -> bool {
+        (self.config.font.builtin_box_drawing && is_builtin_glyph(ch))
+            || (self.config.font.color_glyphs
+                && self.color.get(self.ctx, ch, self.metrics, char_cells(ch)).is_some())
+            || (may_grow(ch) && {
+                let glyph_w = self.galleys.get(self.ctx, ch, face, self.size).size().x;
+                grown_cells(glyph_w, self.cell_w, MAX_EXTRA_CELLS) > 1
+            })
+    }
+
+    /// Draw `ch` in the cell whose top-left corner is `at`.  `spare` counts
+    /// the blanks that follow it on the same run, the cells an over-wide icon
+    /// may grow across.
     fn paint(
         &mut self,
         painter: &egui::Painter,
@@ -1548,7 +1422,7 @@ impl GlyphPainter<'_> {
         face: Face,
         fg: Color32,
         at: Pos2,
-        rest: &str,
+        spare: usize,
     ) {
         if self.config.font.builtin_box_drawing
             && is_builtin_glyph(ch)
@@ -1576,12 +1450,8 @@ impl GlyphPainter<'_> {
         // A private-use icon wider than its cell is drawn across the blanks
         // that follow rather than over the top of them, centred on the span it
         // ends up with, the way kitty grows one.
-        let grow_dx = if may_grow(ch) {
-            let spare = rest.chars().take(MAX_EXTRA_CELLS).take_while(|c| *c == ' ').count();
-            growth_offset(galley.size().x, self.cell_w, spare)
-        } else {
-            0.0
-        };
+        let grow_dx =
+            if may_grow(ch) { growth_offset(galley.size().x, self.cell_w, spare) } else { 0.0 };
         let offset = &self.config.font.glyph_offset;
         painter.add(
             egui::epaint::TextShape::new(
@@ -1591,68 +1461,6 @@ impl GlyphPainter<'_> {
             )
             .with_override_text_color(fg),
         );
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn paint_run_glyphs(
-    painter: &egui::Painter,
-    rect: Rect,
-    run: &str,
-    style: &Run,
-    config: &Config,
-    font_id: &FontId,
-    cell_w: f32,
-    cell_h: f32,
-    ppp: f32,
-    metrics: &Metrics,
-    builtin_glyphs: &mut BuiltinGlyphCache,
-    color_glyphs: &mut ColorGlyphCache,
-    glyphs: &mut GlyphCache,
-    ctx: &egui::Context,
-) {
-    let fg = style.fg;
-    let cells = run_rect(rect, run, style, cell_w, cell_h);
-    let (x, y) = (cells.min.x, cells.min.y);
-
-    if !style.flags.contains(Flags::HIDDEN) {
-        // Per-glyph paint: egui's run layout drifts off the cursor's `col * cell_w` grid (worse
-        // with zoom).
-        let face =
-            Face::new(style.flags.contains(Flags::BOLD), style.flags.contains(Flags::ITALIC));
-        let mut sources = GlyphPainter {
-            ctx,
-            config,
-            metrics,
-            builtin: builtin_glyphs,
-            color: color_glyphs,
-            galleys: glyphs,
-            cell_w,
-            cell_h,
-            ppp,
-            size: font_id.size,
-        };
-        for (i, (byte, ch)) in run.char_indices().enumerate() {
-            if ch == ' ' {
-                continue;
-            }
-            let rest = &run[byte + ch.len_utf8()..];
-            sources.paint(painter, ch, face, fg, Pos2::new(x + i as f32 * cell_w, y), rest);
-        }
-    }
-
-    // Decorations belong to the glyph pass: drawn with the backgrounds, the
-    // next run's fill would bury them.
-    let width = cells.width();
-    if style.flags.intersects(Flags::ALL_UNDERLINES) {
-        let uy = y + cell_h - 1.5;
-        painter
-            .line_segment([Pos2::new(x, uy), Pos2::new(x + width, uy)], Stroke::new(1.0_f32, fg));
-    }
-    if style.flags.contains(Flags::STRIKEOUT) {
-        let sy = y + cell_h * 0.5;
-        painter
-            .line_segment([Pos2::new(x, sy), Pos2::new(x + width, sy)], Stroke::new(1.0_f32, fg));
     }
 }
 
@@ -1715,7 +1523,7 @@ fn paint_cursor(
     // icon grew across, and this redraws only the cell under the cursor.
     if let Some((ch, flags, color)) = cursor.glyph {
         let face = Face::new(flags.contains(Flags::BOLD), flags.contains(Flags::ITALIC));
-        sources.paint(painter, ch, face, color, Pos2::new(x, y), "");
+        sources.paint(painter, ch, face, color, Pos2::new(x, y), 0);
     }
 }
 
@@ -1913,6 +1721,7 @@ mod tests {
         glyphs: GlyphCache,
         ime: crate::ime::Ime,
         snapshot: GridSnapshot,
+        gpu: GpuGrid,
         detached_jobs: Vec<jobs::Job<()>>,
     }
 
@@ -1924,13 +1733,51 @@ mod tests {
                 glyphs: GlyphCache::new(),
                 ime: crate::ime::Ime::default(),
                 snapshot: GridSnapshot::new(&Config::default().palette),
+                gpu: GpuGrid::new(),
                 detached_jobs: Vec::new(),
             }
         }
     }
 
-    /// One full paint of the grid: layout, shape building, and tessellation —
-    /// everything between a PTY wakeup and the vertex buffer the GPU gets.
+    /// One focused frame of the terminal view, fed `events`.  With no GL
+    /// context the grid's callback is emitted and never invoked, so the frame
+    /// is exactly the CPU half, which is the half that runs on the UI thread
+    /// and delays a keystroke.
+    fn run_frame(
+        ctx: &egui::Context,
+        session: &mut Session<impl Repaint>,
+        config: &Config,
+        caches: &mut Caches,
+        screen: Vec2,
+        events: Vec<Event>,
+    ) -> egui::FullOutput {
+        let raw = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, screen)),
+            events,
+            ..Default::default()
+        };
+        ctx.run(raw, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                show(
+                    ui,
+                    session,
+                    config,
+                    &crate::fonts::FaceMetrics::default(),
+                    true,
+                    &mut caches.builtin,
+                    &mut caches.ime,
+                    &mut caches.colors,
+                    &mut caches.glyphs,
+                    &mut caches.snapshot,
+                    &caches.gpu,
+                    &mut caches.detached_jobs,
+                );
+            });
+        })
+    }
+
+    /// One full paint of the grid: the capture, the records, the shapes
+    /// painted over them, and their tessellation.
     fn paint_one_frame(
         ctx: &egui::Context,
         session: &mut Session<impl Repaint>,
@@ -1938,44 +1785,8 @@ mod tests {
         caches: &mut Caches,
         screen: Vec2,
     ) -> FrameCost {
-        paint_one_frame_on(ctx, session, config, caches, screen, None)
-    }
-
-    /// The same frame with the grid routed to `gpu`.  With no GL context the
-    /// callback is emitted and never invoked, so what this times is exactly the
-    /// CPU half — which is the half that runs on the UI thread and delays a
-    /// keystroke.
-    fn paint_one_frame_on(
-        ctx: &egui::Context,
-        session: &mut Session<impl Repaint>,
-        config: &Config,
-        caches: &mut Caches,
-        screen: Vec2,
-        gpu: Option<&crate::grid_gl::GpuGrid>,
-    ) -> FrameCost {
-        let raw = egui::RawInput {
-            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, screen)),
-            ..Default::default()
-        };
         let started = std::time::Instant::now();
-        let out = ctx.run(raw, |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
-                show(
-                    ui,
-                    session,
-                    config,
-                    &crate::fonts::FaceMetrics::default(),
-                    false,
-                    &mut caches.builtin,
-                    &mut caches.ime,
-                    &mut caches.colors,
-                    &mut caches.glyphs,
-                    &mut caches.snapshot,
-                    gpu,
-                    &mut caches.detached_jobs,
-                );
-            });
-        });
+        let out = run_frame(ctx, session, config, caches, screen, Vec::new());
         let build = started.elapsed();
         let ppp = out.pixels_per_point;
         let started = std::time::Instant::now();
@@ -1991,10 +1802,10 @@ mod tests {
         FrameCost { build, tessellate, vertices }
     }
 
-    /// Every glyph a focused frame painted, in paint order, after feeding it
-    /// `events`.  Reading the frame's own shapes is the only way to tell what
-    /// the user saw *that* frame rather than what the terminal state became by
-    /// the end of it.
+    /// The text a focused frame handed the grid after feeding it `events`, in
+    /// row order.  The records are written from the rows this frame captured,
+    /// so this is what the user saw *that* frame rather than what the terminal
+    /// state became by the end of it.
     fn painted_text(
         ctx: &egui::Context,
         session: &mut Session<impl Repaint>,
@@ -2003,33 +1814,8 @@ mod tests {
         screen: Vec2,
         events: Vec<Event>,
     ) -> String {
-        let raw = egui::RawInput {
-            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, screen)),
-            events,
-            ..Default::default()
-        };
-        let out = ctx.run(raw, |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
-                show(
-                    ui,
-                    session,
-                    config,
-                    &crate::fonts::FaceMetrics::default(),
-                    true,
-                    &mut caches.builtin,
-                    &mut caches.ime,
-                    &mut caches.colors,
-                    &mut caches.glyphs,
-                    &mut caches.snapshot,
-                    None,
-                    &mut caches.detached_jobs,
-                );
-            });
-        });
-        let mut text = String::new();
-        for clipped in &out.shapes {
-            collect_text(&clipped.shape, &mut text);
-        }
+        let out = run_frame(ctx, session, config, caches, screen, events);
+        let text = caches.snapshot.runs().map(|(text, _)| text).collect();
         // Tessellate as the real loop does: nothing is on screen until the
         // shapes have become vertices, so a caller timing a frame that skipped
         // this would be timing half of one.
@@ -2037,12 +1823,31 @@ mod tests {
         text
     }
 
-    fn collect_text(shape: &egui::Shape, out: &mut String) {
-        match shape {
-            egui::Shape::Text(text) => out.push_str(text.galley.text()),
-            egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| collect_text(s, out)),
-            _ => {},
+    /// Every glyph a frame painted as a shape of its own, with its left edge.
+    fn text_shapes(out: &egui::FullOutput) -> Vec<(String, f32)> {
+        fn collect(shape: &egui::Shape, out: &mut Vec<(String, f32)>) {
+            match shape {
+                egui::Shape::Text(text) => out.push((text.galley.text().to_owned(), text.pos.x)),
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| collect(s, out)),
+                _ => {},
+            }
         }
+        let mut found = Vec::new();
+        for clipped in &out.shapes {
+            collect(&clipped.shape, &mut found);
+        }
+        found
+    }
+
+    /// Left edge of column 0: the rect the grid's paint callback covers.
+    fn grid_origin(out: &egui::FullOutput) -> f32 {
+        out.shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::Shape::Callback(callback) => Some(callback.rect.min.x),
+                _ => None,
+            })
+            .expect("the frame painted no grid")
     }
 
     /// A context with the three named terminal families bound, as
@@ -2058,71 +1863,6 @@ mod tests {
         }
         ctx.set_fonts(fonts);
         ctx
-    }
-
-    /// A glyph as it was painted: which character, in what colour, and from
-    /// which font family.
-    #[derive(Debug, PartialEq)]
-    struct PaintedGlyph {
-        ch: String,
-        color: Color32,
-        family: FontFamily,
-    }
-
-    /// Every glyph and every filled rectangle a focused frame painted.  The
-    /// snapshot resolves colours and faces before the painter ever runs, so
-    /// this is where a mistake in that resolution becomes visible.
-    fn painted_cells(
-        ctx: &egui::Context,
-        session: &mut Session<impl Repaint>,
-        config: &Config,
-        caches: &mut Caches,
-        screen: Vec2,
-    ) -> (Vec<PaintedGlyph>, Vec<Color32>) {
-        let raw = egui::RawInput {
-            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, screen)),
-            ..Default::default()
-        };
-        let out = ctx.run(raw, |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
-                show(
-                    ui,
-                    session,
-                    config,
-                    &crate::fonts::FaceMetrics::default(),
-                    true,
-                    &mut caches.builtin,
-                    &mut caches.ime,
-                    &mut caches.colors,
-                    &mut caches.glyphs,
-                    &mut caches.snapshot,
-                    None,
-                    &mut caches.detached_jobs,
-                );
-            });
-        });
-        let (mut glyphs, mut fills) = (Vec::new(), Vec::new());
-        for clipped in &out.shapes {
-            collect_cells(&clipped.shape, &mut glyphs, &mut fills);
-        }
-        (glyphs, fills)
-    }
-
-    fn collect_cells(
-        shape: &egui::Shape,
-        glyphs: &mut Vec<PaintedGlyph>,
-        fills: &mut Vec<Color32>,
-    ) {
-        match shape {
-            egui::Shape::Text(text) => glyphs.push(PaintedGlyph {
-                ch: text.galley.text().to_owned(),
-                color: text.override_text_color.unwrap_or(text.fallback_color),
-                family: text.galley.job.sections[0].format.font_id.family.clone(),
-            }),
-            egui::Shape::Rect(rect) => fills.push(rect.fill),
-            egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| collect_cells(s, glyphs, fills)),
-            _ => {},
-        }
     }
 
     /// A blank paints nothing but its background, so a run can hold one in
@@ -2218,7 +1958,7 @@ mod tests {
         assert!(dirty.start <= 1 && dirty.end >= 3, "selection rows 1..3 missing from {dirty:?}");
     }
 
-    /// What the GPU path reads to rebuild records.  Reading the runs of a
+    /// What the grid reads to rebuild records.  Reading the runs of a
     /// clean row costs more than writing the records of the dirty one, and a
     /// row between two damaged ones is exactly as clean as one outside them.
     #[test]
@@ -2247,8 +1987,7 @@ mod tests {
     /// leaves an underline elsewhere on screen standing.
     #[test]
     fn an_underline_outside_the_damage_survives_the_frame() {
-        let grid = crate::grid_gl::GpuGrid::new();
-        let mut case = Case::new(Some(&grid));
+        let mut case = Case::new();
         let screen = Vec2::new(1280.0, 720.0);
         case.paint(screen);
         case.advance(b"\x1b[4mlinked\x1b[0m\r\nplain");
@@ -2257,7 +1996,7 @@ mod tests {
         case.advance(b"\x1b[2;1Hrewritten");
         case.paint(screen);
 
-        let state = grid.state.lock().expect("grid state");
+        let state = case.caches.gpu.state.lock().expect("grid state");
         assert_eq!(
             state.instances.glyphs[0].deco,
             decoration_sprites::STRAIGHT,
@@ -2272,14 +2011,13 @@ mod tests {
     /// every CJK character bare.
     #[test]
     fn a_wide_glyph_decorates_both_of_its_cells() {
-        let grid = crate::grid_gl::GpuGrid::new();
-        let mut case = Case::new(Some(&grid));
+        let mut case = Case::new();
         let screen = Vec2::new(1280.0, 720.0);
         case.paint(screen);
         case.advance("\x1b[4;41m\u{4f60}a".as_bytes());
         case.paint(screen);
 
-        let state = grid.state.lock().expect("grid state");
+        let state = case.caches.gpu.state.lock().expect("grid state");
         let cells = &state.instances.glyphs;
         assert_eq!(
             (0..3).map(|c| cells[c].deco).collect::<Vec<_>>(),
@@ -2289,7 +2027,7 @@ mod tests {
         assert_eq!(cells[1].bg, cells[0].bg, "the spacer cell of a wide glyph lost its background",);
     }
 
-    /// Both painters take a run's extent from its character count, so a
+    /// The records take a run's extent from its character count, so a
     /// spacer has to reach them as a character of the run rather than be
     /// dropped on the way.
     #[test]
@@ -2345,53 +2083,9 @@ mod tests {
         );
     }
 
-    /// Where each glyph of a painted frame was placed.
-    fn painted_at(
-        ctx: &egui::Context,
-        session: &mut Session<impl Repaint>,
-        config: &Config,
-        caches: &mut Caches,
-        screen: Vec2,
-    ) -> Vec<(String, f32)> {
-        let raw = egui::RawInput {
-            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, screen)),
-            ..Default::default()
-        };
-        let out = ctx.run(raw, |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
-                show(
-                    ui,
-                    session,
-                    config,
-                    &crate::fonts::FaceMetrics::default(),
-                    true,
-                    &mut caches.builtin,
-                    &mut caches.ime,
-                    &mut caches.colors,
-                    &mut caches.glyphs,
-                    &mut caches.snapshot,
-                    None,
-                    &mut caches.detached_jobs,
-                );
-            });
-        });
-        let mut found = Vec::new();
-        for clipped in &out.shapes {
-            collect_positions(&clipped.shape, &mut found);
-        }
-        found
-    }
-
-    fn collect_positions(shape: &egui::Shape, out: &mut Vec<(String, f32)>) {
-        match shape {
-            egui::Shape::Text(text) => out.push((text.galley.text().to_owned(), text.pos.x)),
-            egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| collect_positions(s, out)),
-            _ => {},
-        }
-    }
     /// A context whose monospace fallbacks are scaled far past the primary
     /// face, so a character the primary lacks comes back several times wider
-    /// than the cell — a Nerd Font icon against a half-width cell, in
+    /// than the cell, a Nerd Font icon against a half-width cell in
     /// miniature.  U+E600 arrives from the bundled icon font, U+FB01 from
     /// Ubuntu-Light.
     fn ctx_with_oversized_fallback() -> egui::Context {
@@ -2415,36 +2109,37 @@ mod tests {
         ctx
     }
 
-    /// Every glyph's x position after one frame of a terminal fed `row`.
-    fn painted_row(
-        ctx: &egui::Context,
-        config: &Config,
-        screen: Vec2,
-        row: &[u8],
-    ) -> Vec<(String, f32)> {
-        let (mut session, _dir) = headless_session(ctx, config);
-        let mut caches = Caches::new();
-        painted_at(ctx, &mut session, config, &mut caches, screen);
-        let (cols, rows) = (session.size.columns, session.size.screen_lines);
-        {
-            let mut term = session.term.lock();
-            term.resize(TermSize::new(cols, rows));
-            Processor::<StdSyncHandler>::new().advance(&mut *term, row);
+    /// One frame of a terminal fed `row`.
+    struct PaintedRow {
+        /// Every glyph painted as a shape over the grid, with its left edge.
+        glyphs: Vec<(String, f32)>,
+        /// Left edge of column 0.
+        origin: f32,
+        cell_w: f32,
+    }
+
+    impl PaintedRow {
+        fn x_of(&self, ch: &str) -> f32 {
+            self.glyphs
+                .iter()
+                .find(|(g, _)| g == ch)
+                .unwrap_or_else(|| panic!("{ch} was not painted over the grid"))
+                .1
         }
-        painted_at(ctx, &mut session, config, &mut caches, screen)
     }
 
-    fn x_of(painted: &[(String, f32)], ch: &str) -> f32 {
-        painted.iter().find(|(g, _)| g == ch).unwrap_or_else(|| panic!("{ch} was not painted")).1
+    fn painted_row(ctx: &egui::Context, row: &[u8]) -> PaintedRow {
+        let screen = Vec2::new(640.0, 480.0);
+        let mut case = Case::with(ctx.clone(), Config::default());
+        case.paint(screen);
+        case.advance(row);
+        let out = case.frame(screen);
+        let cell_w = case.caches.gpu.state.lock().expect("grid state").frame.cell[0];
+        PaintedRow { glyphs: text_shapes(&out), origin: grid_origin(&out), cell_w }
     }
 
-    /// The cell's width and the left edge of column 0, read off a painted row
-    /// of characters the primary face serves at its own advance.
-    fn cell_geometry(ctx: &egui::Context, config: &Config, screen: Vec2) -> (f32, f32) {
-        let row = painted_row(ctx, config, screen, b"MM");
-        let xs: Vec<f32> = row.iter().filter(|(g, _)| g == "M").map(|(_, x)| *x).collect();
-        let (first, second) = (xs[0].min(xs[1]), xs[0].max(xs[1]));
-        (first, second - first)
+    fn glyph_width(ctx: &egui::Context, ch: char) -> f32 {
+        ctx.fonts(|f| f.glyph_width(&FontId::monospace(Config::default().font.logical_size()), ch))
     }
 
     /// An icon sized to its own face's em overruns a narrower cell.  It is
@@ -2453,205 +2148,93 @@ mod tests {
     #[test]
     fn an_over_wide_icon_is_centred_over_the_blanks_after_it() {
         let ctx = ctx_with_oversized_fallback();
-        let config = Config::default();
-        let screen = Vec2::new(640.0, 480.0);
-        let (origin, cell_w) = cell_geometry(&ctx, &config, screen);
 
-        let painted = painted_row(&ctx, &config, screen, "M\u{e600}".as_bytes());
+        let painted = painted_row(&ctx, "M\u{e600}".as_bytes());
 
-        let glyph_w = ctx
-            .fonts(|f| f.glyph_width(&FontId::monospace(config.font.logical_size()), '\u{e600}'));
+        let glyph_w = glyph_width(&ctx, '\u{e600}');
+        let cell_w = painted.cell_w;
         let cells = crate::glyph_cache::grown_cells(glyph_w, cell_w, MAX_EXTRA_CELLS);
         assert!(cells > 1, "the fixture's fallback glyph is not over-wide");
 
-        let start = origin + cell_w;
-        let left = x_of(&painted, "\u{e600}") - start;
-        let right = start + cells as f32 * cell_w - (x_of(&painted, "\u{e600}") + glyph_w);
+        let start = painted.origin + cell_w;
+        let left = painted.x_of("\u{e600}") - start;
+        let right = start + cells as f32 * cell_w - (painted.x_of("\u{e600}") + glyph_w);
         assert!(left > 0.5, "the over-wide icon was left in its own cell");
         assert!((left - right).abs() < 0.5, "not centred: {left} left, {right} right");
     }
 
     /// Growth may only claim blanks, so an icon can want more cells than it
     /// gets.  Centring it on the shorter span would put it left of its own
-    /// cell, over the character before it — worse than the right-hand overrun
-    /// growth exists to avoid.  It stays where it is instead.
+    /// cell, over the character before it, which is worse than the right-hand
+    /// overrun growth exists to avoid.  It stays where it is instead.
     #[test]
     fn an_over_wide_icon_is_not_pulled_left_when_the_room_falls_short() {
-        let ctx = ctx_with_oversized_fallback();
-        let config = Config::default();
-        let screen = Vec2::new(640.0, 480.0);
-        let (origin, cell_w) = cell_geometry(&ctx, &config, screen);
-
-        let painted = painted_row(&ctx, &config, screen, "M\u{e600} X".as_bytes());
+        let painted = painted_row(&ctx_with_oversized_fallback(), "M\u{e600} X".as_bytes());
 
         assert_eq!(
-            x_of(&painted, "\u{e600}"),
-            origin + cell_w,
+            painted.x_of("\u{e600}"),
+            painted.origin + painted.cell_w,
             "the icon was pulled left of its own cell"
         );
     }
 
     /// Growth is for icons.  A letter that happens to arrive from an over-wide
-    /// fallback face keeps its cell, so ordinary text never moves — which is
-    /// what makes growing safe to do without a switch.
+    /// fallback face keeps its cell and stays in the atlas with the rest of
+    /// the text, which is what makes growing safe to do without a switch.
     #[test]
     fn an_over_wide_letter_is_not_grown() {
         let ctx = ctx_with_oversized_fallback();
-        let config = Config::default();
-        let screen = Vec2::new(640.0, 480.0);
-        let (origin, cell_w) = cell_geometry(&ctx, &config, screen);
 
-        let painted = painted_row(&ctx, &config, screen, "M\u{fb01}".as_bytes());
+        let painted = painted_row(&ctx, "M\u{fb01}".as_bytes());
 
-        let glyph_w = ctx
-            .fonts(|f| f.glyph_width(&FontId::monospace(config.font.logical_size()), '\u{fb01}'));
-        assert!(glyph_w > cell_w * 1.25, "the fixture's letter is not over-wide");
-        assert_eq!(x_of(&painted, "\u{fb01}"), origin + cell_w, "a letter was grown");
-    }
-
-    /// One shape from a painted frame, reduced to the two kinds whose order
-    /// decides what survives: a solid fill, and a glyph drawn on top of it.
-    #[derive(Debug, PartialEq)]
-    enum Painted {
-        Fill(Color32),
-        Glyph(String),
-    }
-
-    /// Everything a frame painted, in paint order.
-    fn painted_order(
-        ctx: &egui::Context,
-        session: &mut Session<impl Repaint>,
-        config: &Config,
-        caches: &mut Caches,
-        screen: Vec2,
-    ) -> Vec<Painted> {
-        let raw = egui::RawInput {
-            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, screen)),
-            ..Default::default()
-        };
-        let out = ctx.run(raw, |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
-                show(
-                    ui,
-                    session,
-                    config,
-                    &crate::fonts::FaceMetrics::default(),
-                    true,
-                    &mut caches.builtin,
-                    &mut caches.ime,
-                    &mut caches.colors,
-                    &mut caches.glyphs,
-                    &mut caches.snapshot,
-                    None,
-                    &mut caches.detached_jobs,
-                );
-            });
-        });
-        let mut painted = Vec::new();
-        for clipped in &out.shapes {
-            collect_order(&clipped.shape, &mut painted);
-        }
-        painted
-    }
-
-    fn collect_order(shape: &egui::Shape, out: &mut Vec<Painted>) {
-        match shape {
-            egui::Shape::Rect(rect) => out.push(Painted::Fill(rect.fill)),
-            egui::Shape::Text(text) => out.push(Painted::Glyph(text.galley.text().to_owned())),
-            egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| collect_order(s, out)),
-            _ => {},
-        }
-    }
-
-    /// A run's background is an opaque fill over the whole run, so painting the
-    /// runs one at a time cuts off whatever the run before overhung into its
-    /// first cell — an icon a shade wider than its cell loses its right edge
-    /// wherever a colour changes.  Backgrounds all go down first instead.
-    #[test]
-    fn every_background_is_painted_before_any_glyph() {
-        let config = Config::default();
-        let ctx = ctx_with_terminal_faces();
-        let (mut session, _dir) = headless_session(&ctx, &config);
-        let mut caches = Caches::new();
-        let screen = Vec2::new(640.0, 480.0);
-
-        painted_order(&ctx, &mut session, &config, &mut caches, screen);
-        let (cols, rows) = (session.size.columns, session.size.screen_lines);
-        let red = {
-            let mut term = session.term.lock();
-            term.resize(TermSize::new(cols, rows));
-            // A block cursor fills its cell after every run has painted, which
-            // would fail this on its own; DECTCEM leaves the run passes alone.
-            Processor::<StdSyncHandler>::new().advance(&mut *term, b"\x1b[?25lM\x1b[41mX");
-            rgb_to_color32(resolve(
-                AnsiColor::Named(alacritty_terminal::vte::ansi::NamedColor::Red),
-                Flags::empty(),
-                term.colors(),
-                &config.palette,
-                false,
-            ))
-        };
-
-        let painted = painted_order(&ctx, &mut session, &config, &mut caches, screen);
-
-        let fill = painted
-            .iter()
-            .position(|p| *p == Painted::Fill(red))
-            .expect("the red run painted no background");
-        let glyph = painted
-            .iter()
-            .position(|p| matches!(p, Painted::Glyph(g) if g == "M"))
-            .expect("M was not painted");
-        assert!(fill < glyph, "a background was painted over the glyph before it");
+        assert!(
+            glyph_width(&ctx, '\u{fb01}') > painted.cell_w * 1.25,
+            "the fixture's letter is not over-wide"
+        );
+        assert!(
+            !painted.glyphs.iter().any(|(g, _)| g == "\u{fb01}"),
+            "a letter left the atlas to be grown"
+        );
     }
 
     /// The snapshot resolves every cell's foreground, background and face
     /// before the terminal lock is released, so a cell that reverses video,
-    /// picks a palette colour, or asks for bold has to come out of that copy
+    /// picks a palette colour, or asks for bold has to reach its record
     /// looking the way the terminal asked.
     #[test]
     fn styled_cells_keep_their_colours_and_faces_through_the_snapshot() {
-        let config = Config::default();
-        let ctx = ctx_with_terminal_faces();
-        let (mut session, _dir) = headless_session(&ctx, &config);
-        let mut caches = Caches::new();
+        let mut case = Case::new();
         let screen = Vec2::new(640.0, 480.0);
-
-        painted_cells(&ctx, &mut session, &config, &mut caches, screen);
-        let (cols, rows) = (session.size.columns, session.size.screen_lines);
-        {
-            let mut term = session.term.lock();
-            term.resize(TermSize::new(cols, rows));
-            Processor::<StdSyncHandler>::new().advance(
-                &mut *term,
-                b"\x1b[0mP\x1b[7mR\x1b[0m\x1b[1mB\x1b[0m\x1b[3mI\x1b[0m\x1b[31mC",
-            );
-        }
-
-        let (glyphs, fills) = painted_cells(&ctx, &mut session, &config, &mut caches, screen);
-        let at = |ch: &str| glyphs.iter().find(|g| g.ch == ch).expect("glyph was not painted");
+        case.paint(screen);
+        case.advance(b"\x1b[0mP\x1b[7mR\x1b[0m\x1b[1mB\x1b[0m\x1b[3mI\x1b[0m\x1b[31mC");
+        case.paint(screen);
 
         let fg = rgb_to_color32(resolve(
             AnsiColor::Named(alacritty_terminal::vte::ansi::NamedColor::Foreground),
             Flags::empty(),
-            session.term.lock().colors(),
-            &config.palette,
+            case.session.term.lock().colors(),
+            &case.config.palette,
             true,
-        ));
-        let bg = TerminalColors::new(&config.palette).bg;
+        ))
+        .to_array();
+        let bg = TerminalColors::new(&case.config.palette).bg.to_array();
+        let mut state = case.caches.gpu.state.lock().expect("grid state");
+        let cells = state.instances.glyphs[..5].to_vec();
+        let mut slot = |ch: char, face| {
+            state.table.slot(ch, face, || panic!("{ch} never reached the glyph table"))
+        };
 
-        assert_eq!(at("P").color, fg, "a plain cell");
-        assert_eq!(at("P").family, FontFamily::Monospace);
+        assert_eq!(cells[0].fg, fg, "a plain cell");
+        assert_eq!(cells[0].slot, slot('P', Face::Normal));
 
         // Reverse video swaps the pair, so the glyph takes the default
-        // background and the run paints the default foreground behind it.
-        assert_eq!(at("R").color, bg, "a reverse-video cell");
-        assert!(fills.contains(&fg), "reverse video painted no background behind the glyph");
+        // background and the cell is filled with the default foreground.
+        assert_eq!((cells[1].fg, cells[1].bg), (bg, fg), "a reverse-video cell");
 
-        assert_eq!(at("B").family, FontFamily::Name(BOLD_FAMILY.into()), "a bold cell");
-        assert_eq!(at("I").family, FontFamily::Name(ITALIC_FAMILY.into()), "an italic cell");
+        assert_eq!(cells[2].slot, slot('B', Face::Bold), "a bold cell");
+        assert_eq!(cells[3].slot, slot('I', Face::Italic), "an italic cell");
 
-        assert_ne!(at("C").color, fg, "SGR 31 painted in the default foreground");
+        assert_ne!(cells[4].fg, fg, "SGR 31 painted in the default foreground");
     }
 
     /// The cursor redraws the cell it covers, so it has to resolve that
@@ -2662,25 +2245,32 @@ mod tests {
     fn the_cursor_redraws_a_box_drawing_cell_from_the_cache_the_grid_used() {
         let mut config = Config::default();
         config.font.builtin_box_drawing = true;
-        let ctx = ctx_with_terminal_faces();
-        let (mut session, _dir) = headless_session(&ctx, &config);
-        let mut caches = Caches::new();
+        let mut case = Case::with(ctx_with_terminal_faces(), config);
         let screen = Vec2::new(640.0, 480.0);
+        case.paint(screen);
+        // The carriage return parks the cursor back on the glyph.
+        case.advance("│\r".as_bytes());
 
-        painted_cells(&ctx, &mut session, &config, &mut caches, screen);
-        let (cols, rows) = (session.size.columns, session.size.screen_lines);
-        {
-            let mut term = session.term.lock();
-            term.resize(TermSize::new(cols, rows));
-            // The carriage return parks the cursor back on the glyph.
-            Processor::<StdSyncHandler>::new().advance(&mut *term, "│\r".as_bytes());
-        }
+        let glyphs = text_shapes(&case.frame(screen));
 
-        let (glyphs, _) = painted_cells(&ctx, &mut session, &config, &mut caches, screen);
         assert!(
-            !glyphs.iter().any(|g| g.ch == "│"),
-            "the cursor drew the font's outline over the hand-drawn glyph: {glyphs:?}"
+            !glyphs.iter().any(|(g, _)| g == "│"),
+            "the font's outline was drawn over the hand-drawn glyph: {glyphs:?}"
         );
+    }
+
+    /// `font.glyph_offset` moves every glyph the font draws.  The shader adds
+    /// it, so the frame's uniforms are as far as a headless test can follow.
+    #[test]
+    fn the_glyph_offset_reaches_the_glyph_pass() {
+        let mut config = Config::default();
+        config.font.glyph_offset = crate::config::FontDelta { x: 2, y: -1 };
+        let mut case = Case::with(ctx_with_terminal_faces(), config);
+
+        case.paint(Vec2::new(640.0, 480.0));
+
+        let state = case.caches.gpu.state.lock().expect("grid state");
+        assert_eq!(state.frame.glyph_offset, [2.0, -1.0]);
     }
 
     /// With no selection colours configured a selected cell swaps its pair.
@@ -2784,8 +2374,9 @@ mod tests {
     }
 
     /// Where a frame's time goes.  `build` is the grid walk that turns cells
-    /// into shapes — the part damage tracking can skip; `tessellate` turns
-    /// those shapes into vertices and runs whether or not anything changed.
+    /// into records and overlay shapes, the part damage tracking can skip;
+    /// `tessellate` turns the shapes into vertices and runs whether or not
+    /// anything changed.
     #[derive(Default, Clone, Copy)]
     struct FrameCost {
         build: std::time::Duration,
@@ -3151,7 +2742,7 @@ mod tests {
     }
 
     /// Dense output that fills every visible cell, with a colour change every
-    /// few columns so the run-splitting in `paint_grid` behaves like it does
+    /// few columns so the run-splitting in `capture` behaves like it does
     /// under real program output rather than collapsing to one run per line.
     ///
     /// Written once, this screen never changes again, so every frame after the
@@ -3189,39 +2780,12 @@ mod tests {
         assert_eq!(rows_to_rewrite(&[1], 3, true).collect::<Vec<_>>(), vec![0, 1, 2]);
     }
 
-    /// A driver that rejects the shaders leaves the paint callback with
-    /// nothing to draw, and the callback is the only thing that knows.  Unless
-    /// the grid goes back to the mesh from the next frame on, the terminal is
-    /// a blank rectangle for the life of the process.
-    #[test]
-    fn a_gpu_grid_that_will_not_build_paints_the_mesh() {
-        let grid = crate::grid_gl::GpuGrid::new();
-        let mut case = Case::new(Some(&grid));
-        let screen = Vec2::new(1280.0, 720.0);
-        case.advance(b"hello");
-
-        let gpu = case.paint(screen);
-        grid.mark_unavailable();
-        let mesh = case.paint(screen);
-
-        assert!(
-            mesh.vertices > gpu.vertices,
-            "a grid that cannot build GL painted {} vertices, no more than the {} the GL path \
-             emits for its one geometry-free shape",
-            mesh.vertices,
-            gpu.vertices,
-        );
-    }
-
     /// A decoration is a flag on the cells it covers, and the fragment shader
     /// draws it from there.  Left to the painter it is a shape per run, which
     /// on a screen of underlined text is more geometry than the whole grid.
     #[test]
     fn a_decorated_run_costs_no_geometry() {
-        let (plain_grid, decorated_grid) =
-            (crate::grid_gl::GpuGrid::new(), crate::grid_gl::GpuGrid::new());
-        let mut plain = Case::new(Some(&plain_grid));
-        let mut decorated = Case::new(Some(&decorated_grid));
+        let (mut plain, mut decorated) = (Case::new(), Case::new());
         let screen = Vec2::new(1280.0, 720.0);
         // The first frame is what tells the session how big its grid is.
         plain.paint(screen);
@@ -3232,7 +2796,7 @@ mod tests {
         let without = plain.paint(screen);
         let with = decorated.paint(screen);
 
-        let state = decorated_grid.state.lock().expect("grid state");
+        let state = decorated.caches.gpu.state.lock().expect("grid state");
         assert_eq!(
             state.instances.glyphs[0].deco,
             decoration_sprites::tile(decoration_sprites::STRAIGHT, true),
@@ -3247,9 +2811,8 @@ mod tests {
     }
 
     /// One painter under test: its own terminal, its own caches, its own egui
-    /// context, fed the same bytes as every other case in the sweep.
-    struct Case<'a> {
-        gpu: Option<&'a crate::grid_gl::GpuGrid>,
+    /// context.
+    struct Case {
         config: Config,
         ctx: egui::Context,
         session: Session<egui::Context>,
@@ -3258,14 +2821,14 @@ mod tests {
         parser: Processor<StdSyncHandler>,
     }
 
-    impl<'a> Case<'a> {
-        fn new(gpu: Option<&'a crate::grid_gl::GpuGrid>) -> Self {
-            let mut config = Config::default();
-            config.ui.gpu_grid = gpu.is_some();
-            let ctx = egui::Context::default();
+    impl Case {
+        fn new() -> Self {
+            Self::with(ctx_with_terminal_faces(), Config::default())
+        }
+
+        fn with(ctx: egui::Context, config: Config) -> Self {
             let (session, dir) = headless_session(&ctx, &config);
             Self {
-                gpu,
                 config,
                 ctx,
                 session,
@@ -3281,13 +2844,17 @@ mod tests {
         }
 
         fn paint(&mut self, screen: Vec2) -> FrameCost {
-            paint_one_frame_on(
+            paint_one_frame(&self.ctx, &mut self.session, &self.config, &mut self.caches, screen)
+        }
+
+        fn frame(&mut self, screen: Vec2) -> egui::FullOutput {
+            run_frame(
                 &self.ctx,
                 &mut self.session,
                 &self.config,
                 &mut self.caches,
                 screen,
-                self.gpu,
+                Vec::new(),
             )
         }
     }
