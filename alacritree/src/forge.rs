@@ -8,6 +8,8 @@ use ambassador::Delegate;
 #[delegate(RemoteForge)]
 pub(crate) enum Forge {
     Gh(GhForge),
+    #[cfg(test)]
+    Fake(alacritree_forge::fake::FakeForge),
 }
 
 /// gh is the only forge so far. The git panel's diff base asks it whether

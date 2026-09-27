@@ -1164,7 +1164,13 @@ impl Action for action::FocusGitSidebar {
 
 impl Action for action::RefreshPrStatus {
     fn run(&self, app: &mut AlacritreeApp, ctx: &Context, _: ActionOrigin) {
+        if !app.config.integrations.gh.pr_status {
+            app.activities.report_off();
+            return;
+        }
         app.pr_cache.invalidate_all();
+        app.pr_cache.trigger();
+        app.activities.trigger(ActivityKind::PrStatus);
         // The poll sites run while the sidebars paint, and the palette
         // dispatches after both have; without a wake the re-query would
         // wait for whatever repaint happened to come next.

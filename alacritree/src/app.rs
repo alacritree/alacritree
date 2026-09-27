@@ -19,6 +19,7 @@ use egui::{Color32, Context, Frame, Margin, RichText, ScrollArea, SidePanel, Str
 
 use serde_json::{Value, json};
 
+use crate::activity::{Activities, ActivityKind};
 use crate::bindings::{BindingAction, NamedAction, action};
 use crate::clipboard::{self, Target};
 use crate::colors::rgb_to_color32;
@@ -479,6 +480,8 @@ pub struct AlacritreeApp {
     current_workspace: WorkspaceKey,
     projects: Vec<Project>,
     pr_cache: PrCache<Forge>,
+    /// Refreshes the user asked for, which the left sidebar's status row shows.
+    activities: Activities,
     /// The enabled version control backends, in the order they claim a root.
     vcs_backends: Vec<crate::vcs::Vcs>,
     /// Renders `[ui] worktree_name` / `project_name` templates at paint time.
@@ -626,6 +629,7 @@ impl AlacritreeApp {
             current_workspace: None,
             projects,
             pr_cache: PrCache::new(Forge::default()),
+            activities: Activities::new(),
             vcs_backends: crate::vcs::backends(&config.integrations),
             row_labels,
             icons: PaintedIcons::new(&config, &multiplexers),
@@ -3253,6 +3257,7 @@ impl AlacritreeApp {
         // Unconditional: either sidebar can be hidden, and a drain hung off one
         // of them would strand every entry the other polled.
         self.pr_cache.drain_completed(ctx);
+        self.sync_activities();
         self.poll_pending_deletes(ctx);
         self.poll_pending_creates(ctx);
         self.poll_multiplexers();
@@ -3343,8 +3348,24 @@ impl AlacritreeApp {
             }
         }
         self.phases.mark("git-sidebar");
+        // Hidden sidebars count: a refresh with nothing to poll still has to
+        // settle, and it settles on a drain that follows a paint.
+        self.pr_cache.mark_painted(ctx);
 
         sidebar_rect
+    }
+
+    /// Hand a PR refresh's batches to its activity, end it once the cache
+    /// has settled, and fold whatever landed since the last frame.
+    fn sync_activities(&mut self) {
+        for reader in self.pr_cache.take_progress() {
+            self.activities.add_pr_reader(reader);
+        }
+        if !self.pr_cache.triggered() {
+            self.activities.pr_settled();
+        }
+        let now = self.activities.now();
+        self.activities.tick(now);
     }
 
     fn paint_central(

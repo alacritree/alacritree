@@ -54,6 +54,13 @@ pub(crate) struct PrCache<F> {
     /// `Instant` because an `Instant` cannot be constructed or advanced, so
     /// nothing could set one to test a boundary against.
     clock: Box<dyn Fn() -> Duration + Send>,
+    /// A user asked for a refresh that has not settled yet. See `trigger`.
+    triggered: bool,
+    /// A paint has run since the trigger, so whatever it polled is queued.
+    painted_since_trigger: bool,
+    /// The progress of each batch started while `triggered` was up, waiting
+    /// for the app to hand it to the refresh's activity.
+    handed: Vec<jobs::ProgressReader>,
 }
 
 #[derive(Default)]
@@ -99,6 +106,9 @@ impl<F: RemoteForge + Clone + Send + 'static> PrCache<F> {
             concurrency: effective_cap(None, jobs::pool().background_ceiling()),
             generation: 0,
             clock: Box::new(clock),
+            triggered: false,
+            painted_since_trigger: false,
+            handed: Vec::new(),
         }
     }
 
@@ -225,6 +235,42 @@ impl<F: RemoteForge + Clone + Send + 'static> PrCache<F> {
             self.generation = self.generation.wrapping_add(1);
         }
         self.spawn_due(repaint);
+        if self.triggered && self.painted_since_trigger && self.batches.is_empty() {
+            self.triggered = false;
+        }
+    }
+
+    /// A user asked for a refresh. The lookups it causes are queued by the
+    /// sidebars' polls during paint and started by the next drain, so the
+    /// flag stays up until a drain that follows a paint finds nothing in
+    /// flight. A key binding triggers before its frame's paint and a palette
+    /// command after, and either way the paint that queues has to come first.
+    pub(crate) fn trigger(&mut self) {
+        self.triggered = true;
+        self.painted_since_trigger = false;
+    }
+
+    /// Whether a refresh the user asked for is still under way.
+    pub(crate) fn triggered(&self) -> bool {
+        self.triggered
+    }
+
+    /// The sidebars have painted this frame, hidden or not. With nothing
+    /// queued or in flight, nothing else wakes the frame whose drain drops
+    /// the flag, so this asks for it.
+    pub(crate) fn mark_painted(&mut self, repaint: &impl Repaint) {
+        if !self.triggered {
+            return;
+        }
+        self.painted_since_trigger = true;
+        if self.batches.is_empty() && self.due.is_empty() {
+            repaint.wake();
+        }
+    }
+
+    /// The progress of batches started for a user refresh since the last call.
+    pub(crate) fn take_progress(&mut self) -> Vec<jobs::ProgressReader> {
+        std::mem::take(&mut self.handed)
     }
 
     /// Record one member's answer. `None` means the request covered this
@@ -294,6 +340,9 @@ impl<F: RemoteForge + Clone + Send + 'static> PrCache<F> {
                 .collect();
             forge.pull_requests(heads, blocking)
         });
+        if self.triggered {
+            self.handed.push(job.progress_reader());
+        }
         self.bank_batch(members, job);
     }
 
@@ -1071,6 +1120,67 @@ mod tests {
         }
 
         assert_eq!(repaint.wakes(), 1, "a panicking unwind still wakes the app");
+    }
+
+    /// A user refresh's batches are what its activity counts, so each one
+    /// started while the flag is up hands its progress over, and batches the
+    /// TTL starts on its own do not.
+    #[test]
+    fn batches_started_while_triggered_hand_over_their_readers() {
+        let repaint = Recorder::default();
+        let mut cache = cache();
+        cache.poll(Path::new("/repo/quiet"), Some("main"), &vcs(), &repaint);
+        cache.drain_completed(&repaint);
+        assert!(cache.take_progress().is_empty(), "an untriggered batch is not handed over");
+        drain_until(&mut cache, Path::new("/repo/quiet"), Duration::from_secs(5));
+
+        cache.trigger();
+        cache.poll(Path::new("/repo/wt"), Some("main"), &vcs(), &repaint);
+        cache.mark_painted(&repaint);
+        cache.drain_completed(&repaint);
+
+        assert_eq!(cache.take_progress().len(), 1);
+        assert!(cache.take_progress().is_empty(), "each reader is handed over once");
+    }
+
+    /// A key binding triggers before the frame's paint queues anything, so a
+    /// drain that follows no paint cannot conclude there is nothing to do.
+    #[test]
+    fn the_flag_survives_a_drain_before_any_paint() {
+        let repaint = Recorder::default();
+        let mut cache = cache();
+        cache.trigger();
+        cache.drain_completed(&repaint);
+        assert!(cache.triggered());
+    }
+
+    #[test]
+    fn the_flag_drops_at_the_first_drain_after_a_paint_with_nothing_in_flight() {
+        let repaint = Recorder::default();
+        let mut cache = cache();
+        let (release, job) = spawn_stuck_job();
+        bank_one(&mut cache, "/repo/wt", "main", job);
+        cache.trigger();
+        cache.mark_painted(&repaint);
+        cache.drain_completed(&repaint);
+        assert!(cache.triggered(), "a batch in flight holds the flag up");
+
+        let _ = release.send(());
+        drain_until(&mut cache, Path::new("/repo/wt"), Duration::from_secs(5));
+        assert!(!cache.triggered());
+    }
+
+    /// With both sidebars hidden nothing polls, so no lookup wakes the frame
+    /// whose drain would drop the flag. The paint has to ask for it.
+    #[test]
+    fn a_paint_with_nothing_to_wait_on_asks_for_the_drain() {
+        let repaint = Recorder::default();
+        let mut cache = cache();
+        cache.mark_painted(&repaint);
+        assert_eq!(repaint.wakes(), 0, "no refresh asked for, nothing to wake");
+        cache.trigger();
+        cache.mark_painted(&repaint);
+        assert_eq!(repaint.wakes(), 1);
     }
 
     /// One result covers many entries, so the drain has to fan a single map out
