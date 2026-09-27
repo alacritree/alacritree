@@ -1,10 +1,10 @@
 # Vendored ConPTY host
 
-Windows hosts every PTY in a console server process. The one in the box (`conhost.exe`) is the throughput bottleneck for terminal output: on a Ryzen 9 5900X it turns termbench's `TermMarkV2 Small` into a 38–41 s run, against 5.4 s for the build vendored here.
+Windows hosts every PTY in a console server process. The one in the box (`conhost.exe`) is the throughput bottleneck for terminal output: on a Ryzen 9 5900X it turns termbench's `TermMarkV2 Small` into a 38 to 41 s run, against 5.4 s for the build vendored here.
 
-`alacritty_terminal` already prefers a side-by-side host when one is present — `tty/windows/conpty.rs` calls `LoadLibraryW("conpty.dll")` and falls back to `kernel32`'s `CreatePseudoConsole` when that fails. Both files below have to sit in the same directory as `alacritree.exe`: `harden_dll_search_path` drops PATH and the working directory from the DLL search order, deliberately leaving the executable's own directory as the only non-system place a `conpty.dll` can come from. That is what stops another terminal's install directory on PATH from hosting our panes.
+`alacritty_terminal` already prefers a side-by-side host when one is present. `tty/windows/conpty.rs` calls `LoadLibraryW("conpty.dll")` and falls back to `kernel32`'s `CreatePseudoConsole` when that fails. `conpty.dll` and `OpenConsole.exe` have to sit in the same directory as `alacritree.exe`: `harden_dll_search_path` drops PATH and the working directory from the DLL search order, leaving the executable's own directory as the only non-system place a `conpty.dll` can come from. That is what stops another terminal's install directory on PATH from hosting our panes.
 
-`conpty.dll` alone does nothing useful — it is a shim that launches `OpenConsole.exe` as the console server. Both must ship together.
+`conpty.dll` alone does nothing useful. It is a shim that launches `OpenConsole.exe` as the console server, so both must ship together.
 
 Absence is not an error. A build without these files logs `Using Windows API for pseudoconsole` and runs on the inbox host, just slower.
 
@@ -16,7 +16,7 @@ Absence is not an error. A build without these files logs `Using Windows API for
 | `OpenConsole.exe` | `build/native/runtimes/x64/OpenConsole.exe` |
 | `LICENSE-conpty.txt` | `microsoft/terminal` repository root |
 
-x64 only, matching the single Windows target in `dist-workspace.toml`. The package also carries arm64 and x86 builds if that target list ever grows.
+x64 only, matching the only Windows target in `dist-workspace.toml`. The package also carries arm64 and x86 builds if that target list ever grows. `dist-workspace.toml` lists all three files under `include`, which dist copies into every release archive, so the Unix tarballs carry them too, unused.
 
 ## Provenance
 

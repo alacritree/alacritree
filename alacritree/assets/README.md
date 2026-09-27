@@ -24,7 +24,7 @@ A codepoint above U+FFFF needs a format 12 cmap, which `write_cmap` builds besid
 
 Needed whenever a glyph is added to `DEFAULT_ICON_GLYPHS` or `CHROME_GLYPHS`, or one of the SVGs beside the font changes. `fonts.rs`'s coverage test fails until this is done, and names the missing codepoint.
 
-Add the codepoint to `build_symbols.py`, then run it against DejaVu 2.37. `--dejavu` defaults to `/usr/share/fonts/truetype/dejavu`:
+Add the codepoint to `SANS` in `build_symbols.py`, or to `MONO` when DejaVu Sans lacks it. A glyph drawn from an SVG goes in `DRAWN` instead. Then run the script against DejaVu 2.37. `--dejavu` defaults to `/usr/share/fonts/truetype/dejavu`:
 
     uv run alacritree/assets/build_symbols.py --dejavu <dir holding DejaVuSans.ttf and DejaVuSansMono.ttf>
 
@@ -34,12 +34,16 @@ The script subsets both faces, merges them, adds each SVG in `DRAWN` at its plan
 
 ## `herdr-ram.svg` and `zellij-hexagon.svg`
 
-The sources of the glyphs `[integrations.herdr] icon` and `[integrations.zellij] icon` default to, at U+10FF00 and U+10FF01. Edit either in any vector editor and rebuild the font. The build reads every path, fills it even-odd, and scales it to fit, so the SVG's size and position do not matter, and a shape meant to read as an outline is drawn as two subpaths rather than a stroke.
+The sources of the default multiplexer icons. `[integrations.herdr] icon` and `[integrations.herdr_core] icon` default to the ram at U+10FF00, and `[integrations.zellij] icon` to the hexagon at U+10FF01. Edit either in any vector editor and rebuild the font. The build reads every path, fills it even-odd, and scales it to fit, so the SVG's size and position do not matter, and a shape meant to read as an outline is drawn as two subpaths rather than a stroke.
 
 ## `FONT-LICENSE.txt`
 
 The complete upstream DejaVu notice. It must accompany any distribution of the binary, which is why `alacritree --licenses` prints it.
 
-## `icon-256.png`
+## `icon.png` and `icon-<size>.png`
 
-The window icon, embedded by `main.rs`.
+`icon.png` is the full-size source image. `icon-256.png` is the window icon, embedded by `main.rs`, and `icon-64.png` is the Windows toast icon, embedded by `notify/mod.rs`. Every size, with `alacritree.desktop`, is also part of the Linux desktop entry and hicolor icons that the AUR packages install.
+
+## `screenshot*.png`
+
+Screenshots of the app. Nothing in the build uses them.
