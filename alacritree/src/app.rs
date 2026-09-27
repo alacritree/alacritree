@@ -8121,16 +8121,34 @@ mod tests {
     /// whole text even when it paints an ellipsis, so `elided` is what
     /// separates a clipped row from the tooltip spelling it out in full.
     fn painted_texts(shapes: &[egui::epaint::ClippedShape]) -> Vec<(String, bool)> {
-        fn walk(shape: &egui::Shape, out: &mut Vec<(String, bool)>) {
+        painted(shapes, |t| (t.galley.text().to_owned(), t.galley.elided))
+    }
+
+    /// Every text a frame painted and where, for a test to click on.
+    pub(super) fn painted_text_rects(
+        shapes: &[egui::epaint::ClippedShape],
+    ) -> Vec<(String, egui::Rect)> {
+        painted(shapes, |t| (t.galley.text().to_owned(), t.visual_bounding_rect()))
+    }
+
+    fn painted<T>(
+        shapes: &[egui::epaint::ClippedShape],
+        read: impl Fn(&egui::epaint::TextShape) -> T,
+    ) -> Vec<T> {
+        fn walk<T>(
+            shape: &egui::Shape,
+            read: &dyn Fn(&egui::epaint::TextShape) -> T,
+            out: &mut Vec<T>,
+        ) {
             match shape {
-                egui::Shape::Text(t) => out.push((t.galley.text().to_owned(), t.galley.elided)),
-                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                egui::Shape::Text(t) => out.push(read(t)),
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, read, out)),
                 _ => {},
             }
         }
         let mut out = Vec::new();
         for clipped in shapes {
-            walk(&clipped.shape, &mut out);
+            walk(&clipped.shape, &read, &mut out);
         }
         out
     }

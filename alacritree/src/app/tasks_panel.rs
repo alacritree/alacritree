@@ -122,7 +122,7 @@ pub(super) fn show(ui: &mut egui::Ui, view: &mut TasksView, theme: &Theme, side:
         row_with_trailing(
             ui,
             |ui| _ = ui.label(RichText::new("Tasks").color(theme.text).strong()),
-            |ui| filter_button(ui, view, theme, id.with("hide-completed")),
+            |ui| filter_button(ui, view, theme),
         );
         if let Some(e) = view.load_error() {
             ui.add(egui::Label::new(RichText::new(e).color(theme.error).small()).wrap());
@@ -149,11 +149,17 @@ pub(super) fn show(ui: &mut egui::Ui, view: &mut TasksView, theme: &Theme, side:
 }
 
 /// Hides or shows the completed tasks, in the sidebar and every tasks tab.
-fn filter_button(ui: &mut egui::Ui, view: &mut TasksView, theme: &Theme, id: egui::Id) {
-    let text = if view.hides_completed() { "show completed" } else { "hide completed" };
-    let label = ui.label(RichText::new(text).color(theme.tasks_sidebar.count).small());
-    let button = ui.interact(label.rect, id, Sense::click());
-    if button.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+/// Drawn like the git panel's review buttons, brighter while it filters.
+fn filter_button(ui: &mut egui::Ui, view: &mut TasksView, theme: &Theme) {
+    let (label, color) = match view.hides_completed() {
+        true => ("show completed", theme.text),
+        false => ("hide completed", theme.text_muted),
+    };
+    let s = theme.ui_scale;
+    let text = RichText::new(label).color(color).small();
+    let button = framed_button(ui, theme, text, vec2(4.0 * s, 1.0 * s));
+    let hint = "Filters the tasks tab as well";
+    if icon_tooltip(button, hint, theme.icon_tooltips).clicked() {
         view.toggle_completed();
     }
 }
@@ -261,6 +267,7 @@ mod tests {
         view: TasksView,
         theme: Theme,
         time: f64,
+        painted: Vec<(String, egui::Rect)>,
     }
 
     impl Harness {
@@ -280,7 +287,8 @@ mod tests {
                 None,
             );
             let theme = Theme::from_config(&Config::default());
-            let mut h = Self { ctx: Context::default(), view, theme, time: 0.0 };
+            let mut h =
+                Self { ctx: Context::default(), view, theme, time: 0.0, painted: Vec::new() };
             let deadline = Instant::now() + Duration::from_secs(10);
             while h.height().is_none() {
                 assert!(Instant::now() < deadline, "the listing never landed");
@@ -305,21 +313,14 @@ mod tests {
                     show(ui, view, theme, TasksSidebar::Left);
                 });
             });
-            fn walk(shape: &egui::Shape, out: &mut Vec<String>) {
-                match shape {
-                    egui::Shape::Text(t) => out.push(t.galley.text().to_owned()),
-                    egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
-                    _ => {},
-                }
-            }
-            let mut texts = Vec::new();
-            output.shapes.iter().for_each(|clipped| walk(&clipped.shape, &mut texts));
-            texts
+            self.painted = crate::app::tests::painted_text_rects(&output.shapes);
+            self.painted.iter().map(|(text, _)| text.clone()).collect()
         }
 
-        fn click_filter(&mut self) -> Vec<String> {
-            let id = panel_id(TasksSidebar::Left).with("hide-completed");
-            let pos = self.ctx.read_response(id).expect("the filter was drawn").rect.center();
+        /// Clicks `text` where the last frame painted it.
+        fn click(&mut self, text: &str) -> Vec<String> {
+            let drawn = self.painted.iter().find(|(t, _)| t == text);
+            let pos = drawn.unwrap_or_else(|| panic!("{text:?} was not drawn")).1.center();
             let button = |pressed| Event::PointerButton {
                 pos,
                 button: PointerButton::Primary,
@@ -372,14 +373,14 @@ mod tests {
         let mut h = Harness::of(vec![done, task("test it")]);
         let has = |texts: &[String], t: &str| texts.iter().any(|x| x == t);
 
-        let hidden = h.click_filter();
+        let hidden = h.click("hide completed");
         assert!(!has(&hidden, "write it"), "{hidden:?}");
         assert!(has(&hidden, "test it"), "{hidden:?}");
         assert!(has(&hidden, "1/2"), "the count dropped the hidden task: {hidden:?}");
         let changes = h.view.take_pref_changes();
         assert_eq!(changes, vec![tasks_view::PrefChange::HideCompleted(true)]);
 
-        let shown = h.click_filter();
+        let shown = h.click("show completed");
         assert!(has(&shown, "write it"), "{shown:?}");
     }
 
