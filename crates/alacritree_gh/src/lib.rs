@@ -151,11 +151,10 @@ impl Transport for Gh<'_> {
 /// up to [`PARALLEL_GROUPS`] scoped threads, since each one mostly waits on
 /// GitHub.
 fn pull_requests_with(
-    heads: Vec<Head>,
+    mut heads: Vec<Head>,
     blocking: &Blocking,
     transport: &impl Transport,
 ) -> PullRequests {
-    let mut heads = heads;
     fill_wsl_remotes(&mut heads, blocking, transport);
     // A repository with no remote has no pull request to find, and asking
     // `gh` would only fail.
