@@ -606,7 +606,8 @@ fn pty_working_directory(explicit: Option<PathBuf>, config: &Config) -> Option<P
 pub(crate) const SESSION_ID_ENV: &str = "ALACRITREE_SESSION_ID";
 
 /// The environment a session's PTY starts with: the user's `[env]` table,
-/// the diff-pane `LESS` default, and the session's own id.
+/// the diff-pane `LESS` default, and the session's own id.  `pending` puts
+/// the Claude Code launcher on `PATH` after.
 fn session_env(
     config_env: &HashMap<String, String>,
     kind: &SessionKind,
@@ -968,7 +969,12 @@ impl<R: Repaint> Session<R> {
         let term = Arc::new(FairMutex::new(term));
 
         let id = next_session_id();
-        let env = session_env(&config.env, &kind, id);
+        let mut env = session_env(&config.env, &kind, id);
+        let path =
+            env.get("PATH").map(std::ffi::OsString::from).or_else(|| std::env::var_os("PATH"));
+        if let Some(path) = crate::claude::session_path(config, path.as_deref()) {
+            env.insert("PATH".to_string(), path);
+        }
 
         let spare = shell.as_ref().filter(|_| wsl_spare::enabled()).and_then(|shell| {
             wsl_spare::Launch::parse(&shell.program, &shell.args, pty_cwd.as_deref())

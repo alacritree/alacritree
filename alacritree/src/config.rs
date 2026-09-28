@@ -3074,7 +3074,7 @@ struct RawIntegrations {
     gh: alacritree_gh::RawGh,
     /// The Doppler CLI behind scope mirroring for new worktrees.
     doppler: alacritree_doppler::RawDoppler,
-    /// Claude Code settings written into each new worktree.
+    /// Claude Code in alacritree's terminals.
     claude: alacritree_claude::RawClaude,
     /// Programs to run when a worktree is created, first opened, or removed.
     checkout_hooks: alacritree_checkout_hooks::RawCheckoutHooks,

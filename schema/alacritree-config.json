@@ -255,9 +255,14 @@
     "RawClaude": {
       "description": "`[integrations.claude]`.",
       "properties": {
+        "hide_diff_panel": {
+          "default": true,
+          "description": "Set `diffSidebarOpen` to `false` in Claude Code's global config when\nalacritree starts, so Claude Code's diff panel does not open on its\nown beside the git panel. Claude Code has no per-session switch for\nit, so this applies to Claude Code in every terminal. `/diff` still\nopens the panel.",
+          "type": "boolean"
+        },
         "terminal_bell": {
           "default": true,
-          "description": "Set `preferredNotifChannel` to `terminal_bell` in each new worktree's\n`.claude/settings.local.json`, so Claude Code rings the bell when it\nwaits on input. Other keys in the file are kept.",
+          "description": "Run `claude` in alacritree's terminals with `preferredNotifChannel`\nset to `terminal_bell`, so Claude Code rings the bell when it waits on\ninput. Passed on the command line by a launcher on the sessions'\n`PATH`, so no settings file changes. A shell startup file that puts\nanother directory holding `claude` ahead of it on `PATH` bypasses it.",
           "type": "boolean"
         }
       },
@@ -1130,7 +1135,7 @@
         },
         "claude": {
           "$ref": "#/$defs/RawClaude",
-          "description": "Claude Code settings written into each new worktree."
+          "description": "Claude Code in alacritree's terminals."
         },
         "delta": {
           "$ref": "#/$defs/RawDelta",

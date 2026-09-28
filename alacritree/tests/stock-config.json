@@ -67,6 +67,7 @@
   "integrations": {
     "checkout_hooks": [],
     "claude": {
+      "hide_diff_panel": true,
       "terminal_bell": true
     },
     "delta": {

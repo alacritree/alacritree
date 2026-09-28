@@ -236,11 +236,6 @@ opening hook runs again after a restart, so it must be safe to repeat.
 
 The built-in hooks run first, in this order, then your own:
 
-- **Claude Code.** A new worktree gets `preferredNotifChannel: terminal_bell`
-  in `.claude/settings.local.json`, so Claude Code rings the terminal bell
-  when it waits on input and the sidebar flags the session. Every other key in
-  the file is kept. Opening a worktree made elsewhere leaves its settings
-  alone. Turn it off with `[integrations.claude] terminal_bell = false`.
 - **Doppler.** When the main checkout has `doppler setup` scopes, a new or
   opened worktree gets the same scopes, and a removed one gives them back.
   Without this, `doppler run` in a worktree fails with "You must specify a
@@ -272,6 +267,26 @@ The built-in hooks run first, in this order, then your own:
   looks up the file name of `path` through the distro's login shell and skips
   the hook in a distro that doesn't have it. A Windows `path` is never run
   inside the distro.
+
+### Claude Code
+
+Alacritree sets up Claude Code without writing to any checkout:
+
+- **Terminal bell.** Each session puts a `claude` launcher first on `PATH`.
+  It runs the real `claude` with
+  `--settings '{"preferredNotifChannel":"terminal_bell"}'`, so Claude Code
+  rings the bell when it waits on input and the sidebar flags the session.
+  The launcher lives in `$XDG_RUNTIME_DIR/alacritree/bin`, and Claude Code
+  started outside Alacritree never sees it. A shell startup file that puts
+  another directory holding `claude` ahead of it on `PATH` bypasses it, as do
+  panes a multiplexer server starts. Unix only. Turn it off with
+  `[integrations.claude] terminal_bell = false`.
+- **Diff panel.** Claude Code's diff panel repeats the git panel, so
+  Alacritree sets `diffSidebarOpen` to `false` in Claude Code's global config
+  (`~/.claude.json`, or under `$CLAUDE_CONFIG_DIR`) when it starts. Claude
+  Code has no per-session switch for the panel, so this reaches Claude Code in
+  every terminal. Only that value changes, and `/diff` still opens the panel.
+  Turn it off with `[integrations.claude] hide_diff_panel = false`.
 
   The hooks are tables keyed by name rather than a list, so `alacritree.toml`
   can change or switch off one defined in `alacritty.toml`:
@@ -672,9 +687,9 @@ Persistent files written by Alacritree:
   sidebar visibility.
 - `$XDG_CONFIG_HOME/alacritree/scratchpads/*.md` holds one persistent Markdown
   scratchpad per workspace. Worktree deletion does not remove these notes.
-- `<worktree>/.claude/settings.local.json` is touched only during worktree
-  creation, and only to set `preferredNotifChannel = "terminal_bell"`, unless
-  `[integrations.claude] terminal_bell` is off.
+- Claude Code's global config (`~/.claude.json`) gets `diffSidebarOpen =
+  false` at startup, unless `[integrations.claude] hide_diff_panel` is off.
+  See [Claude Code](#claude-code).
 
 No telemetry, no analytics, no background network traffic.
 

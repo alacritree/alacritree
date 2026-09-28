@@ -6,7 +6,8 @@ use alacritree::app::AlacritreeApp;
 #[cfg(windows)]
 use alacritree::win_session;
 use alacritree::{
-    cli, config, crash_log, dll_search, frame_log, logdir, logging, startup_log, state, wsl_spare,
+    claude, cli, config, crash_log, dll_search, frame_log, logdir, logging, startup_log, state,
+    wsl_spare,
 };
 use alacritree_common::{tools, wsl, wsl_helper};
 use clap::Parser;
@@ -106,6 +107,8 @@ fn main() -> eframe::Result<()> {
     wsl_helper::set_enabled(config.wsl_resident_helper);
     wsl_spare::set_enabled(config.wsl_warm_spare);
     tools::configure(config.integrations.tool_paths());
+    // Before the first session, whose `PATH` names the launcher.
+    claude::set_up(&config);
     let translucent = config.window.opacity < 1.0;
 
     let mut viewport = egui::ViewportBuilder::default()
