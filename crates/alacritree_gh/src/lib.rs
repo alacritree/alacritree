@@ -10,7 +10,7 @@
 mod graphql;
 mod settings;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
@@ -94,7 +94,9 @@ struct Group {
 /// it, injected so a test can pin which repository a group ends up asking
 /// without a `gh` process deciding it.
 fn groups_with(due: Vec<Head>, resolve: impl Fn(&Path) -> Option<(String, String)>) -> Vec<Group> {
-    let mut by_repo: HashMap<(String, String), Group> = HashMap::new();
+    // Ordered, so a repeated label goes to the same group every burst and
+    // its timing stays with it.
+    let mut by_repo: BTreeMap<(String, String), Group> = BTreeMap::new();
     let mut ungrouped = Vec::new();
     for m in due {
         // `origin` groups the checkouts that share a repository, and the
@@ -1152,6 +1154,26 @@ mod tests {
         let mut labels: Vec<_> = out.iter().map(|g| g.label.as_str()).collect();
         labels.sort();
         assert_eq!(labels, ["up/tool", "up/tool (2)"]);
+    }
+
+    /// The timing table is keyed by label, so each checkout has to get the
+    /// same label on every refresh, whatever order its heads arrive in.
+    #[test]
+    fn a_shared_repository_label_lands_on_the_same_checkout_every_time() {
+        let fork = "https://github.com/me/tool.git";
+        let up = "https://github.com/up/tool.git";
+        let a =
+            Head { path: PathBuf::from("/a"), branch: "x".into(), remotes: remotes(fork, fork) };
+        let b = Head { path: PathBuf::from("/b"), branch: "y".into(), remotes: remotes(up, up) };
+        let label_of_a = |due: Vec<Head>| {
+            let out = groups_with(due, |_| Some(("up".to_string(), "tool".to_string())));
+            out.into_iter().find(|g| g.cwd == Path::new("/a")).expect("a's group").label
+        };
+
+        for _ in 0..20 {
+            assert_eq!(label_of_a(vec![a.clone(), b.clone()]), "up/tool");
+            assert_eq!(label_of_a(vec![b.clone(), a.clone()]), "up/tool");
+        }
     }
 
     /// Branches of one repository share a request; a chunk boundary splits them
