@@ -230,6 +230,9 @@ pub struct DiffTarget {
 pub struct Remotes {
     pub origin_url: Option<String>,
     pub push_url: Option<String>,
+    /// The repository opened and lists no remotes at all. `false` when it
+    /// could not be read, so a caller skips a lookup only on evidence.
+    pub no_remotes: bool,
 }
 
 #[cfg(test)]

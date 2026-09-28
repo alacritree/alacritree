@@ -10,7 +10,11 @@ use alacritree_vcs::Remotes;
 pub(crate) fn remotes(checkout: &Path, branch: &str) -> Remotes {
     let Ok(repo) = git2::Repository::open(checkout) else { return Remotes::default() };
     let url = |name: &str| repo.find_remote(name).ok()?.url().map(str::to_string);
-    Remotes { origin_url: url("origin"), push_url: url(&push_remote(&repo, branch)) }
+    Remotes {
+        origin_url: url("origin"),
+        push_url: url(&push_remote(&repo, branch)),
+        no_remotes: repo.remotes().is_ok_and(|names| names.is_empty()),
+    }
 }
 
 /// The remote `git push` sends `branch` to, in git's own order. `.` names the
@@ -104,6 +108,31 @@ mod tests {
         );
     }
 
+    /// A repository with no remote at all has no pull request to find, which
+    /// is what lets a forge skip the lookup.
+    #[test]
+    fn a_repository_without_remotes_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = init_repo(dir.path());
+        let remotes = remotes(&repo, "main");
+        assert!(remotes.no_remotes);
+        assert_eq!((remotes.origin_url, remotes.push_url), (None, None));
+    }
+
+    /// No `origin` is not the same as no remote: `gh` may still resolve the
+    /// repository from `upstream`, so the lookup has to run.
+    #[test]
+    fn a_clone_with_only_a_non_origin_remote_is_not_remote_less() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = init_repo(dir.path());
+        add_remote(&repo, "upstream", "https://github.com/up/repo.git");
+        let remotes = remotes(&repo, "main");
+        assert!(!remotes.no_remotes);
+        assert_eq!((remotes.origin_url, remotes.push_url), (None, None));
+    }
+
+    /// A folder that could not be read is no evidence of anything, so it
+    /// keeps `no_remotes` false and its lookup.
     #[test]
     fn a_folder_that_is_no_repository_has_no_remotes() {
         let dir = tempfile::tempdir().unwrap();

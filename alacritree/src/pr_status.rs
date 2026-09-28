@@ -516,6 +516,7 @@ mod tests {
         alacritree_vcs::Remotes {
             origin_url: Some("https://github.com/o/r.git".into()),
             push_url: Some("https://github.com/me/r.git".into()),
+            ..Default::default()
         }
     }
 

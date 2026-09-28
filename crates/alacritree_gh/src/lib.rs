@@ -535,7 +535,11 @@ mod tests {
 
     /// Remotes as the git backend reads them for a native checkout.
     fn remotes(origin: &str, push: &str) -> Option<Remotes> {
-        Some(Remotes { origin_url: Some(origin.into()), push_url: Some(push.into()) })
+        Some(Remotes {
+            origin_url: Some(origin.into()),
+            push_url: Some(push.into()),
+            ..Default::default()
+        })
     }
 
     fn parsed(stdout: &[u8], head_owner: Option<&str>) -> PrInfo {
@@ -1031,6 +1035,7 @@ mod tests {
         let remotes = Some(Remotes {
             origin_url: Some("https://github.com/up/repo.git".into()),
             push_url: Some("git@github.com:me/repo.git".into()),
+            ..Default::default()
         });
         let due = vec![Head {
             path: PathBuf::from("/no/such/checkout"),
