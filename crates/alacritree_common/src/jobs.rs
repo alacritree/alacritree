@@ -1178,14 +1178,19 @@ mod tests {
     /// new one.
     #[test]
     fn set_steps_forgets_earlier_starts() {
-        let (_, snap) = recorded(|b| {
+        let (since_set_steps, snap) = recorded(|b| {
             b.step_started("a");
             std::thread::sleep(Duration::from_millis(50));
+            let before = Instant::now();
             b.set_steps(labels(&["a"]));
             b.step_done("a", Ok(()));
+            before.elapsed()
         });
+        // Bounded by a measurement rather than a deadline, so a stalled
+        // thread cannot fail it: timed from `set_steps`, the step cannot have
+        // taken longer than the time since just before that call.
         let took = snap.steps[0].took.expect("a is timed");
-        assert!(took < Duration::from_millis(50), "a took {took:?}");
+        assert!(took <= since_set_steps, "a took {took:?}, set_steps was {since_set_steps:?} ago");
     }
 
     /// A thread a background job spawns starts at normal priority, and would
