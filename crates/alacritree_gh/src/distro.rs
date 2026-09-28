@@ -24,9 +24,11 @@ done"#;
 /// The per-branch lookup: the push remote's URL on the first line, blank when
 /// it has none, then `gh pr list`'s JSON. `$1` is the checkout, `$2` the
 /// distro's `gh`, `$3` the branch, `$4` the page limit and `$5` the fields.
+/// A repository with no remote answers an empty list without running `gh`.
 pub(crate) fn per_branch_script() -> String {
     format!(
         r#"cd "$1" || exit 1
+[ -n "$(git remote)" ] || {{ printf '\n[]'; exit 0; }}
 b=$3
 {PUSH_REMOTE}
 printf '%s\n' "$(git config --get "remote.$r.url" 2>/dev/null)"
@@ -285,6 +287,32 @@ mod tests {
             git(&repo, &["remote", "add", "origin", "gh:me/r.git"]);
             let stdout = sh(&remotes_script(), &[repo.to_str().unwrap(), "main"]);
             assert_eq!(stdout, "1\tgh:me/r.git\tgh:me/r.git\n");
+        }
+
+        /// The per-branch path runs only when the remotes read failed, and a
+        /// repository with no remote there must read as "no PR" rather than
+        /// handing `gh`'s error to the JSON parser.
+        #[test]
+        fn the_per_branch_script_answers_no_pr_without_remotes() {
+            use std::os::unix::fs::PermissionsExt;
+
+            let dir = tempfile::tempdir().unwrap();
+            let repo = repo(&dir.path().join("repo"));
+            let ran = dir.path().join("ran");
+            let stub = dir.path().join("gh");
+            std::fs::write(&stub, format!("#!/bin/sh\ntouch '{}'\n", ran.display())).unwrap();
+            std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+            let stdout = sh(&per_branch_script(), &[
+                repo.to_str().unwrap(),
+                stub.to_str().unwrap(),
+                "main",
+                "100",
+                "number",
+            ]);
+
+            assert_eq!(stdout, "\n[]");
+            assert!(!ran.exists(), "gh ran for a repository with no remote");
         }
 
         /// The body rides in argv, since `run_batch` has no stdin, and branch

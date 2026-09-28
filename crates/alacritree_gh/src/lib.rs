@@ -95,11 +95,15 @@ fn pull_requests_with(
 ) -> PullRequests {
     let mut heads = heads;
     fill_wsl_remotes(&mut heads, transport);
+    // A repository with no remote has no pull request to find, and asking
+    // `gh` would only fail.
+    let (remote_less, heads): (Vec<Head>, Vec<Head>) =
+        heads.into_iter().partition(|h| h.remotes.as_ref().is_some_and(|r| r.no_remotes));
+    let mut out: PullRequests = remote_less.into_iter().map(|h| (h.path, Ok(None))).collect();
     // Resolving costs a `gh` process per repository, and runs before any
     // step exists, so it is charged to none.
     let groups = groups_with(heads, |cwd, origin| transport.resolve(cwd, origin));
     blocking.set_steps(groups.iter().map(|g| g.label.clone()).collect());
-    let mut out = HashMap::new();
     for group in groups {
         // A cancel landing between groups has no child to kill, since
         // neither the request nor the sweep registers one, so each group
@@ -1363,6 +1367,61 @@ mod tests {
         assert_eq!(out.iter().map(|g| g.members.len()).sum::<usize>(), graphql::CHUNK + 1);
     }
 
+    /// A repository with no remote has no pull request anywhere, so asking
+    /// `gh` only fails and counts against the status row.
+    #[test]
+    fn a_remote_less_head_is_answered_without_a_lookup() {
+        let due = vec![Head {
+            path: PathBuf::from("/bare"),
+            branch: "main".into(),
+            remotes: Some(Remotes { no_remotes: true, ..Default::default() }),
+        }];
+
+        let (out, snap) = jobs::recorded(|b| {
+            pull_requests_with(
+                due,
+                b,
+                &fns(
+                    |_, _| panic!("a remote-less head resolves nothing"),
+                    |_, _| panic!("a remote-less head asks for no batch"),
+                    |_, _| panic!("a remote-less head has no PR to look up"),
+                ),
+            )
+        });
+
+        assert_eq!(numbers(&out), [(PathBuf::from("/bare"), None)]);
+        assert!(snap.steps.is_empty(), "no step for a lookup that never ran");
+    }
+
+    /// Remotes that could not be read are no evidence the repository has none.
+    #[test]
+    fn an_unread_head_still_looks_up() {
+        let due = vec![Head {
+            path: PathBuf::from("/unread"),
+            branch: "main".into(),
+            remotes: Some(Remotes::default()),
+        }];
+        let sweeps = AtomicUsize::new(0);
+
+        let (out, _) = jobs::recorded(|b| {
+            pull_requests_with(
+                due,
+                b,
+                &fns(
+                    no_resolve,
+                    |_, _| panic!("an ungrouped head asks for no batch"),
+                    |_, _| {
+                        sweeps.fetch_add(1, Ordering::Relaxed);
+                        Ok(None)
+                    },
+                ),
+            )
+        });
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(sweeps.load(Ordering::Relaxed), 1);
+    }
+
     /// Heads inside a distro, which `wsl::classify` recognizes only from a
     /// UNC prefix that `std::path` parses on Windows.
     #[cfg(windows)]
@@ -1471,6 +1530,37 @@ mod tests {
         fn a_failed_remotes_read_sends_the_distro_per_branch() {
             let swept = swept_with(heads(&["a", "b", "c"]), |_| None);
             assert_eq!(swept.len(), 3);
+        }
+
+        /// Each head leaves the burst by exactly one road: a batch, the skip,
+        /// or the per-branch path. None may be dropped or answered twice.
+        #[test]
+        fn every_head_in_a_mixed_burst_is_answered_once() {
+            let native = |path: &str, remotes: Option<Remotes>| Head {
+                path: PathBuf::from(path),
+                branch: "main".into(),
+                remotes,
+            };
+            let due = vec![
+                native(r"C:\grouped", remotes(ORIGIN, ORIGIN)),
+                wsl_head("a"),
+                native(r"C:\bare", Some(Remotes { no_remotes: true, ..Default::default() })),
+                native(r"C:\unread", Some(Remotes::default())),
+            ];
+            let mut expected: Vec<PathBuf> = due.iter().map(|h| h.path.clone()).collect();
+            expected.sort();
+            let transport = fns(
+                |_, _| Some(("o".to_string(), "r".to_string())),
+                |_, _| Some(NO_PRS.to_vec()),
+                |_, _| Ok(None),
+            )
+            .with_remotes(|_, pairs| Some(vec![remotes(ORIGIN, ORIGIN); pairs.len()]));
+
+            let (out, _) = jobs::recorded(|b| pull_requests_with(due, b, &transport));
+
+            let mut answered: Vec<PathBuf> = out.into_keys().collect();
+            answered.sort();
+            assert_eq!(answered, expected);
         }
 
         /// A WSL request carries its body in argv, which the one-shot
