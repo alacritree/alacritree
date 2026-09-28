@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.14.0](https://github.com/alacritree/alacritree/compare/v0.13.0...v0.14.0) (2026-09-28)
+
+
+### Features
+
+* **config:** set the scratchpad and tasks font sizes [77] ([#364](https://github.com/alacritree/alacritree/issues/364)) ([d05f4d0](https://github.com/alacritree/alacritree/commit/d05f4d0606bc2e89974a65b0d1194e2af35559ce))
+* **hooks:** turn the Claude bell into a hook ([#367](https://github.com/alacritree/alacritree/issues/367)) ([6a91556](https://github.com/alacritree/alacritree/commit/6a91556d3dd00de0ce5ad2d24a200f02f65efedf))
+* **tasks:** cache, reorder and delete in the tasks tab [67] ([#299](https://github.com/alacritree/alacritree/issues/299)) ([f717f48](https://github.com/alacritree/alacritree/commit/f717f48470d200059872eebd5e3d8421870e4a6f))
+* **tasks:** filter and toggle the sidebar tasks [82] ([#372](https://github.com/alacritree/alacritree/issues/372)) ([8340183](https://github.com/alacritree/alacritree/commit/8340183c7e1a6980af79e863961263010a22a0ad))
+* **tasks:** fold sub-tasks and sections from chevrons [65] ([#296](https://github.com/alacritree/alacritree/issues/296)) ([3debc19](https://github.com/alacritree/alacritree/commit/3debc196b2c860f857928d466d93192b5df7810b))
+* **tasks:** select tasks and delete them together ([#361](https://github.com/alacritree/alacritree/issues/361)) ([3770d93](https://github.com/alacritree/alacritree/commit/3770d93d2280b139e07a61e42e89fa1925eaa035))
+* **tasks:** show task progress in a sidebar ([#370](https://github.com/alacritree/alacritree/issues/370)) ([acc84f9](https://github.com/alacritree/alacritree/commit/acc84f929d9511b353a993535dd78062cee057ea))
+* **tasks:** split a pasted list into one task per line [76] ([#362](https://github.com/alacritree/alacritree/issues/362)) ([26f3ee4](https://github.com/alacritree/alacritree/commit/26f3ee47f9c697492d3de17839fc0f4d242a9ee9))
+* **tasks:** wrap a long task while it is typed ([#357](https://github.com/alacritree/alacritree/issues/357)) ([ad392be](https://github.com/alacritree/alacritree/commit/ad392be532a57521cf1f24e7d7e17876931e63ce))
+* **ui:** add interactive component catalog ([#375](https://github.com/alacritree/alacritree/issues/375)) ([befb090](https://github.com/alacritree/alacritree/commit/befb0903ac977e866947778f536bcabbb7e356be))
+* **ui:** return to the session a tab opened over [68] ([#300](https://github.com/alacritree/alacritree/issues/300)) ([d324ef4](https://github.com/alacritree/alacritree/commit/d324ef4b0dace8ff47317e54b043da76f8937802))
+* **ui:** show background activity in a status row [83] ([#373](https://github.com/alacritree/alacritree/issues/373)) ([17e6070](https://github.com/alacritree/alacritree/commit/17e6070ff148c1646e2f9c713488bea39fea8521))
+
+
+### Bug Fixes
+
+* **session:** read Claude Code's half-circle title spinner as working ([#376](https://github.com/alacritree/alacritree/issues/376)) ([780523a](https://github.com/alacritree/alacritree/commit/780523a4d4a8ee8b24fb12553e3b1793ce4cf05e))
+* **tasks:** repo scope matches git's repo name [66] ([#298](https://github.com/alacritree/alacritree/issues/298)) ([eb383a9](https://github.com/alacritree/alacritree/commit/eb383a9bc7f31b784a33716f6dda8d365acca450))
+* **ui:** detached filter, review button, sidebar centering [64] ([#295](https://github.com/alacritree/alacritree/issues/295)) ([2491124](https://github.com/alacritree/alacritree/commit/24911248e36471d20de479149b0990f7147cf0bd))
+* **ui:** pad git panel rows, clear the scroll bar ([#358](https://github.com/alacritree/alacritree/issues/358)) ([2fa42ac](https://github.com/alacritree/alacritree/commit/2fa42acbfdbb8a739671e9088c1fe171d44a2808)), closes [#349](https://github.com/alacritree/alacritree/issues/349)
+* **worktree:** run removal hooks when pruning [79] ([#366](https://github.com/alacritree/alacritree/issues/366)) ([6d63c6b](https://github.com/alacritree/alacritree/commit/6d63c6b88962c56687e3d0211b46c52ad6ef9ae5))
+
+
+### Performance Improvements
+
+* **gh:** batch WSL checkouts in the PR refresh [84] ([#380](https://github.com/alacritree/alacritree/issues/380)) ([84ec659](https://github.com/alacritree/alacritree/commit/84ec659a5ea98bd0f9d0277d3fdbdaab0dea0087))
+* **render:** draw the terminal grid only on the GPU [70] ([#352](https://github.com/alacritree/alacritree/issues/352)) ([c651372](https://github.com/alacritree/alacritree/commit/c651372ec421756dbc18042475dd0e9de45bc595))
+
 ## [0.13.0](https://github.com/alacritree/alacritree/compare/v0.12.0...v0.13.0) (2026-09-22)
 
 
