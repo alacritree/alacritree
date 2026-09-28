@@ -45,6 +45,11 @@ exec "$2" pr list --head "$3" --state all --limit "$4" --json "$5""#
 /// which leaves room for long branch names where 100 would not.
 pub(crate) const CHUNK: usize = 50;
 
+/// Checkouts per remotes read. The pairs ride in argv, which the one-shot
+/// `wsl.exe` caps at 32,767 characters, and a path with its branch runs to
+/// about 130, so 100 leaves room for long ones.
+pub(crate) const REMOTES_CHUNK: usize = 100;
+
 /// One record per `path branch` pair in `$@`: a status, then origin's URL,
 /// then the push remote's, tab separated. Status `0` is a checkout git could
 /// not read, `1` one with remotes, and `2` one that lists none at all.

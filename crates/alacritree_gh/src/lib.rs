@@ -231,8 +231,8 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 /// Reads the remotes the app could not, those of checkouts inside a distro,
-/// with one read per distro. A head whose read failed keeps `None` and the
-/// per-branch path.
+/// one read per distro and `distro::REMOTES_CHUNK` checkouts. A head whose
+/// read failed keeps `None` and the per-branch path.
 fn fill_wsl_remotes(heads: &mut [Head], blocking: &Blocking, transport: &impl Transport) {
     let mut by_distro: BTreeMap<String, Vec<(usize, String)>> = BTreeMap::new();
     for (i, head) in heads.iter().enumerate() {
@@ -244,17 +244,19 @@ fn fill_wsl_remotes(heads: &mut [Head], blocking: &Blocking, transport: &impl Tr
         }
     }
     for (distro, members) in by_distro {
-        if blocking.cancelled() {
-            return;
-        }
-        let pairs: Vec<(&str, &str)> =
-            members.iter().map(|(i, path)| (path.as_str(), heads[*i].branch.as_str())).collect();
-        let Some(found) = transport.remotes(&distro, &pairs) else { continue };
-        if found.len() != members.len() {
-            continue;
-        }
-        for ((i, _), remotes) in members.iter().zip(found) {
-            heads[*i].remotes = remotes;
+        for chunk in members.chunks(distro::REMOTES_CHUNK) {
+            if blocking.cancelled() {
+                return;
+            }
+            let pairs: Vec<(&str, &str)> =
+                chunk.iter().map(|(i, path)| (path.as_str(), heads[*i].branch.as_str())).collect();
+            let Some(found) = transport.remotes(&distro, &pairs) else { continue };
+            if found.len() != chunk.len() {
+                continue;
+            }
+            for ((i, _), remotes) in chunk.iter().zip(found) {
+                heads[*i].remotes = remotes;
+            }
         }
     }
 }
@@ -328,11 +330,9 @@ fn groups_with(
         }
         group.members.push(m);
     }
-    // `origin` says only which worktrees share a repository. Which
-    // repository to ask is `gh`'s answer, and the two differ on a fork
-    // checkout: `origin` names the fork, while a pull request is listed
-    // under the repository it targets. One resolve per repository, so a
-    // project's worktrees still cost one process between them.
+    // On a fork checkout `origin` names the fork, while its pull requests
+    // live under the repository it targets, so `gh` names the one to ask.
+    // One resolve per repository, however many worktrees share it.
     let resolved = in_parallel(by_repo.into_iter().collect(), blocking, |(key, mut g)| {
         let (distro, owner, name) = key;
         g.slug = resolve(&g.cwd, &(owner, name));
@@ -1922,6 +1922,54 @@ mod tests {
             cancelled_burst(heads(&["a", "b"]), transport);
 
             assert_eq!(reads.load(Ordering::Relaxed), 0);
+        }
+
+        /// The pairs ride in argv, which the one-shot `wsl.exe` caps, so a
+        /// distro with many checkouts is read in chunks rather than falling
+        /// back to one lookup per branch.
+        #[test]
+        fn the_remotes_read_chunks_at_the_limit() {
+            let reads = Mutex::new(Vec::new());
+            let transport = fns(
+                |_, _| Some(("o".to_string(), "r".to_string())),
+                |_, _| Some(NO_PRS.to_vec()),
+                |_, _| Ok(None),
+            )
+            .with_remotes(|_, pairs| {
+                reads.lock().unwrap().push(pairs.len());
+                Some(vec![remotes(ORIGIN, ORIGIN); pairs.len()])
+            });
+            let due: Vec<Head> =
+                (0..=distro::REMOTES_CHUNK).map(|i| wsl_head(&i.to_string())).collect();
+
+            jobs::recorded(|b| pull_requests_with(due, b, &transport));
+
+            assert_eq!(reads.into_inner().unwrap(), [distro::REMOTES_CHUNK, 1]);
+        }
+
+        /// A chunk that failed says nothing about the checkouts in the others.
+        #[test]
+        fn a_failed_chunk_sends_only_its_own_heads_per_branch() {
+            let swept = Mutex::new(Vec::new());
+            let transport = fns(
+                |_, _| Some(("o".to_string(), "r".to_string())),
+                |_, _| Some(NO_PRS.to_vec()),
+                |m, _| {
+                    swept.lock().unwrap().push(m.path.clone());
+                    Ok(None)
+                },
+            )
+            .with_remotes(|_, pairs| {
+                (pairs.len() == distro::REMOTES_CHUNK)
+                    .then(|| vec![remotes(ORIGIN, ORIGIN); pairs.len()])
+            });
+            let due: Vec<Head> =
+                (0..=distro::REMOTES_CHUNK).map(|i| wsl_head(&i.to_string())).collect();
+            let last = due.last().expect("a head").path.clone();
+
+            jobs::recorded(|b| pull_requests_with(due, b, &transport));
+
+            assert_eq!(swept.into_inner().unwrap(), [last]);
         }
 
         /// A WSL request carries its body in argv, which the one-shot
