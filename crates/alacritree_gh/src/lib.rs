@@ -30,29 +30,51 @@ impl RemoteForge for GhForge {
     /// Group a whole burst and ask for each group in turn. The requests
     /// block.
     fn pull_requests(&self, heads: Vec<Head>, blocking: &Blocking) -> PullRequests {
-        pull_requests_with(
-            heads,
-            blocking,
-            |cwd| resolve_repo(cwd, blocking),
-            graphql::run,
-            |m, head_owner| query_gh(&m.path, &m.branch, head_owner, blocking),
-        )
+        pull_requests_with(heads, blocking, &Gh { blocking })
+    }
+}
+
+/// Every process a burst starts, behind one seam so a test can run the burst
+/// without `gh`.
+trait Transport: Sync {
+    /// The repository `gh` acts on from `cwd`. `origin` is the slug the group
+    /// was keyed on.
+    fn resolve(&self, cwd: &Path, origin: &(String, String)) -> Option<(String, String)>;
+    /// One GraphQL document's stdout, or `None` when it produced no answer.
+    fn request(&self, cwd: &Path, query: &str) -> Option<Vec<u8>>;
+    /// The per-branch `gh pr list` lookup.
+    fn per_branch(&self, head: &Head, owner: Option<&str>) -> Result<Option<PrInfo>, ForgeError>;
+}
+
+/// The real transport: `gh` on the Windows side or inside the distro.
+struct Gh<'a> {
+    blocking: &'a Blocking,
+}
+
+impl Transport for Gh<'_> {
+    fn resolve(&self, cwd: &Path, _origin: &(String, String)) -> Option<(String, String)> {
+        resolve_repo(cwd, self.blocking)
+    }
+
+    fn request(&self, cwd: &Path, query: &str) -> Option<Vec<u8>> {
+        graphql::run(cwd, query)
+    }
+
+    fn per_branch(&self, head: &Head, owner: Option<&str>) -> Result<Option<PrInfo>, ForgeError> {
+        query_gh(&head.path, &head.branch, owner, self.blocking)
     }
 }
 
 /// The burst behind [`GhForge::pull_requests`], reporting one step per
-/// request so a refresh counts repositories off as each lands. `resolve`,
-/// `request` and `per_branch` are injected so a test can run it without `gh`.
+/// request so a refresh counts repositories off as each lands.
 fn pull_requests_with(
     heads: Vec<Head>,
     blocking: &Blocking,
-    resolve: impl Fn(&Path) -> Option<(String, String)>,
-    request: impl Fn(&Path, &str) -> Option<Vec<u8>>,
-    per_branch: impl Fn(&Head, Option<&str>) -> Result<Option<PrInfo>, ForgeError>,
+    transport: &impl Transport,
 ) -> PullRequests {
     // Resolving costs a `gh` process per repository, and runs before any
     // step exists, so it is charged to none.
-    let groups = groups_with(heads, resolve);
+    let groups = groups_with(heads, |cwd, origin| transport.resolve(cwd, origin));
     blocking.set_steps(groups.iter().map(|g| g.label.clone()).collect());
     let mut out = HashMap::new();
     for group in groups {
@@ -63,7 +85,7 @@ fn pull_requests_with(
         if blocking.cancelled() {
             break;
         }
-        let found = query_group(&group, &request, &per_branch);
+        let found = query_group(&group, transport);
         let failed = group.members.iter().find_map(|m| found.get(&m.path)?.as_ref().err());
         blocking.step_done(&group.label, failed.map_or(Ok(()), |e| Err(e.to_string())));
         out.extend(found);
@@ -91,9 +113,13 @@ struct Group {
 /// runs on a worker rather than on the frame.
 ///
 /// `resolve` names the repository a group asks about, given any worktree of
-/// it, injected so a test can pin which repository a group ends up asking
-/// without a `gh` process deciding it.
-fn groups_with(due: Vec<Head>, resolve: impl Fn(&Path) -> Option<(String, String)>) -> Vec<Group> {
+/// it and the `origin` slug the group was keyed on, injected so a test can
+/// pin which repository a group ends up asking without a `gh` process
+/// deciding it.
+fn groups_with(
+    due: Vec<Head>,
+    resolve: impl Fn(&Path, &(String, String)) -> Option<(String, String)>,
+) -> Vec<Group> {
     // Ordered, so a repeated label goes to the same group every burst and
     // its timing stays with it.
     let mut by_repo: BTreeMap<(String, String), Group> = BTreeMap::new();
@@ -137,14 +163,14 @@ fn groups_with(due: Vec<Head>, resolve: impl Fn(&Path) -> Option<(String, String
         group.members.push(m);
     }
     let mut groups: Vec<Group> = by_repo
-        .into_values()
-        .flat_map(|mut g| {
+        .into_iter()
+        .flat_map(|(origin, mut g)| {
             // `origin` says only which worktrees share a repository. Which
             // repository to ask is `gh`'s answer, and the two differ on a fork
             // checkout: `origin` names the fork, while a pull request is listed
             // under the repository it targets. One resolve per repository, so
             // a project's worktrees still cost one process between them.
-            g.slug = resolve(&g.cwd);
+            g.slug = resolve(&g.cwd, &origin);
             let name = match &g.slug {
                 Some((owner, name)) => format!("{owner}/{name}"),
                 None => wsl::display_path(&g.cwd),
@@ -191,19 +217,12 @@ fn unique_labels(groups: &mut [Group]) {
 /// An answer naming no PR at all is still an answer and returns as one: a
 /// repository whose branches have no open PRs is the common case, and
 /// sweeping it per branch would find the same nothing at one process each.
-///
-/// `request` and `per_branch` are injected so a test can pin which of the two
-/// paths a given response takes without spawning `gh`.
-fn query_group(
-    group: &Group,
-    request: impl Fn(&Path, &str) -> Option<Vec<u8>>,
-    per_branch: impl Fn(&Head, Option<&str>) -> Result<Option<PrInfo>, ForgeError>,
-) -> PullRequests {
+fn query_group(group: &Group, transport: &impl Transport) -> PullRequests {
     let branches: Vec<String> = group.members.iter().map(|m| m.branch.clone()).collect();
     let head_owner = |branch: &str| group.head_owners.get(branch).map(String::as_str);
     if let Some((owner, name)) = &group.slug {
         let query = graphql::build(owner, name, &branches);
-        if let Some(stdout) = request(&group.cwd, &query) {
+        if let Some(stdout) = transport.request(&group.cwd, &query) {
             if let Some(parsed) = graphql::parse(&stdout, &branches, head_owner) {
                 return group
                     .members
@@ -213,7 +232,11 @@ fn query_group(
             }
         }
     }
-    group.members.iter().map(|m| (m.path.clone(), per_branch(m, head_owner(&m.branch)))).collect()
+    group
+        .members
+        .iter()
+        .map(|m| (m.path.clone(), transport.per_branch(m, head_owner(&m.branch))))
+        .collect()
 }
 
 fn pr_state(state: &str, is_draft: bool) -> PrState {
@@ -469,6 +492,52 @@ mod tests {
 
     use alacritree_common::jobs;
     use alacritree_vcs::Remotes;
+
+    /// A transport whose every process is a closure.
+    struct Fns<R, Q, P> {
+        resolve: R,
+        request: Q,
+        per_branch: P,
+    }
+
+    /// Builds [`Fns`] through bounds that give each closure its signature,
+    /// which a bare struct literal cannot.
+    fn fns<R, Q, P>(resolve: R, request: Q, per_branch: P) -> Fns<R, Q, P>
+    where
+        R: Fn(&Path, &(String, String)) -> Option<(String, String)> + Sync,
+        Q: Fn(&Path, &str) -> Option<Vec<u8>> + Sync,
+        P: Fn(&Head, Option<&str>) -> Result<Option<PrInfo>, ForgeError> + Sync,
+    {
+        Fns { resolve, request, per_branch }
+    }
+
+    impl<R, Q, P> Transport for Fns<R, Q, P>
+    where
+        R: Fn(&Path, &(String, String)) -> Option<(String, String)> + Sync,
+        Q: Fn(&Path, &str) -> Option<Vec<u8>> + Sync,
+        P: Fn(&Head, Option<&str>) -> Result<Option<PrInfo>, ForgeError> + Sync,
+    {
+        fn resolve(&self, cwd: &Path, origin: &(String, String)) -> Option<(String, String)> {
+            (self.resolve)(cwd, origin)
+        }
+
+        fn request(&self, cwd: &Path, query: &str) -> Option<Vec<u8>> {
+            (self.request)(cwd, query)
+        }
+
+        fn per_branch(
+            &self,
+            head: &Head,
+            owner: Option<&str>,
+        ) -> Result<Option<PrInfo>, ForgeError> {
+            (self.per_branch)(head, owner)
+        }
+    }
+
+    /// A resolve for tests that never reach one.
+    fn no_resolve(_: &Path, _: &(String, String)) -> Option<(String, String)> {
+        panic!("this test resolves nothing")
+    }
 
     /// Remotes as the git backend reads them for a native checkout.
     fn remotes(origin: &str, push: &str) -> Option<Remotes> {
@@ -767,13 +836,19 @@ mod tests {
 
         let found = query_group(
             &group,
-            |_, _| {
-                Some(br#"{"data":{"repository":{"b0":{"nodes":[]},"b1":{"nodes":[]}}}}"#.to_vec())
-            },
-            |_, _| {
-                sweeps.fetch_add(1, Ordering::Relaxed);
-                Ok(Some(sample_info()))
-            },
+            &fns(
+                no_resolve,
+                |_, _| {
+                    Some(
+                        br#"{"data":{"repository":{"b0":{"nodes":[]},"b1":{"nodes":[]}}}}"#
+                            .to_vec(),
+                    )
+                },
+                |_, _| {
+                    sweeps.fetch_add(1, Ordering::Relaxed);
+                    Ok(Some(sample_info()))
+                },
+            ),
         );
 
         assert_eq!(numbers(&found), [
@@ -793,11 +868,16 @@ mod tests {
 
         let found = query_group(
             &group,
-            |_, _| Some(br#"{"data":{"repository":null},"errors":[{"message":"nope"}]}"#.to_vec()),
-            |_, _| {
-                sweeps.fetch_add(1, Ordering::Relaxed);
-                Ok(Some(sample_info()))
-            },
+            &fns(
+                no_resolve,
+                |_, _| {
+                    Some(br#"{"data":{"repository":null},"errors":[{"message":"nope"}]}"#.to_vec())
+                },
+                |_, _| {
+                    sweeps.fetch_add(1, Ordering::Relaxed);
+                    Ok(Some(sample_info()))
+                },
+            ),
         );
 
         assert_eq!(sweeps.load(Ordering::Relaxed), 2, "one lookup per branch");
@@ -816,14 +896,17 @@ mod tests {
 
         let found = query_group(
             &group,
-            |_, _| panic!("a group with no repository has nothing to ask about"),
-            |m, _| {
-                if m.branch == "topic-a" {
-                    Err(ForgeError::Malformed { program: GH })
-                } else {
-                    Ok(Some(sample_info()))
-                }
-            },
+            &fns(
+                no_resolve,
+                |_, _| panic!("a group with no repository has nothing to ask about"),
+                |m, _| {
+                    if m.branch == "topic-a" {
+                        Err(ForgeError::Malformed { program: GH })
+                    } else {
+                        Ok(Some(sample_info()))
+                    }
+                },
+            ),
         );
 
         assert!(matches!(found[Path::new("/repo/topic-a")], Err(ForgeError::Malformed { .. })));
@@ -843,8 +926,7 @@ mod tests {
 
         let found = query_group(
             &group,
-            |_, _| None,
-            |m, _| Ok((m.path == Path::new("/a")).then(sample_info)),
+            &fns(no_resolve, |_, _| None, |m, _| Ok((m.path == Path::new("/a")).then(sample_info))),
         );
 
         assert_eq!(numbers(&found), [(PathBuf::from("/a"), Some(7)), (PathBuf::from("/b"), None)]);
@@ -859,8 +941,11 @@ mod tests {
 
         let found = query_group(
             &group,
-            |_, _| panic!("a group with no repository has nothing to ask about"),
-            |_, _| Ok(Some(sample_info())),
+            &fns(
+                no_resolve,
+                |_, _| panic!("a group with no repository has nothing to ask about"),
+                |_, _| Ok(Some(sample_info())),
+            ),
         );
 
         assert_eq!(found.len(), 1);
@@ -907,7 +992,7 @@ mod tests {
             vec![Head { path: dir.path().to_path_buf(), branch: "topic".into(), remotes: None }];
         let resolves = AtomicUsize::new(0);
 
-        let out = groups_with(due, |_| {
+        let out = groups_with(due, |_, _| {
             resolves.fetch_add(1, Ordering::Relaxed);
             Some(("resolved".to_string(), "repo".to_string()))
         });
@@ -935,7 +1020,7 @@ mod tests {
         ];
         let resolves = AtomicUsize::new(0);
 
-        let out = groups_with(due, |_| {
+        let out = groups_with(due, |_, _| {
             resolves.fetch_add(1, Ordering::Relaxed);
             Some(("upstream".to_string(), "repo".to_string()))
         });
@@ -959,7 +1044,7 @@ mod tests {
             remotes,
         }];
 
-        let out = groups_with(due, |_| Some(("up".to_string(), "repo".to_string())));
+        let out = groups_with(due, |_, _| Some(("up".to_string(), "repo".to_string())));
 
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].slug, Some(("up".to_string(), "repo".to_string())));
@@ -977,7 +1062,7 @@ mod tests {
             remotes: remotes(origin, origin),
         }];
 
-        let out = groups_with(due, |_| None);
+        let out = groups_with(due, |_, _| None);
 
         assert_eq!(out.len(), 1);
         assert!(out[0].slug.is_none());
@@ -1009,12 +1094,11 @@ mod tests {
             branch: branch.into(),
             remotes: remotes(origin, push),
         }];
-        let groups = groups_with(due, |_| Some(("upstream".to_string(), "repo".to_string())));
+        let groups = groups_with(due, |_, _| Some(("upstream".to_string(), "repo".to_string())));
         assert_eq!(groups.len(), 1);
         let found = query_group(
             &groups[0],
-            |_, _| Some(answer.clone()),
-            |_, _| panic!("the batch answered"),
+            &fns(no_resolve, |_, _| Some(answer.clone()), |_, _| panic!("the batch answered")),
         );
         numbers(&found).into_iter().next().and_then(|(_, number)| number)
     }
@@ -1095,15 +1179,17 @@ mod tests {
             pull_requests_with(
                 due,
                 b,
-                |cwd| {
-                    Some(if cwd == Path::new("/t") {
-                        ("other".to_string(), "tool".to_string())
-                    } else {
-                        ("owner".to_string(), "repo".to_string())
-                    })
-                },
-                answer,
-                |_, _| Ok(None),
+                &fns(
+                    |cwd, _| {
+                        Some(if cwd == Path::new("/t") {
+                            ("other".to_string(), "tool".to_string())
+                        } else {
+                            ("owner".to_string(), "repo".to_string())
+                        })
+                    },
+                    answer,
+                    |_, _| Ok(None),
+                ),
             )
         });
 
@@ -1125,9 +1211,11 @@ mod tests {
             pull_requests_with(
                 due,
                 b,
-                |_| panic!("an ungrouped head resolves nothing"),
-                |_, _| panic!("an ungrouped head asks for no batch"),
-                |_, _| Err(ForgeError::Malformed { program: GH }),
+                &fns(
+                    |_, _| panic!("an ungrouped head resolves nothing"),
+                    |_, _| panic!("an ungrouped head asks for no batch"),
+                    |_, _| Err(ForgeError::Malformed { program: GH }),
+                ),
             )
         });
 
@@ -1149,7 +1237,7 @@ mod tests {
             Head { path: PathBuf::from("/b"), branch: "y".into(), remotes: remotes(up, up) },
         ];
 
-        let out = groups_with(due, |_| Some(("up".to_string(), "tool".to_string())));
+        let out = groups_with(due, |_, _| Some(("up".to_string(), "tool".to_string())));
 
         let mut labels: Vec<_> = out.iter().map(|g| g.label.as_str()).collect();
         labels.sort();
@@ -1166,7 +1254,7 @@ mod tests {
             Head { path: PathBuf::from("/a"), branch: "x".into(), remotes: remotes(fork, fork) };
         let b = Head { path: PathBuf::from("/b"), branch: "y".into(), remotes: remotes(up, up) };
         let label_of_a = |due: Vec<Head>| {
-            let out = groups_with(due, |_| Some(("up".to_string(), "tool".to_string())));
+            let out = groups_with(due, |_, _| Some(("up".to_string(), "tool".to_string())));
             out.into_iter().find(|g| g.cwd == Path::new("/a")).expect("a's group").label
         };
 
@@ -1189,7 +1277,7 @@ mod tests {
             })
             .collect();
 
-        let out = groups_with(due, |_| Some(("owner".to_string(), "repo".to_string())));
+        let out = groups_with(due, |_, _| Some(("owner".to_string(), "repo".to_string())));
 
         assert_eq!(out.len(), 2, "one chunk over the limit is two requests");
         assert!(out.iter().all(|g| g.slug == Some(("owner".into(), "repo".into()))));
