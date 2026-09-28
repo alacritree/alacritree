@@ -61,7 +61,7 @@ fn graphql_string(s: &str) -> String {
 
 /// `gh api graphql --input -` reads a JSON body, so the query is wrapped
 /// rather than piped raw.
-fn body(query: &str) -> String {
+pub(crate) fn body(query: &str) -> String {
     serde_json::json!({ "query": query }).to_string()
 }
 
@@ -117,8 +117,8 @@ fn has_errors(response: &serde_json::Value) -> bool {
 /// aliases can exceed. `--input -` reads a JSON body, so a bare query piped
 /// in comes back as HTTP 502 rather than as an argument error.
 ///
-/// Only ever called for a group with a slug, which means a native path: a WSL
-/// group has no slug and never reaches here.
+/// Only ever called for a native checkout. A WSL group's request goes through
+/// `distro::request`, which has no stdin to pipe into.
 #[allow(clippy::disallowed_methods)] // Running `gh` is this function's job.
 pub(crate) fn run(cwd: &Path, query: &str) -> Option<Vec<u8>> {
     let mut child = command_ext::hidden(tools::program(Tool::Gh))

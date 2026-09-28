@@ -19,6 +19,7 @@ use alacritree_common::jobs::Blocking;
 use alacritree_common::tools::{self, Tool};
 use alacritree_common::{command_ext, wsl};
 use alacritree_forge::{ForgeError, Head, PrInfo, PrState, PullRequests, RemoteForge};
+use alacritree_vcs::Remotes;
 
 pub use settings::{GhConfig, MovedGhKeys, RawGh};
 
@@ -38,6 +39,9 @@ impl RemoteForge for GhForge {
 /// Every process a burst starts, behind one seam so a test can run the burst
 /// without `gh`.
 trait Transport: Sync {
+    /// The remotes of each `(linux_path, branch)` checkout inside `distro`, in
+    /// order, or `None` when the read produced no usable answer.
+    fn remotes(&self, distro: &str, heads: &[(&str, &str)]) -> Option<Vec<Option<Remotes>>>;
     /// The repository `gh` acts on from `cwd`. `origin` is the slug the group
     /// was keyed on.
     fn resolve(&self, cwd: &Path, origin: &(String, String)) -> Option<(String, String)>;
@@ -53,12 +57,28 @@ struct Gh<'a> {
 }
 
 impl Transport for Gh<'_> {
+    fn remotes(&self, distro: &str, heads: &[(&str, &str)]) -> Option<Vec<Option<Remotes>>> {
+        distro::remotes(distro, heads, self.blocking)
+    }
+
     fn resolve(&self, cwd: &Path, _origin: &(String, String)) -> Option<(String, String)> {
-        resolve_repo(cwd, self.blocking)
+        match wsl::classify(cwd) {
+            wsl::Location::Windows(_) => resolve_repo(cwd, self.blocking),
+            wsl::Location::Wsl { distro: name, linux_path } => {
+                let gh = tools::wsl_in_job(Tool::Gh, &name, self.blocking);
+                distro::resolve(&name, &gh, &linux_path, self.blocking)
+            },
+        }
     }
 
     fn request(&self, cwd: &Path, query: &str) -> Option<Vec<u8>> {
-        graphql::run(cwd, query)
+        match wsl::classify(cwd) {
+            wsl::Location::Windows(_) => graphql::run(cwd, query),
+            wsl::Location::Wsl { distro: name, .. } => {
+                let gh = tools::wsl_in_job(Tool::Gh, &name, self.blocking);
+                distro::request(&name, &gh, &graphql::body(query), self.blocking)
+            },
+        }
     }
 
     fn per_branch(&self, head: &Head, owner: Option<&str>) -> Result<Option<PrInfo>, ForgeError> {
@@ -73,6 +93,8 @@ fn pull_requests_with(
     blocking: &Blocking,
     transport: &impl Transport,
 ) -> PullRequests {
+    let mut heads = heads;
+    fill_wsl_remotes(&mut heads, transport);
     // Resolving costs a `gh` process per repository, and runs before any
     // step exists, so it is charged to none.
     let groups = groups_with(heads, |cwd, origin| transport.resolve(cwd, origin));
@@ -92,6 +114,32 @@ fn pull_requests_with(
         out.extend(found);
     }
     out
+}
+
+/// Reads the remotes the app could not, those of checkouts inside a distro,
+/// with one read per distro. A head whose read failed keeps `None` and the
+/// per-branch path.
+fn fill_wsl_remotes(heads: &mut [Head], transport: &impl Transport) {
+    let mut by_distro: BTreeMap<String, Vec<(usize, String)>> = BTreeMap::new();
+    for (i, head) in heads.iter().enumerate() {
+        if head.remotes.is_some() {
+            continue;
+        }
+        if let wsl::Location::Wsl { distro, linux_path } = wsl::classify(&head.path) {
+            by_distro.entry(distro).or_default().push((i, linux_path));
+        }
+    }
+    for (distro, members) in by_distro {
+        let pairs: Vec<(&str, &str)> =
+            members.iter().map(|(i, path)| (path.as_str(), heads[*i].branch.as_str())).collect();
+        let Some(found) = transport.remotes(&distro, &pairs) else { continue };
+        if found.len() != members.len() {
+            continue;
+        }
+        for ((i, _), remotes) in members.iter().zip(found) {
+            heads[*i].remotes = remotes;
+        }
+    }
 }
 
 /// What one request covers: the branches asked about, and one worktree inside
@@ -122,14 +170,13 @@ fn groups_with(
     resolve: impl Fn(&Path, &(String, String)) -> Option<(String, String)>,
 ) -> Vec<Group> {
     // Ordered, so a repeated label goes to the same group every burst and
-    // its timing stays with it.
-    let mut by_repo: BTreeMap<(String, String), Group> = BTreeMap::new();
+    // its timing stays with it. The distro is part of the key because a
+    // distro's `gh` is its own install with its own auth.
+    let mut by_repo: BTreeMap<(Option<String>, String, String), Group> = BTreeMap::new();
     let mut ungrouped = Vec::new();
     for m in due {
         // `origin` groups the checkouts that share a repository, and the
-        // push remote's owner is whose pull request the branch can have. A
-        // WSL checkout arrives without remotes, and its `gh` runs as a
-        // script rather than a `Command`.
+        // push remote's owner is whose pull request the branch can have.
         let (slug, head_owner) = match &m.remotes {
             Some(remotes) => (
                 remotes.origin_url.as_deref().and_then(github_slug_from_url),
@@ -139,7 +186,11 @@ fn groups_with(
         };
         let group = match slug {
             Some((owner, name)) => {
-                by_repo.entry((owner.clone(), name.clone())).or_insert_with(|| Group {
+                let distro = match wsl::classify(&m.path) {
+                    wsl::Location::Wsl { distro, .. } => Some(distro),
+                    wsl::Location::Windows(_) => None,
+                };
+                by_repo.entry((distro, owner.clone(), name.clone())).or_insert_with(|| Group {
                     cwd: m.path.clone(),
                     slug: Some((owner, name)),
                     members: Vec::new(),
@@ -165,25 +216,26 @@ fn groups_with(
     }
     let mut groups: Vec<Group> = by_repo
         .into_iter()
-        .flat_map(|(origin, mut g)| {
+        .flat_map(|((distro, owner, name), mut g)| {
             // `origin` says only which worktrees share a repository. Which
             // repository to ask is `gh`'s answer, and the two differ on a fork
             // checkout: `origin` names the fork, while a pull request is listed
             // under the repository it targets. One resolve per repository, so
             // a project's worktrees still cost one process between them.
-            g.slug = resolve(&g.cwd, &origin);
-            let name = match &g.slug {
+            g.slug = resolve(&g.cwd, &(owner, name));
+            let label = match &g.slug {
                 Some((owner, name)) => format!("{owner}/{name}"),
                 None => wsl::display_path(&g.cwd),
             };
+            let chunk = if distro.is_some() { distro::CHUNK } else { graphql::CHUNK };
             g.members
-                .chunks(graphql::CHUNK)
+                .chunks(chunk)
                 .map(|c| Group {
                     cwd: g.cwd.clone(),
                     slug: g.slug.clone(),
                     members: c.to_vec(),
                     head_owners: g.head_owners.clone(),
-                    label: name.clone(),
+                    label: label.clone(),
                 })
                 .collect::<Vec<_>>()
         })
@@ -485,32 +537,60 @@ mod tests {
     use std::time::Duration;
 
     use alacritree_common::jobs;
-    use alacritree_vcs::Remotes;
 
     /// A transport whose every process is a closure.
-    struct Fns<R, Q, P> {
+    struct Fns<M, R, Q, P> {
+        remotes: M,
         resolve: R,
         request: Q,
         per_branch: P,
     }
 
+    type RemotesFn = fn(&str, &[(&str, &str)]) -> Option<Vec<Option<Remotes>>>;
+
     /// Builds [`Fns`] through bounds that give each closure its signature,
-    /// which a bare struct literal cannot.
-    fn fns<R, Q, P>(resolve: R, request: Q, per_branch: P) -> Fns<R, Q, P>
+    /// which a bare struct literal cannot. Reading WSL remotes panics until
+    /// [`Fns::with_remotes`] says otherwise.
+    fn fns<R, Q, P>(resolve: R, request: Q, per_branch: P) -> Fns<RemotesFn, R, Q, P>
     where
         R: Fn(&Path, &(String, String)) -> Option<(String, String)> + Sync,
         Q: Fn(&Path, &str) -> Option<Vec<u8>> + Sync,
         P: Fn(&Head, Option<&str>) -> Result<Option<PrInfo>, ForgeError> + Sync,
     {
-        Fns { resolve, request, per_branch }
+        Fns {
+            remotes: |_, _| panic!("this test reads no WSL remotes"),
+            resolve,
+            request,
+            per_branch,
+        }
     }
 
-    impl<R, Q, P> Transport for Fns<R, Q, P>
+    #[cfg(windows)]
+    impl<M, R, Q, P> Fns<M, R, Q, P> {
+        fn with_remotes<N>(self, remotes: N) -> Fns<N, R, Q, P>
+        where
+            N: Fn(&str, &[(&str, &str)]) -> Option<Vec<Option<Remotes>>> + Sync,
+        {
+            Fns {
+                remotes,
+                resolve: self.resolve,
+                request: self.request,
+                per_branch: self.per_branch,
+            }
+        }
+    }
+
+    impl<M, R, Q, P> Transport for Fns<M, R, Q, P>
     where
+        M: Fn(&str, &[(&str, &str)]) -> Option<Vec<Option<Remotes>>> + Sync,
         R: Fn(&Path, &(String, String)) -> Option<(String, String)> + Sync,
         Q: Fn(&Path, &str) -> Option<Vec<u8>> + Sync,
         P: Fn(&Head, Option<&str>) -> Result<Option<PrInfo>, ForgeError> + Sync,
     {
+        fn remotes(&self, distro: &str, heads: &[(&str, &str)]) -> Option<Vec<Option<Remotes>>> {
+            (self.remotes)(distro, heads)
+        }
+
         fn resolve(&self, cwd: &Path, origin: &(String, String)) -> Option<(String, String)> {
             (self.resolve)(cwd, origin)
         }
@@ -930,8 +1010,8 @@ mod tests {
         assert_eq!(numbers(&found), [(PathBuf::from("/a"), Some(7)), (PathBuf::from("/b"), None)]);
     }
 
-    /// A group with no repository to name, a WSL worktree or one whose remote
-    /// nothing could read, never reaches the batched form at all.
+    /// A group with no repository to name, because nothing could read its
+    /// remote, never reaches the batched form at all.
     #[test]
     fn a_group_without_a_repository_never_asks_for_a_batch() {
         let mut group = group_of(&["topic"]);
@@ -980,9 +1060,9 @@ mod tests {
         assert!(out.is_empty(), "a cancelled burst kept asking: {out:?}");
     }
 
-    /// A WSL worktree arrives with no remotes and has no `Command` to pipe a
-    /// query into. Grouping must leave it on the per-branch path rather than
-    /// dropping it, or its badge disappears.
+    /// A worktree whose remotes could not be read has no repository to group
+    /// by. Grouping must leave it on the per-branch path rather than dropping
+    /// it, or its badge disappears.
     #[test]
     fn an_ungroupable_path_still_gets_its_own_group() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -1281,5 +1361,143 @@ mod tests {
         assert_eq!(out.len(), 2, "one chunk over the limit is two requests");
         assert!(out.iter().all(|g| g.slug == Some(("owner".into(), "repo".into()))));
         assert_eq!(out.iter().map(|g| g.members.len()).sum::<usize>(), graphql::CHUNK + 1);
+    }
+
+    /// Heads inside a distro, which `wsl::classify` recognizes only from a
+    /// UNC prefix that `std::path` parses on Windows.
+    #[cfg(windows)]
+    mod wsl_heads {
+        use std::sync::Mutex;
+
+        use super::*;
+
+        const ORIGIN: &str = "https://github.com/o/r.git";
+        const NO_PRS: &[u8] = br#"{"data":{"repository":{}}}"#;
+
+        fn wsl_head(name: &str) -> Head {
+            Head {
+                path: PathBuf::from(format!(r"\\wsl.localhost\Ubuntu\home\me\r\{name}")),
+                branch: format!("topic-{name}"),
+                remotes: None,
+            }
+        }
+
+        fn heads(names: &[&str]) -> Vec<Head> {
+            names.iter().map(|n| wsl_head(n)).collect()
+        }
+
+        /// Runs a burst whose remotes read answers `records`, returning the
+        /// paths that went per-branch.
+        fn swept_with(
+            due: Vec<Head>,
+            records: impl Fn(usize) -> Option<Vec<Option<Remotes>>> + Sync,
+        ) -> Vec<PathBuf> {
+            let swept = Mutex::new(Vec::new());
+            let transport = fns(
+                |_, _| Some(("o".to_string(), "r".to_string())),
+                |_, _| Some(NO_PRS.to_vec()),
+                |m, _| {
+                    swept.lock().unwrap().push(m.path.clone());
+                    Ok(None)
+                },
+            )
+            .with_remotes(|_, pairs| records(pairs.len()));
+            let (out, _) = jobs::recorded(|b| pull_requests_with(due, b, &transport));
+            assert_eq!(out.len(), 3, "every head is answered");
+            let mut swept = swept.into_inner().unwrap();
+            swept.sort();
+            swept
+        }
+
+        /// The reported cost: each WSL checkout went per-branch, one `wsl.exe`
+        /// and one `gh pr list` apiece. Sharing an origin, they share one
+        /// remotes read, one resolve and one request.
+        #[test]
+        fn wsl_heads_sharing_an_origin_share_one_request() {
+            let reads = Mutex::new(Vec::new());
+            let (resolves, requests, sweeps) =
+                (AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0));
+            let transport = fns(
+                |_, _| {
+                    resolves.fetch_add(1, Ordering::Relaxed);
+                    Some(("o".to_string(), "r".to_string()))
+                },
+                |_, _| {
+                    requests.fetch_add(1, Ordering::Relaxed);
+                    Some(NO_PRS.to_vec())
+                },
+                |_, _| {
+                    sweeps.fetch_add(1, Ordering::Relaxed);
+                    Ok(None)
+                },
+            )
+            .with_remotes(|distro, pairs| {
+                let paths = pairs.iter().map(|(p, _)| p.to_string()).collect::<Vec<_>>();
+                reads.lock().unwrap().push((distro.to_string(), paths));
+                Some(vec![remotes(ORIGIN, ORIGIN); pairs.len()])
+            });
+
+            let (out, _) =
+                jobs::recorded(|b| pull_requests_with(heads(&["a", "b", "c"]), b, &transport));
+
+            assert_eq!(out.len(), 3);
+            assert_eq!(reads.into_inner().unwrap(), [("Ubuntu".to_string(), vec![
+                "/home/me/r/a".to_string(),
+                "/home/me/r/b".into(),
+                "/home/me/r/c".into()
+            ],)]);
+            assert_eq!(resolves.load(Ordering::Relaxed), 1);
+            assert_eq!(requests.load(Ordering::Relaxed), 1);
+            assert_eq!(sweeps.load(Ordering::Relaxed), 0);
+        }
+
+        #[test]
+        fn an_unreadable_wsl_record_goes_per_branch() {
+            let swept = swept_with(heads(&["a", "b", "c"]), |_| {
+                Some(vec![remotes(ORIGIN, ORIGIN), None, remotes(ORIGIN, ORIGIN)])
+            });
+            assert_eq!(swept, [wsl_head("b").path]);
+        }
+
+        /// Records pair with checkouts by position, so a short set pairs none.
+        #[test]
+        fn a_short_record_set_sends_the_distro_per_branch() {
+            let swept =
+                swept_with(heads(&["a", "b", "c"]), |n| Some(vec![remotes(ORIGIN, ORIGIN); n - 1]));
+            assert_eq!(swept.len(), 3);
+        }
+
+        #[test]
+        fn a_failed_remotes_read_sends_the_distro_per_branch() {
+            let swept = swept_with(heads(&["a", "b", "c"]), |_| None);
+            assert_eq!(swept.len(), 3);
+        }
+
+        /// A WSL request carries its body in argv, which the one-shot
+        /// `wsl.exe` caps, so its chunks are smaller than native ones.
+        #[test]
+        fn wsl_groups_chunk_at_fifty() {
+            let due: Vec<Head> = (0..distro::CHUNK + 1)
+                .map(|i| Head { remotes: remotes(ORIGIN, ORIGIN), ..wsl_head(&i.to_string()) })
+                .collect();
+            let out = groups_with(due, |_, _| Some(("o".to_string(), "r".to_string())));
+            assert_eq!(out.len(), 2);
+        }
+
+        /// A Windows `gh` and a distro's `gh` are separate installs with
+        /// separate auth, so one request cannot serve both clones.
+        #[test]
+        fn a_windows_and_a_wsl_clone_of_one_repo_group_apart() {
+            let due = vec![
+                Head {
+                    path: PathBuf::from(r"C:\r"),
+                    branch: "x".into(),
+                    remotes: remotes(ORIGIN, ORIGIN),
+                },
+                Head { remotes: remotes(ORIGIN, ORIGIN), ..wsl_head("a") },
+            ];
+            let out = groups_with(due, |_, _| Some(("o".to_string(), "r".to_string())));
+            assert_eq!(out.len(), 2);
+        }
     }
 }
