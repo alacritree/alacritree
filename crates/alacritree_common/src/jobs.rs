@@ -7,7 +7,7 @@
 //! helper from `update` does not compile.
 
 use std::cell::Cell;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::io::{self, Read};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::process::{Child, Command, Output};
@@ -70,7 +70,8 @@ pub struct Step {
     pub label: String,
     /// `None` while the step has not ended.
     pub outcome: Option<Result<(), String>>,
-    /// From the previous step's end, or from `set_steps` for the first.
+    /// From the step's own start, or else from the previous step's end, or
+    /// from `set_steps` for the first.
     pub took: Option<Duration>,
 }
 
@@ -88,6 +89,8 @@ struct Progress {
     steps: Vec<Step>,
     /// When the running step began.
     mark: Option<Instant>,
+    /// Steps that said when they began, for a job whose steps overlap.
+    started: HashMap<String, Instant>,
     end: Option<JobEnd>,
 }
 
@@ -150,6 +153,8 @@ pub struct Blocking {
     /// The pool whose wake-up a step runs. `None` on the calling thread,
     /// where nothing on screen waits.
     pool: Option<Arc<Shared>>,
+    /// The job runs in the background slot, at lowered priority.
+    background: bool,
 }
 
 impl Blocking {
@@ -168,6 +173,20 @@ impl Blocking {
         progress.steps =
             labels.into_iter().map(|label| Step { label, outcome: None, took: None }).collect();
         progress.mark = Some(Instant::now());
+        progress.started.clear();
+    }
+
+    /// Mark the step as begun, so it is timed from here rather than from the
+    /// previous step's end. For steps that run at once and end in any order.
+    pub fn step_started(&self, label: &str) {
+        let mut progress = self.progress.lock().unwrap_or_else(|e| e.into_inner());
+        progress.started.insert(label.to_string(), Instant::now());
+    }
+
+    /// Give the calling thread this job's priority. A pool worker sets its
+    /// own per job, but a thread the job spawns starts at normal priority.
+    pub fn adopt_priority(&self) {
+        lower_this_thread(self.background);
     }
 
     /// Record how `label` ended, and wake the UI so the frame that reads it
@@ -176,7 +195,8 @@ impl Blocking {
         {
             let mut progress = self.progress.lock().unwrap_or_else(|e| e.into_inner());
             let now = Instant::now();
-            let took = progress.mark.map(|mark| now.saturating_duration_since(mark));
+            let start = progress.started.remove(label).or(progress.mark);
+            let took = start.map(|start| now.saturating_duration_since(start));
             progress.mark = Some(now);
             if let Some(step) = progress.steps.iter_mut().find(|s| s.label == label) {
                 step.outcome = Some(outcome);
@@ -606,6 +626,7 @@ fn worker(shared: Arc<Shared>) {
                 cancel: Arc::clone(&task.cancel),
                 progress: Arc::clone(&task.progress),
                 pool: Some(Arc::clone(&shared)),
+                background: matches!(slot, Slot::Background),
             };
             let outcome = catch_unwind(AssertUnwindSafe(|| (task.run)(&blocking)));
             if let Err(panic) = outcome {
@@ -654,6 +675,7 @@ pub fn on_this_thread<T>(f: impl FnOnce(&Blocking) -> T) -> T {
         cancel: Arc::new(Cancel::default()),
         progress: SharedProgress::default(),
         pool: None,
+        background: false,
     })
 }
 
@@ -666,6 +688,7 @@ pub fn recorded<T>(f: impl FnOnce(&Blocking) -> T) -> (T, ProgressSnapshot) {
         cancel: Arc::new(Cancel::default()),
         progress: Arc::clone(&progress),
         pool: None,
+        background: false,
     };
     let value = f(&blocking);
     settle(&progress, JobEnd::Returned);
@@ -1132,5 +1155,60 @@ mod tests {
             on_this_thread(|b| b.run_drained(&mut long_sleep(), Duration::from_millis(200)));
         assert_eq!(result.err().map(|e| e.kind()), Some(io::ErrorKind::TimedOut));
         assert!(begun.elapsed() < Duration::from_secs(10), "the child ran to its own end");
+    }
+
+    /// Steps that run at once end in any order, so timing each from the
+    /// previous step's end would charge a long step only its tail.
+    #[test]
+    fn a_started_step_is_timed_from_its_own_start() {
+        let (_, snap) = recorded(|b| {
+            b.set_steps(labels(&["a", "b"]));
+            b.step_started("a");
+            b.step_started("b");
+            std::thread::sleep(Duration::from_millis(50));
+            b.step_done("a", Ok(()));
+            std::thread::sleep(Duration::from_millis(50));
+            b.step_done("b", Ok(()));
+        });
+        let took = snap.steps[1].took.expect("b is timed");
+        assert!(took >= Duration::from_millis(100), "b took {took:?}");
+    }
+
+    /// A start left over from an earlier step list belongs to no step in the
+    /// new one.
+    #[test]
+    fn set_steps_forgets_earlier_starts() {
+        let (_, snap) = recorded(|b| {
+            b.step_started("a");
+            std::thread::sleep(Duration::from_millis(50));
+            b.set_steps(labels(&["a"]));
+            b.step_done("a", Ok(()));
+        });
+        let took = snap.steps[0].took.expect("a is timed");
+        assert!(took < Duration::from_millis(50), "a took {took:?}");
+    }
+
+    /// A thread a background job spawns starts at normal priority, and would
+    /// compete with the UI thread for as long as it runs.
+    #[cfg(windows)]
+    #[test]
+    fn adopt_priority_lowers_a_background_thread() {
+        use windows_sys::Win32::System::Threading::{
+            GetCurrentThread, GetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL,
+        };
+
+        let pool = Pool::new(2);
+        let job = pool.spawn(Priority::Background, |b| {
+            std::thread::scope(|scope| {
+                scope
+                    .spawn(|| {
+                        b.adopt_priority();
+                        unsafe { GetThreadPriority(GetCurrentThread()) }
+                    })
+                    .join()
+                    .unwrap()
+            })
+        });
+        assert_eq!(poll_until(&job, Duration::from_secs(5)), THREAD_PRIORITY_BELOW_NORMAL);
     }
 }
