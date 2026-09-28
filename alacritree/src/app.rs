@@ -4553,10 +4553,13 @@ mod tests {
     }
 
     /// An app whose one project has a checkout on `topic`, asking `forge`
-    /// about its PR, with PR status on.
+    /// about its PR, with PR status on. herdr is off: its frame poll spawns
+    /// `herdr` and `wsl.exe`, which can outlive the test process.
     fn app_asking(forge: alacritree_forge::fake::FakeForge) -> AlacritreeApp {
         let mut app = test_app();
         app.config.integrations.gh.pr_status = true;
+        app.config.integrations.herdr.enabled = false;
+        app.multiplexers = Multiplexers::new(&app.config.integrations);
         app.pr_cache = PrCache::new(Forge::Fake(forge));
         let root = PathBuf::from("/r");
         let mut checkout = checkout_at(&root);
