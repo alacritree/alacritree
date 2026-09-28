@@ -14,7 +14,8 @@ mod settings;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::{Mutex, PoisonError};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use alacritree_common::jobs::Blocking;
 use alacritree_common::tools::{self, Tool};
@@ -70,7 +71,7 @@ impl<T: Transport> Transport for Cached<'_, T> {
 
     fn resolve(&self, cwd: &Path, origin: &(String, String)) -> Option<(String, String)> {
         let key = (distro_of(cwd), origin.clone());
-        let cache = || self.cache.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let cache = || lock(&self.cache.0);
         if let Some(found) = cache().get(&key) {
             return Some(found.clone());
         }
@@ -168,36 +169,65 @@ fn pull_requests_with(
         return out;
     };
     blocking.set_steps(groups.iter().map(|g| g.label.clone()).collect());
-    let workers = PARALLEL_GROUPS.min(groups.len());
-    let queue = Mutex::new(groups.into_iter());
-    let out = Mutex::new(out);
+    let answers = in_parallel(groups, blocking, |group| {
+        blocking.step_started(&group.label);
+        let found = query_group(&group, transport);
+        let failed = group.members.iter().find_map(|m| found.get(&m.path)?.as_ref().err());
+        blocking.step_done(&group.label, failed.map_or(Ok(()), |e| Err(e.to_string())));
+        found
+    });
+    let mut out = out;
+    out.extend(answers.into_iter().flatten().flatten());
+    out
+}
+
+/// Runs `work` on each item from up to [`PARALLEL_GROUPS`] scoped threads,
+/// since each one mostly waits on a process. Returns the results in input
+/// order, `None` for an item never started.
+///
+/// A cancel landing between items has no child to kill, since no process
+/// here registers one, so each item asks before starting. A worker that
+/// panicked has already decided how the job ends, so the rest stop too.
+fn in_parallel<T: Send, R: Send>(
+    items: Vec<T>,
+    blocking: &Blocking,
+    work: impl Fn(T) -> R + Sync,
+) -> Vec<Option<R>> {
+    let workers = PARALLEL_GROUPS.min(items.len());
+    let results = Mutex::new((0..items.len()).map(|_| None).collect::<Vec<_>>());
+    let queue = Mutex::new(items.into_iter().enumerate());
+    let panicked = AtomicBool::new(false);
     std::thread::scope(|scope| {
         for _ in 0..workers {
             scope.spawn(|| {
+                let _flag = RaiseOnPanic(&panicked);
                 blocking.adopt_priority();
-                loop {
-                    // A cancel landing between groups has no child to kill,
-                    // since neither the request nor the sweep registers one,
-                    // so each group asks before starting rather than forking
-                    // `gh` for a caller that is gone.
-                    if blocking.cancelled() {
-                        break;
-                    }
-                    let Some(group) = queue.lock().unwrap_or_else(PoisonError::into_inner).next()
-                    else {
-                        break;
-                    };
-                    blocking.step_started(&group.label);
-                    let found = query_group(&group, transport);
-                    let failed =
-                        group.members.iter().find_map(|m| found.get(&m.path)?.as_ref().err());
-                    blocking.step_done(&group.label, failed.map_or(Ok(()), |e| Err(e.to_string())));
-                    out.lock().unwrap_or_else(PoisonError::into_inner).extend(found);
+                while !blocking.cancelled() && !panicked.load(Ordering::Relaxed) {
+                    let Some((i, item)) = lock(&queue).next() else { break };
+                    let result = work(item);
+                    lock(&results)[i] = Some(result);
                 }
             });
         }
     });
-    out.into_inner().unwrap_or_else(PoisonError::into_inner)
+    results.into_inner().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Raises its flag when the thread holding it unwinds.
+struct RaiseOnPanic<'a>(&'a AtomicBool);
+
+impl Drop for RaiseOnPanic<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.0.store(true, Ordering::Relaxed);
+        }
+    }
+}
+
+/// A lock whose data stays usable after a panic elsewhere, since every
+/// writer here leaves it consistent.
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// Reads the remotes the app could not, those of checkouts inside a distro,
@@ -1641,6 +1671,46 @@ mod tests {
         let (out, _) = jobs::recorded(|b| pull_requests_with(two_repositories(), b, &transport));
 
         assert_eq!(out.len(), 2);
+    }
+
+    /// One head in each of `n` repositories, `/00` in `o/00` and so on.
+    fn repositories(n: usize) -> Vec<Head> {
+        (0..n)
+            .map(|i| {
+                let origin = format!("https://github.com/o/{i:02}.git");
+                Head {
+                    path: PathBuf::from(format!("/{i:02}")),
+                    branch: "main".into(),
+                    remotes: remotes(&origin, &origin),
+                }
+            })
+            .collect()
+    }
+
+    /// A burst whose worker panicked ends `Panicked` whatever else it does,
+    /// so the other workers stop taking groups rather than forking `gh` for
+    /// an answer nobody reads.
+    #[test]
+    fn a_panicked_worker_stops_the_burst() {
+        let asked = AtomicUsize::new(0);
+        let transport = fns(
+            as_origin,
+            |cwd, _| {
+                assert!(cwd != Path::new("/00"), "a request panicked");
+                asked.fetch_add(1, Ordering::Relaxed);
+                std::thread::sleep(Duration::from_millis(50));
+                Some(br#"{"data":{"repository":{}}}"#.to_vec())
+            },
+            |_, _| panic!("the batch answered"),
+        );
+
+        let burst = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            jobs::recorded(|b| pull_requests_with(repositories(20), b, &transport))
+        }));
+
+        assert!(burst.is_err(), "the panic reaches the job");
+        let asked = asked.load(Ordering::Relaxed);
+        assert!(asked < 2 * PARALLEL_GROUPS, "{asked} groups were asked after the panic");
     }
 
     /// Steps running at once end in any order, and each has to be timed by
