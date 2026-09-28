@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 
 use alacritree_common::jobs::{JobEnd, ProgressReader, Step};
 use alacritree_common::wsl;
+use alacritree_forge::PARALLEL_GROUPS;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum ActivityKind {
@@ -195,15 +196,17 @@ impl Activities {
     }
 
     /// The time the pending steps took last time, if any of them has been
-    /// timed. Groups in a batch run in sequence, so the sum fits one batch
-    /// per refresh and overstates two running at once.
+    /// timed. Up to `PARALLEL_GROUPS` steps run at once, so their sum is
+    /// spread across that many, and no refresh ends before its slowest step.
     fn estimate(&self, steps: &[Step]) -> Option<Duration> {
-        let known: Vec<_> = steps
+        let known: Vec<Duration> = steps
             .iter()
             .filter(|s| s.outcome.is_none())
-            .filter_map(|s| self.timings.get(&s.label))
+            .filter_map(|s| self.timings.get(&s.label).copied())
             .collect();
-        (!known.is_empty()).then(|| known.into_iter().sum())
+        let longest = known.iter().max().copied()?;
+        let spread = known.iter().sum::<Duration>() / PARALLEL_GROUPS as u32;
+        Some(spread.max(longest))
     }
 }
 
@@ -434,7 +437,7 @@ mod tests {
     }
 
     #[test]
-    fn the_estimate_sums_the_pending_steps_last_durations() {
+    fn the_estimate_spreads_pending_steps_across_parallel_groups() {
         let (mut a, _) = activities();
         refresh_once(&mut a, &[("o/a", 2), ("o/b", 3), ("o/c", 4)]);
 
@@ -443,7 +446,33 @@ mod tests {
         r.script_done("o/a", Ok(()), 2 * SEC);
         a.add_pr_reader(r);
         a.tick(SEC);
-        assert_eq!(text(&a, SEC), "PRs 1/4 · ~7s");
+        assert_eq!(text(&a, SEC), "PRs 1/4 · ~4s");
+    }
+
+    /// Estimate the refresh whose last run timed each of `secs`, before any
+    /// of its steps has finished.
+    fn estimate_of(secs: &[u64]) -> String {
+        let (mut a, _) = activities();
+        let labels: Vec<String> = (0..secs.len()).map(|i| format!("o/{i}")).collect();
+        let timed: Vec<(&str, u64)> =
+            labels.iter().map(String::as_str).zip(secs.to_vec()).collect();
+        refresh_once(&mut a, &timed);
+        a.trigger(ActivityKind::PrStatus);
+        a.add_pr_reader(reader(&labels.iter().map(String::as_str).collect::<Vec<_>>()));
+        a.tick(SEC);
+        text(&a, SEC)
+    }
+
+    #[test]
+    fn eight_two_second_steps_estimate_four_seconds() {
+        assert_eq!(estimate_of(&[2; 8]), "PRs 0/8 · ~4s");
+    }
+
+    /// No refresh ends before its slowest request does, however many run at
+    /// once beside it.
+    #[test]
+    fn the_estimate_never_undercuts_the_slowest_step() {
+        assert_eq!(estimate_of(&[10, 1, 1, 1]), "PRs 0/4 · ~10s");
     }
 
     #[test]

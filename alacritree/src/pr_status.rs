@@ -31,7 +31,8 @@ const TTL: Duration = Duration::from_secs(300);
 /// stays because the shape it guards against is cheap to reintroduce, since a
 /// spawn per group would put a project's repositories on the pool at once, and
 /// because reserving a slot below the ceiling is what leaves a worker for the
-/// local work sharing the pool, at any pool size.
+/// local work sharing the pool, at any pool size. One burst job runs up to
+/// `PARALLEL_GROUPS` `gh` processes itself, on scoped threads of its own.
 fn effective_cap(configured: Option<usize>, ceiling: usize) -> usize {
     configured.unwrap_or(usize::MAX).min(ceiling.saturating_sub(1)).max(1)
 }

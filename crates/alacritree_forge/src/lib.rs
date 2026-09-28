@@ -71,6 +71,10 @@ pub enum ForgeError {
     },
 }
 
+/// How many requests one burst may have in flight at once. GitHub's secondary
+/// rate limits penalize concurrent requests, so this stays small.
+pub const PARALLEL_GROUPS: usize = 4;
+
 #[ambassador::delegatable_trait]
 pub trait RemoteForge {
     /// The pull request each of `heads` has. Blocks on the network, so it

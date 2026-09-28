@@ -19,7 +19,9 @@ use std::sync::{Mutex, PoisonError};
 use alacritree_common::jobs::Blocking;
 use alacritree_common::tools::{self, Tool};
 use alacritree_common::{command_ext, wsl};
-use alacritree_forge::{ForgeError, Head, PrInfo, PrState, PullRequests, RemoteForge};
+use alacritree_forge::{
+    ForgeError, Head, PARALLEL_GROUPS, PrInfo, PrState, PullRequests, RemoteForge,
+};
 use alacritree_vcs::Remotes;
 
 pub use settings::{GhConfig, MovedGhKeys, RawGh};
@@ -30,8 +32,8 @@ const GH: &str = "gh";
 pub struct GhForge;
 
 impl RemoteForge for GhForge {
-    /// Group a whole burst and ask for each group in turn. The requests
-    /// block.
+    /// Group a whole burst and ask up to [`PARALLEL_GROUPS`] groups at once.
+    /// The requests block.
     fn pull_requests(&self, heads: Vec<Head>, blocking: &Blocking) -> PullRequests {
         pull_requests_with(heads, blocking, &Cached { cache: &RESOLVED, inner: &Gh { blocking } })
     }
@@ -145,7 +147,9 @@ impl Transport for Gh<'_> {
 }
 
 /// The burst behind [`GhForge::pull_requests`], reporting one step per
-/// request so a refresh counts repositories off as each lands.
+/// request so a refresh counts repositories off as each lands. Groups run on
+/// up to [`PARALLEL_GROUPS`] scoped threads, since each one mostly waits on
+/// GitHub.
 fn pull_requests_with(
     heads: Vec<Head>,
     blocking: &Blocking,
@@ -157,7 +161,7 @@ fn pull_requests_with(
     // `gh` would only fail.
     let (remote_less, heads): (Vec<Head>, Vec<Head>) =
         heads.into_iter().partition(|h| h.remotes.as_ref().is_some_and(|r| r.no_remotes));
-    let mut out: PullRequests = remote_less.into_iter().map(|h| (h.path, Ok(None))).collect();
+    let out: PullRequests = remote_less.into_iter().map(|h| (h.path, Ok(None))).collect();
     // Resolving costs a `gh` process per repository, and runs before any
     // step exists, so it is charged to none.
     let Some(groups) = groups_with(heads, blocking, |cwd, origin| transport.resolve(cwd, origin))
@@ -165,20 +169,36 @@ fn pull_requests_with(
         return out;
     };
     blocking.set_steps(groups.iter().map(|g| g.label.clone()).collect());
-    for group in groups {
-        // A cancel landing between groups has no child to kill, since
-        // neither the request nor the sweep registers one, so each group
-        // asks before starting rather than forking `gh` for a caller that
-        // is gone.
-        if blocking.cancelled() {
-            break;
+    let workers = PARALLEL_GROUPS.min(groups.len());
+    let queue = Mutex::new(groups.into_iter());
+    let out = Mutex::new(out);
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| {
+                blocking.adopt_priority();
+                loop {
+                    // A cancel landing between groups has no child to kill,
+                    // since neither the request nor the sweep registers one,
+                    // so each group asks before starting rather than forking
+                    // `gh` for a caller that is gone.
+                    if blocking.cancelled() {
+                        break;
+                    }
+                    let Some(group) = queue.lock().unwrap_or_else(PoisonError::into_inner).next()
+                    else {
+                        break;
+                    };
+                    blocking.step_started(&group.label);
+                    let found = query_group(&group, transport);
+                    let failed =
+                        group.members.iter().find_map(|m| found.get(&m.path)?.as_ref().err());
+                    blocking.step_done(&group.label, failed.map_or(Ok(()), |e| Err(e.to_string())));
+                    out.lock().unwrap_or_else(PoisonError::into_inner).extend(found);
+                }
+            });
         }
-        let found = query_group(&group, transport);
-        let failed = group.members.iter().find_map(|m| found.get(&m.path)?.as_ref().err());
-        blocking.step_done(&group.label, failed.map_or(Ok(()), |e| Err(e.to_string())));
-        out.extend(found);
-    }
-    out
+    });
+    out.into_inner().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// Reads the remotes the app could not, those of checkouts inside a distro,
@@ -597,7 +617,7 @@ fn select_and_build(prs: &[serde_json::Value], head_owner: Option<&str>) -> Opti
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Arc, mpsc};
+    use std::sync::{Arc, Mutex, mpsc};
     use std::time::Duration;
 
     use alacritree_common::jobs;
@@ -1572,6 +1592,77 @@ mod tests {
     #[test]
     fn a_failed_resolve_is_asked_again() {
         assert_eq!(resolves_over_two_bursts(None), 2);
+    }
+
+    /// One head in each of two repositories, `/a` in `o/a` and `/b` in `o/b`.
+    fn two_repositories() -> Vec<Head> {
+        ["a", "b"]
+            .into_iter()
+            .map(|name| {
+                let origin = format!("https://github.com/o/{name}.git");
+                Head {
+                    path: PathBuf::from(format!("/{name}")),
+                    branch: "main".into(),
+                    remotes: remotes(&origin, &origin),
+                }
+            })
+            .collect()
+    }
+
+    /// The resolve for [`two_repositories`]: each origin is its own repository.
+    fn as_origin(_: &Path, origin: &Slug) -> Option<Slug> {
+        Some(origin.clone())
+    }
+
+    /// A refresh across repositories waits on GitHub once per request, so
+    /// running them one after another adds up every round trip. Each request
+    /// here finishes only once the other has begun, which a burst asking in
+    /// turn never reaches.
+    #[test]
+    fn groups_run_at_once() {
+        let (a_tx, a_rx) = mpsc::channel();
+        let (b_tx, b_rx) = mpsc::channel();
+        let (a_rx, b_rx) = (Mutex::new(a_rx), Mutex::new(b_rx));
+        let transport = fns(
+            as_origin,
+            |cwd, _| {
+                let (arrived, other) =
+                    if cwd == Path::new("/a") { (&a_tx, &b_rx) } else { (&b_tx, &a_rx) };
+                arrived.send(()).unwrap();
+                other
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(5))
+                    .expect("the groups ran one after another");
+                Some(br#"{"data":{"repository":{}}}"#.to_vec())
+            },
+            |_, _| panic!("the batch answered"),
+        );
+
+        let (out, _) = jobs::recorded(|b| pull_requests_with(two_repositories(), b, &transport));
+
+        assert_eq!(out.len(), 2);
+    }
+
+    /// Steps running at once end in any order, and each has to be timed by
+    /// its own request, or the status row learns the wrong durations.
+    #[test]
+    fn each_step_is_timed_by_its_own_request() {
+        let transport = fns(
+            as_origin,
+            |cwd, _| {
+                let ms = if cwd == Path::new("/a") { 200 } else { 20 };
+                std::thread::sleep(Duration::from_millis(ms));
+                Some(br#"{"data":{"repository":{}}}"#.to_vec())
+            },
+            |_, _| panic!("the batch answered"),
+        );
+
+        let (_, snap) = jobs::recorded(|b| pull_requests_with(two_repositories(), b, &transport));
+
+        let a = snap.steps.iter().find(|s| s.label == "o/a").expect("o/a's step");
+        let took = a.took.expect("o/a is timed");
+        assert!(took >= Duration::from_millis(200), "o/a took {took:?}");
     }
 
     /// Heads inside a distro, which `wsl::classify` recognizes only from a
