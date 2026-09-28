@@ -14,6 +14,7 @@ mod settings;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::{Mutex, PoisonError};
 
 use alacritree_common::jobs::Blocking;
 use alacritree_common::tools::{self, Tool};
@@ -32,7 +33,64 @@ impl RemoteForge for GhForge {
     /// Group a whole burst and ask for each group in turn. The requests
     /// block.
     fn pull_requests(&self, heads: Vec<Head>, blocking: &Blocking) -> PullRequests {
-        pull_requests_with(heads, blocking, &Gh { blocking })
+        pull_requests_with(heads, blocking, &Cached { cache: &RESOLVED, inner: &Gh { blocking } })
+    }
+}
+
+/// Every repository resolved since the app started. `gh repo set-default`
+/// changes the answer, and takes effect after a restart.
+static RESOLVED: ResolveCache = ResolveCache::new();
+
+/// A GitHub repository as `(owner, name)`.
+type Slug = (String, String);
+
+/// Resolved repositories, keyed by the distro whose `gh` answered and the
+/// `origin` slug the group was keyed on.
+struct ResolveCache(Mutex<BTreeMap<(Option<String>, Slug), Slug>>);
+
+impl ResolveCache {
+    const fn new() -> Self {
+        Self(Mutex::new(BTreeMap::new()))
+    }
+}
+
+/// A transport whose resolves go through a [`ResolveCache`]. Only answers are
+/// kept: a failed resolve is missing auth or network, which can come back.
+struct Cached<'a, T> {
+    cache: &'a ResolveCache,
+    inner: &'a T,
+}
+
+impl<T: Transport> Transport for Cached<'_, T> {
+    fn remotes(&self, distro: &str, heads: &[(&str, &str)]) -> Option<Vec<Option<Remotes>>> {
+        self.inner.remotes(distro, heads)
+    }
+
+    fn resolve(&self, cwd: &Path, origin: &(String, String)) -> Option<(String, String)> {
+        let key = (distro_of(cwd), origin.clone());
+        let cache = || self.cache.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(found) = cache().get(&key) {
+            return Some(found.clone());
+        }
+        let found = self.inner.resolve(cwd, origin)?;
+        cache().insert(key, found.clone());
+        Some(found)
+    }
+
+    fn request(&self, cwd: &Path, query: &str) -> Option<Vec<u8>> {
+        self.inner.request(cwd, query)
+    }
+
+    fn per_branch(&self, head: &Head, owner: Option<&str>) -> Result<Option<PrInfo>, ForgeError> {
+        self.inner.per_branch(head, owner)
+    }
+}
+
+/// The distro a checkout lives in, `None` on the Windows side.
+fn distro_of(path: &Path) -> Option<String> {
+    match wsl::classify(path) {
+        wsl::Location::Wsl { distro, .. } => Some(distro),
+        wsl::Location::Windows(_) => None,
     }
 }
 
@@ -189,19 +247,15 @@ fn groups_with(
             None => (None, None),
         };
         let group = match slug {
-            Some((owner, name)) => {
-                let distro = match wsl::classify(&m.path) {
-                    wsl::Location::Wsl { distro, .. } => Some(distro),
-                    wsl::Location::Windows(_) => None,
-                };
-                by_repo.entry((distro, owner.clone(), name.clone())).or_insert_with(|| Group {
+            Some((owner, name)) => by_repo
+                .entry((distro_of(&m.path), owner.clone(), name.clone()))
+                .or_insert_with(|| Group {
                     cwd: m.path.clone(),
                     slug: Some((owner, name)),
                     members: Vec::new(),
                     head_owners: HashMap::new(),
                     label: String::new(),
-                })
-            },
+                }),
             None => {
                 ungrouped.push(Group {
                     cwd: m.path.clone(),
@@ -1420,6 +1474,47 @@ mod tests {
 
         assert_eq!(out.len(), 1);
         assert_eq!(sweeps.load(Ordering::Relaxed), 1);
+    }
+
+    /// Runs two bursts over one repository through `cache`, with `resolve`
+    /// standing in for `gh repo view`. Returns how often it ran.
+    fn resolves_over_two_bursts(resolve: Option<(&str, &str)>) -> usize {
+        let cache = ResolveCache::new();
+        let resolves = AtomicUsize::new(0);
+        let inner = fns(
+            |_, _| {
+                resolves.fetch_add(1, Ordering::Relaxed);
+                resolve.map(|(owner, name)| (owner.to_string(), name.to_string()))
+            },
+            |_, _| Some(br#"{"data":{"repository":{}}}"#.to_vec()),
+            |_, _| Ok(None),
+        );
+        let origin = "https://github.com/o/r.git";
+        for _ in 0..2 {
+            let due = vec![Head {
+                path: PathBuf::from("/r"),
+                branch: "main".into(),
+                remotes: remotes(origin, origin),
+            }];
+            jobs::recorded(|b| {
+                pull_requests_with(due, b, &Cached { cache: &cache, inner: &inner })
+            });
+        }
+        resolves.load(Ordering::Relaxed)
+    }
+
+    /// `gh repo view` costs a process per repository, and its answer does not
+    /// change between refreshes.
+    #[test]
+    fn a_second_burst_reuses_the_resolved_repository() {
+        assert_eq!(resolves_over_two_bursts(Some(("o", "r"))), 1);
+    }
+
+    /// A failed resolve is missing auth or network, which can come back, so
+    /// it is asked again rather than pinning the group per-branch.
+    #[test]
+    fn a_failed_resolve_is_asked_again() {
+        assert_eq!(resolves_over_two_bursts(None), 2);
     }
 
     /// Heads inside a distro, which `wsl::classify` recognizes only from a
