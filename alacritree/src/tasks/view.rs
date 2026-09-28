@@ -5,6 +5,8 @@
 //! own copy. The last listing is kept on disk, so the tab opens on it and the
 //! first listing only corrects it.
 
+pub(crate) mod preview;
+
 use alacritree_vcs::Checkout;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};

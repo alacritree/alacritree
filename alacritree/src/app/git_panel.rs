@@ -623,6 +623,19 @@ fn paint_git_branch_header(
     let Some(branch) = view.status.head.label() else { return };
     // Pin the base label so a long branch cannot widen the sidebar.
     let default = view.status.trunk.as_deref().filter(|default| *default != branch);
+    if branch_header(ui, branch, default, theme) {
+        requests.open_picker = Some(view.path.clone());
+    }
+}
+
+/// Branch and base labels, returning whether the base picker was requested.
+pub(super) fn branch_header(
+    ui: &mut egui::Ui,
+    branch: &str,
+    default: Option<&str>,
+    theme: &Theme,
+) -> bool {
+    let mut clicked = false;
     row_with_trailing(
         ui,
         |ui| {
@@ -646,12 +659,13 @@ fn paint_git_branch_header(
                     theme.icon_tooltips,
                 );
                 if resp.clicked() {
-                    requests.open_picker = Some(view.path.clone());
+                    clicked = true;
                 }
                 ui.label(RichText::new("vs").color(theme.text_muted).small());
             }
         },
     );
+    clicked
 }
 
 fn paint_staged_section(
@@ -820,9 +834,9 @@ fn paint_branch_section(
     }
 }
 
-struct ReviewButton<'a> {
-    label: &'a str,
-    active: bool,
+pub(super) struct ReviewButton<'a> {
+    pub(super) label: &'a str,
+    pub(super) active: bool,
 }
 
 impl<'a> ReviewButton<'a> {
@@ -864,7 +878,7 @@ fn section_header(
 
 /// Render a git section, skipping empty content and avoiding trailing spacing.
 #[allow(clippy::too_many_arguments)]
-fn section<R>(
+pub(super) fn section<R>(
     ui: &mut egui::Ui,
     theme: &Theme,
     title: &str,

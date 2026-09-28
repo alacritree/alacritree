@@ -24,11 +24,11 @@ use crate::workspace::WorkspaceKey;
 const MAX_MCP_BYTES: usize = 256 * 1024;
 
 /// In-memory state for the built-in editor. Every mutation is immediately
-/// written to `path`; `save_error` is painted in-place instead of replacing
-/// the editor with a modal, so a transient filesystem failure never loses the
-/// user's buffer.
+/// written to `path` when file-backed; `save_error` is painted in-place instead
+/// of replacing the editor with a modal, so a transient filesystem failure
+/// never loses the user's buffer.
 pub(crate) struct Editor {
-    path: PathBuf,
+    path: Option<PathBuf>,
     text: String,
     save_error: Option<String>,
 }
@@ -36,7 +36,12 @@ pub(crate) struct Editor {
 impl Editor {
     pub(crate) fn open(path: PathBuf) -> io::Result<Self> {
         let text = fs::read_to_string(&path)?;
-        Ok(Self { path, text, save_error: None })
+        Ok(Self { path: Some(path), text, save_error: None })
+    }
+
+    /// An editable catalog sample with no file to save or create.
+    pub(crate) fn preview(text: &str, save_error: Option<&str>) -> Self {
+        Self { path: None, text: text.into(), save_error: save_error.map(String::from) }
     }
 
     pub(crate) fn text(&self) -> &str {
@@ -86,7 +91,8 @@ impl Editor {
     }
 
     fn save(&mut self) {
-        self.save_error = fs::write(&self.path, self.text.as_bytes())
+        let Some(path) = &self.path else { return };
+        self.save_error = fs::write(path, self.text.as_bytes())
             .err()
             .map(|error| format!("Autosave failed: {error}"));
     }

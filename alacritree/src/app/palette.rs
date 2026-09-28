@@ -522,7 +522,7 @@ const PALETTE_SELECTION_BAR_W: f32 = 2.5;
 
 /// The palette's column captions, on the same grid as its rows and outside the
 /// scrolling list so they stay put while it moves.
-fn paint_palette_header(ui: &mut egui::Ui, theme: &Theme, cols: &PaletteColumns) {
+pub(super) fn paint_palette_header(ui: &mut egui::Ui, theme: &Theme, cols: &PaletteColumns) {
     let s = theme.ui_scale;
     let size = (theme.font_normal - 2.0).max(8.0);
     let (rect, _) =
@@ -550,7 +550,12 @@ fn paint_palette_header(ui: &mut egui::Ui, theme: &Theme, cols: &PaletteColumns)
 
 /// A section heading in the palette list.  Not selectable — the cursor steps
 /// over rows only.
-fn paint_palette_section(ui: &mut egui::Ui, theme: &Theme, cols: &PaletteColumns, title: &str) {
+pub(super) fn paint_palette_section(
+    ui: &mut egui::Ui,
+    theme: &Theme,
+    cols: &PaletteColumns,
+    title: &str,
+) {
     let s = theme.ui_scale;
     let size = (theme.font_normal - 2.0).max(8.0);
     let (rect, _) =

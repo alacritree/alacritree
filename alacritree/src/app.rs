@@ -65,6 +65,7 @@ use alacritree_vcs::{Checkout, Dirty, Liveness, UpstreamState, VersionControl};
 
 mod actions;
 mod activity_row;
+pub mod catalog;
 mod focus;
 mod git_panel;
 mod ipc_handler;
@@ -73,6 +74,7 @@ mod palette;
 mod panes;
 mod session_list;
 mod sidebar;
+mod tab_strip;
 mod tasks_panel;
 mod widgets;
 
@@ -2599,82 +2601,18 @@ impl AlacritreeApp {
         }
         let active_idx = self.active_session_index();
 
-        // Reserve a 2px-tall strip across the full width of the terminal pane.
-        let strip_height = 2.0;
-        let gap = 4.0;
-        let plus_width = 12.0;
-        let avail = ui.available_width();
-        let (rect, _) =
-            ui.allocate_exact_size(egui::vec2(avail, strip_height + 2.0), egui::Sense::hover());
-
-        let mut activate: Option<SessionId> = None;
-        let seg_avail = avail - plus_width - gap;
-        let segment_width =
-            ((seg_avail - gap * (indices.len() as f32 - 1.0)) / indices.len() as f32).max(1.0);
-        for (i, &session_idx) in indices.iter().enumerate() {
-            let x0 = rect.min.x + i as f32 * (segment_width + gap);
-            let seg_rect = egui::Rect::from_min_size(
-                egui::pos2(x0, rect.min.y + 1.0),
-                egui::vec2(segment_width, strip_height),
-            );
-            let is_active = active_idx == Some(session_idx);
-            // 2px is too small to reliably click, so expand the hit zone vertically.
-            let click_rect = seg_rect.expand2(egui::vec2(0.0, 4.0));
-            let id = ui.id().with(("tab_strip", self.sessions[session_idx].id));
-            let resp = ui.interact(click_rect, id, egui::Sense::click());
-            // Attention wins over the active/inactive shading so a bell from a
-            // non-active tab pulls the eye even when another tab is selected.
-            let color = if self.sessions[session_idx].needs_attention {
-                theme.attention
-            } else if is_active {
-                theme.text
-            } else if resp.hovered() {
-                theme.text_dim
-            } else {
-                theme.text_muted
-            };
-            ui.painter().rect_filled(seg_rect, 0.0, color);
-            if resp.clicked() {
-                activate = Some(self.sessions[session_idx].id);
-            }
-            if resp.hovered() {
-                resp.on_hover_text(&self.sessions[session_idx].title);
-            }
-        }
-
-        let profile_names: Vec<String> =
-            self.config.profiles.iter().map(|p| p.name.clone()).collect();
-        let mut spawn_default = false;
-        let mut spawn_profile: Option<String> = None;
-
-        let plus_rect = egui::Rect::from_min_size(
-            egui::pos2(rect.max.x - plus_width, rect.min.y + 1.0),
-            egui::vec2(plus_width, strip_height),
-        );
-        let click_rect = plus_rect.expand2(egui::vec2(0.0, 4.0));
-        let resp = ui.interact(click_rect, ui.id().with("tab_strip_plus"), egui::Sense::click());
-        let color = if resp.hovered() { theme.text_dim } else { theme.text_muted };
-        ui.painter().rect_filled(plus_rect, 0.0, color);
-        if resp.clicked() {
-            spawn_default = true;
-        }
-        if !profile_names.is_empty() {
-            resp.context_menu(|ui| {
-                ui.label(RichText::new("New session with…").color(theme.text_muted).small());
-                for name in &profile_names {
-                    if ui.button(name).clicked() {
-                        spawn_profile = Some(name.clone());
-                        ui.close_menu();
-                    }
-                }
-            });
-        }
-        let hover_text = if profile_names.is_empty() {
-            "New session"
-        } else {
-            "New session (right-click: profiles)"
-        };
-        resp.on_hover_text(hover_text);
+        let tabs: Vec<_> = indices
+            .iter()
+            .map(|&index| tab_strip::Tab {
+                id: self.sessions[index].id,
+                title: &self.sessions[index].title,
+                active: active_idx == Some(index),
+                attention: self.sessions[index].needs_attention,
+            })
+            .collect();
+        let profile_names = self.config.profiles.iter().map(|p| p.name.clone()).collect::<Vec<_>>();
+        let tab_strip::Requests { activate, spawn_default, spawn_profile } =
+            tab_strip::show(ui, &tabs, &profile_names, &theme);
 
         if let Some(id) = activate {
             self.set_active_in_current_workspace(id);

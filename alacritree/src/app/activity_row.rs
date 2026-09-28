@@ -15,7 +15,8 @@ use super::*;
 /// docked tasks to sit below them.
 pub(super) fn show(ui: &mut egui::Ui, line: &StatusLine, theme: &Theme) {
     let height = ui.text_style_height(&egui::TextStyle::Small) + 6.0 * theme.ui_scale;
-    TopBottomPanel::bottom("activity_row")
+    // Panel IDs are global; include the parent so catalog previews stay distinct.
+    TopBottomPanel::bottom(ui.id().with("activity_row"))
         .resizable(false)
         .exact_height(height)
         .frame(Frame::default())

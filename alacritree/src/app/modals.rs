@@ -1186,7 +1186,7 @@ impl AlacritreeApp {
 /// A modal action button. Framed and filled so it reads as clickable.
 /// Frameless text buttons looked like captions and users reached for the
 /// keyboard hint instead of the mouse.
-fn modal_button(
+pub(super) fn modal_button(
     ui: &mut egui::Ui,
     theme: &Theme,
     label: &str,

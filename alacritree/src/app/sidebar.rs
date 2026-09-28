@@ -1107,10 +1107,29 @@ fn project_row_title(
     idx: usize,
     project: &Project,
 ) -> (bool, egui::Response) {
-    let theme = &paint.view.theme;
-    let icons = &paint.icons;
+    project_title(
+        ui,
+        project,
+        paint.view.projects.get(idx).map_or(project.display_name(), |p| p.label.as_str()),
+        paint.view.reorder_mode,
+        paint.view.projects.get(idx).is_some_and(|p| p.backend_icon),
+        paint.icons,
+        &paint.view.theme,
+    )
+}
+
+/// The project title without the sidebar's request handling or discovery state.
+pub(super) fn project_title(
+    ui: &mut egui::Ui,
+    project: &Project,
+    name: &str,
+    reorder: bool,
+    backend_icon: bool,
+    icons: &PaintedIcons,
+    theme: &Theme,
+) -> (bool, egui::Response) {
     ui.spacing_mut().item_spacing.x = ICON_CLUSTER_SPACING;
-    if paint.view.reorder_mode {
+    if reorder {
         drag_handle(ui, theme).dnd_set_drag_payload(DraggedProject(project.root.clone()));
     }
     let (arrow_style, arrow_default, arrow_hint) = if project.expanded {
@@ -1124,10 +1143,9 @@ fn project_row_title(
         theme.icon_tooltips,
     )
     .clicked();
-    if paint.view.projects.get(idx).is_some_and(|p| p.backend_icon) {
+    if backend_icon {
         paint_backend_icon(ui, theme, &icons.vcs_git);
     }
-    let name = paint.view.projects.get(idx).map_or(project.display_name(), |p| p.label.as_str());
     let (resp, galley) = truncating_label(
         ui,
         RichText::new(name).strong().small().color(theme.text),
@@ -1470,7 +1488,7 @@ pub(super) struct WorktreeAction {
 /// spinner stands in until `poll_pending_creates` refreshes the project and the
 /// real worktree row takes its place.  Indentation and the leading glyph match
 /// `worktree_row` so it lines up with its future sibling.
-fn creating_row(ui: &mut egui::Ui, branch: &str, icons: &Icons<Color32>, theme: &Theme) {
+pub(super) fn creating_row(ui: &mut egui::Ui, branch: &str, icons: &Icons<Color32>, theme: &Theme) {
     let s = theme.ui_scale;
     let frame = Frame::default().inner_margin(Margin { left: 16, right: 0, top: 3, bottom: 3 });
     frame.show(ui, |ui| {
@@ -2011,7 +2029,7 @@ fn paint_managed_mark(
 ///
 /// Not draggable and carries no drop-target rect: such a pane has no position
 /// in the session order to reorder into.
-fn pane_row(
+pub(super) fn pane_row(
     ui: &mut egui::Ui,
     row: &PaneRowData,
     is_cursor: bool,

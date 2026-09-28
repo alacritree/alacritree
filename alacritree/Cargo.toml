@@ -7,6 +7,7 @@ description = "Native terminal that turns Git worktrees into workspaces, built o
 repository = "https://github.com/alacritree/alacritree"
 edition.workspace = true
 rust-version.workspace = true
+default-run = "alacritree"
 
 # Marking this crate dist-able opts the vendored alacritty binary *out*: dist
 # only distributes packages with an explicit `dist = true` once any package

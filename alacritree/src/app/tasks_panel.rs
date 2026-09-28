@@ -183,7 +183,12 @@ fn filter_button(ui: &mut egui::Ui, view: &mut TasksView, theme: &Theme) {
 
 /// A heading that folds the section, the same fold the tab shows, then a
 /// bar of how much of it is done and the rows the filter leaves.
-fn paint_section(ui: &mut egui::Ui, view: &mut TasksView, section: &Section, theme: &Theme) {
+pub(super) fn paint_section(
+    ui: &mut egui::Ui,
+    view: &mut TasksView,
+    section: &Section,
+    theme: &Theme,
+) {
     let (s, c) = (theme.ui_scale, theme.tasks_sidebar);
     let open = !view.is_collapsed(&section.node);
     let done = section.rows.iter().filter(|r| r.status == Status::Completed).count();
@@ -227,7 +232,7 @@ fn paint_bar(ui: &mut egui::Ui, done: f32, c: &Colors, height: f32) {
     ui.painter().rect_filled(filled, radius, c.bar);
 }
 
-fn paint_row(ui: &mut egui::Ui, row: &Row, theme: &Theme) {
+pub(super) fn paint_row(ui: &mut egui::Ui, row: &Row, theme: &Theme) {
     let c = &theme.tasks_sidebar;
     let color = match (row.status, row.started) {
         (Status::Completed, _) => c.completed,
