@@ -7,6 +7,7 @@
 //! is missing, unauthenticated, or no PR exists, the caller falls back to the
 //! repo's default branch.
 
+mod distro;
 mod graphql;
 mod settings;
 
@@ -306,17 +307,10 @@ fn query_gh(
             // The push remote's URL rides along on the first line: nothing on
             // the Windows side reads a repository that lives inside the
             // distro, and a second round trip would double the cost of a
-            // badge that already forks `gh`. The remote is chosen in git's own
-            // push order. The substitution collapses a missing remote to a
-            // blank line, so the JSON always starts after exactly one newline.
-            let script = r#"cd "$1" || exit 1
-r=$(git config --get "branch.$3.pushRemote" || git config --get remote.pushDefault || git config --get "branch.$3.remote")
-case "$r" in ''|.) r=origin ;; esac
-printf '%s\n' "$(git config --get "remote.$r.url" 2>/dev/null)"
-exec "$2" pr list --head "$3" --state all --limit "$4" --json "$5""#;
+            // badge that already forks `gh`.
             let stdout = wsl::run_batch(
                 &distro,
-                script,
+                &distro::per_branch_script(),
                 &[&linux_path, &gh, branch, PR_LIMIT, PR_JSON_FIELDS],
                 blocking,
             )
