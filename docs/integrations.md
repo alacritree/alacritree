@@ -34,10 +34,13 @@ The [tasks tab](alacritree.md#workspace-tasks) shows the lists for the current w
 - [taskwarrior](https://taskwarrior.org) keeps the lists, and agents write them with `task`. [`[integrations.taskwarrior]`](config-reference.md#integrationstaskwarrior)
 - A program of your own can keep them instead. See [a task store of your own](alacritree.md#a-task-store-of-your-own). [`[integrations.tasks.command]`](config-reference.md#integrationstaskscommand)
 
+## Coding agents
+
+- [Claude Code](https://www.anthropic.com/claude-code) rings the terminal bell when it waits on input, and keeps its own diff panel shut beside the git panel. See [Claude Code](alacritree.md#claude-code). [`[integrations.claude]`](config-reference.md#integrationsclaude)
+
 ## Checkout hooks
 
 [Checkout hooks](alacritree.md#checkout-hooks) run when Alacritree creates a worktree, first opens a shell in one, or removes one.
 
-- [Claude Code](https://www.anthropic.com/claude-code) rings the terminal bell in each new worktree when it waits on input. [`[integrations.claude]`](config-reference.md#integrationsclaude)
 - [Doppler](https://www.doppler.com) gives each worktree the main checkout's `doppler setup` scopes. [`[integrations.doppler]`](config-reference.md#integrationsdoppler)
 - Commands of your own, one table each, run in name order. [`[integrations.checkout_hooks.command.<name>]`](config-reference.md#integrationscheckout_hookscommandname)

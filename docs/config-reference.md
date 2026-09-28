@@ -193,9 +193,10 @@ One hook: the program to run, and its arguments for each worktree event.
 
 ### `[integrations.claude]`
 
-Claude Code settings written into each new worktree.
+Claude Code in alacritree's terminals.
 
-- `terminal_bell` (boolean, default `true`): Set `preferredNotifChannel` to `terminal_bell` in each new worktree's `.claude/settings.local.json`, so Claude Code rings the bell when it waits on input. Other keys in the file are kept.
+- `hide_diff_panel` (boolean, default `true`): Set `diffSidebarOpen` to `false` in Claude Code's global config when alacritree starts, so Claude Code's diff panel does not open on its own beside the git panel. Claude Code has no per-session switch for it, so this applies to Claude Code in every terminal. `/diff` still opens the panel.
+- `terminal_bell` (boolean, default `true`): Run `claude` in alacritree's terminals with `preferredNotifChannel` set to `terminal_bell`, so Claude Code rings the bell when it waits on input. Passed on the command line by a launcher on the sessions' `PATH`, so no settings file changes. A shell startup file that puts another directory holding `claude` ahead of it on `PATH` bypasses it.
 
 ### `[integrations.delta]`
 

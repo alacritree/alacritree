@@ -143,12 +143,12 @@ dependencies = [
 name = "alacritree_claude"
 version = "0.0.0"
 dependencies = [
- "alacritree_checkout_hooks",
- "alacritree_common",
+ "home",
  "schemars",
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror 2.0.17",
  "toml",
 ]
 
