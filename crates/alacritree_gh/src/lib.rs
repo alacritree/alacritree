@@ -285,7 +285,7 @@ struct Group {
 fn groups_with(
     due: Vec<Head>,
     blocking: &Blocking,
-    resolve: impl Fn(&Path, &Slug) -> Option<Slug>,
+    resolve: impl Fn(&Path, &Slug) -> Option<Slug> + Sync,
 ) -> Option<Vec<Group>> {
     // Ordered, so a repeated label goes to the same group every burst and
     // its timing stays with it. The distro is part of the key because a
@@ -328,18 +328,19 @@ fn groups_with(
         }
         group.members.push(m);
     }
-    let mut groups = Vec::new();
-    for ((distro, owner, name), mut g) in by_repo {
-        // A resolve is a `gh` process with no child registered to kill.
-        if blocking.cancelled() {
-            return None;
-        }
-        // `origin` says only which worktrees share a repository. Which
-        // repository to ask is `gh`'s answer, and the two differ on a fork
-        // checkout: `origin` names the fork, while a pull request is listed
-        // under the repository it targets. One resolve per repository, so
-        // a project's worktrees still cost one process between them.
+    // `origin` says only which worktrees share a repository. Which
+    // repository to ask is `gh`'s answer, and the two differ on a fork
+    // checkout: `origin` names the fork, while a pull request is listed
+    // under the repository it targets. One resolve per repository, so a
+    // project's worktrees still cost one process between them.
+    let resolved = in_parallel(by_repo.into_iter().collect(), blocking, |(key, mut g)| {
+        let (distro, owner, name) = key;
         g.slug = resolve(&g.cwd, &(owner, name));
+        (distro, g)
+    });
+    let mut groups = Vec::new();
+    for entry in resolved {
+        let (distro, g) = entry?;
         let label = match &g.slug {
             Some((owner, name)) => format!("{owner}/{name}"),
             None => wsl::display_path(&g.cwd),
@@ -652,7 +653,10 @@ mod tests {
     use alacritree_common::jobs;
 
     /// Groups `due` on a burst nobody cancels.
-    fn grouped(due: Vec<Head>, resolve: impl Fn(&Path, &Slug) -> Option<Slug>) -> Vec<Group> {
+    fn grouped(
+        due: Vec<Head>,
+        resolve: impl Fn(&Path, &Slug) -> Option<Slug> + Sync,
+    ) -> Vec<Group> {
         jobs::on_this_thread(|b| groups_with(due, b, resolve)).expect("not cancelled")
     }
 
@@ -1711,6 +1715,35 @@ mod tests {
         assert!(burst.is_err(), "the panic reaches the job");
         let asked = asked.load(Ordering::Relaxed);
         assert!(asked < 2 * PARALLEL_GROUPS, "{asked} groups were asked after the panic");
+    }
+
+    /// A cold cache costs a `gh repo view` per repository before any step
+    /// exists, and inside a distro each is a `wsl.exe` round trip. Each
+    /// resolve here finishes only once the other has begun.
+    #[test]
+    fn resolves_run_at_once() {
+        let (a_tx, a_rx) = mpsc::channel();
+        let (b_tx, b_rx) = mpsc::channel();
+        let (a_rx, b_rx) = (Mutex::new(a_rx), Mutex::new(b_rx));
+        let transport = fns(
+            |cwd, origin| {
+                let (arrived, other) =
+                    if cwd == Path::new("/a") { (&a_tx, &b_rx) } else { (&b_tx, &a_rx) };
+                arrived.send(()).unwrap();
+                other
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(5))
+                    .expect("the resolves ran one after another");
+                Some(origin.clone())
+            },
+            |_, _| Some(br#"{"data":{"repository":{}}}"#.to_vec()),
+            |_, _| panic!("the batch answered"),
+        );
+
+        let (out, _) = jobs::recorded(|b| pull_requests_with(two_repositories(), b, &transport));
+
+        assert_eq!(out.len(), 2);
     }
 
     /// Steps running at once end in any order, and each has to be timed by
