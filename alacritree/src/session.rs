@@ -62,7 +62,7 @@ fn carries_payload(event: &TermEvent) -> bool {
 
 /// How long a background session's spinner frame may wait for the loop.
 ///
-/// Agents animate a Braille spinner in the terminal title, so a busy one emits
+/// Agents animate a spinner in the terminal title, so a busy one emits
 /// a title change several times a second. Once the sidebar has entered its
 /// loading state those frames carry no new status, and waking the loop for
 /// each one repaints the entire visible grid — with a few agents running,
@@ -160,7 +160,7 @@ pub(crate) enum LiveState {
     /// Present and waiting on you, with nothing in flight.
     #[default]
     Idle,
-    /// A Braille spinner in the title is the cross-agent signal for active
+    /// A spinner in the title is the cross-agent signal for active
     /// work, so an unrecognized agent can report working too.
     Working,
     /// An approval or permission dialog is on screen right now.  Unlike the
@@ -434,13 +434,15 @@ fn text_area_size_reply(
 
 /// Heuristic for "this title looks like a working/spinner state".  Matches
 /// any title containing a Braille glyph (`U+2800..=U+28FF`), which is the
-/// near-universal spinner alphabet (Claude Code, oh-my-posh, ollama, cargo's
-/// progress indicator, etc.).
+/// near-universal spinner alphabet (codex, oh-my-posh, ollama, cargo's
+/// progress indicator, etc.), or one led by a half-filled circle
+/// (`◐◓◑◒`, `U+25D0..=U+25D3`), which Claude Code rotates instead.  The
+/// circles only count as the leading glyph, since they also turn up in
+/// ordinary text.
 fn is_spinner_title(title: &str) -> bool {
-    title.chars().any(|c| {
-        let n = c as u32;
-        (0x2800..=0x28FF).contains(&n)
-    })
+    let braille = title.chars().any(|c| ('\u{2800}'..='\u{28FF}').contains(&c));
+    let circle = title_decorative_glyph(title).is_some_and(|c| ('◐'..='◓').contains(&c));
+    braille || circle
 }
 
 /// Triggers that arrived while the user was not looking, held through the
@@ -2294,6 +2296,21 @@ mod tests {
     #[test]
     fn busy_when_title_is_spinner() {
         assert!(looks_busy(None, "⠋ Thinking…"));
+    }
+
+    /// Claude Code rotates `◐◓◑◒` in its title while it works and shows `✳`
+    /// once it is done.
+    #[test]
+    fn claude_codes_half_circle_title_reads_working() {
+        for title in ["◐ Spectrometer loops", "◓ a", "◑ a", "◒ a"] {
+            assert_eq!(
+                session_activity(Some("claude"), title, true),
+                SessionActivity::agent(Some("claude"), LiveState::Working),
+                "{title}"
+            );
+        }
+        assert!(!is_spinner_title("✳ Spectrometer loops"));
+        assert!(!is_spinner_title("progress ◐ halfway"));
     }
 
     #[test]
