@@ -152,7 +152,7 @@ fn pull_requests_with(
     transport: &impl Transport,
 ) -> PullRequests {
     let mut heads = heads;
-    fill_wsl_remotes(&mut heads, transport);
+    fill_wsl_remotes(&mut heads, blocking, transport);
     // A repository with no remote has no pull request to find, and asking
     // `gh` would only fail.
     let (remote_less, heads): (Vec<Head>, Vec<Head>) =
@@ -160,7 +160,10 @@ fn pull_requests_with(
     let mut out: PullRequests = remote_less.into_iter().map(|h| (h.path, Ok(None))).collect();
     // Resolving costs a `gh` process per repository, and runs before any
     // step exists, so it is charged to none.
-    let groups = groups_with(heads, |cwd, origin| transport.resolve(cwd, origin));
+    let Some(groups) = groups_with(heads, blocking, |cwd, origin| transport.resolve(cwd, origin))
+    else {
+        return out;
+    };
     blocking.set_steps(groups.iter().map(|g| g.label.clone()).collect());
     for group in groups {
         // A cancel landing between groups has no child to kill, since
@@ -181,7 +184,7 @@ fn pull_requests_with(
 /// Reads the remotes the app could not, those of checkouts inside a distro,
 /// with one read per distro. A head whose read failed keeps `None` and the
 /// per-branch path.
-fn fill_wsl_remotes(heads: &mut [Head], transport: &impl Transport) {
+fn fill_wsl_remotes(heads: &mut [Head], blocking: &Blocking, transport: &impl Transport) {
     let mut by_distro: BTreeMap<String, Vec<(usize, String)>> = BTreeMap::new();
     for (i, head) in heads.iter().enumerate() {
         if head.remotes.is_some() {
@@ -192,6 +195,9 @@ fn fill_wsl_remotes(heads: &mut [Head], transport: &impl Transport) {
         }
     }
     for (distro, members) in by_distro {
+        if blocking.cancelled() {
+            return;
+        }
         let pairs: Vec<(&str, &str)> =
             members.iter().map(|(i, path)| (path.as_str(), heads[*i].branch.as_str())).collect();
         let Some(found) = transport.remotes(&distro, &pairs) else { continue };
@@ -229,8 +235,9 @@ struct Group {
 /// deciding it.
 fn groups_with(
     due: Vec<Head>,
-    resolve: impl Fn(&Path, &(String, String)) -> Option<(String, String)>,
-) -> Vec<Group> {
+    blocking: &Blocking,
+    resolve: impl Fn(&Path, &Slug) -> Option<Slug>,
+) -> Option<Vec<Group>> {
     // Ordered, so a repeated label goes to the same group every burst and
     // its timing stays with it. The distro is part of the key because a
     // distro's `gh` is its own install with its own auth.
@@ -272,35 +279,34 @@ fn groups_with(
         }
         group.members.push(m);
     }
-    let mut groups: Vec<Group> = by_repo
-        .into_iter()
-        .flat_map(|((distro, owner, name), mut g)| {
-            // `origin` says only which worktrees share a repository. Which
-            // repository to ask is `gh`'s answer, and the two differ on a fork
-            // checkout: `origin` names the fork, while a pull request is listed
-            // under the repository it targets. One resolve per repository, so
-            // a project's worktrees still cost one process between them.
-            g.slug = resolve(&g.cwd, &(owner, name));
-            let label = match &g.slug {
-                Some((owner, name)) => format!("{owner}/{name}"),
-                None => wsl::display_path(&g.cwd),
-            };
-            let chunk = if distro.is_some() { distro::CHUNK } else { graphql::CHUNK };
-            g.members
-                .chunks(chunk)
-                .map(|c| Group {
-                    cwd: g.cwd.clone(),
-                    slug: g.slug.clone(),
-                    members: c.to_vec(),
-                    head_owners: g.head_owners.clone(),
-                    label: label.clone(),
-                })
-                .collect::<Vec<_>>()
-        })
-        .chain(ungrouped)
-        .collect();
+    let mut groups = Vec::new();
+    for ((distro, owner, name), mut g) in by_repo {
+        // A resolve is a `gh` process with no child registered to kill.
+        if blocking.cancelled() {
+            return None;
+        }
+        // `origin` says only which worktrees share a repository. Which
+        // repository to ask is `gh`'s answer, and the two differ on a fork
+        // checkout: `origin` names the fork, while a pull request is listed
+        // under the repository it targets. One resolve per repository, so
+        // a project's worktrees still cost one process between them.
+        g.slug = resolve(&g.cwd, &(owner, name));
+        let label = match &g.slug {
+            Some((owner, name)) => format!("{owner}/{name}"),
+            None => wsl::display_path(&g.cwd),
+        };
+        let chunk = if distro.is_some() { distro::CHUNK } else { graphql::CHUNK };
+        groups.extend(g.members.chunks(chunk).map(|c| Group {
+            cwd: g.cwd.clone(),
+            slug: g.slug.clone(),
+            members: c.to_vec(),
+            head_owners: g.head_owners.clone(),
+            label: label.clone(),
+        }));
+    }
+    groups.extend(ungrouped);
     unique_labels(&mut groups);
-    groups
+    Some(groups)
 }
 
 /// A repository's later chunks share its name, and so do two origins that
@@ -591,10 +597,15 @@ fn select_and_build(prs: &[serde_json::Value], head_owner: Option<&str>) -> Opti
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::mpsc;
+    use std::sync::{Arc, mpsc};
     use std::time::Duration;
 
     use alacritree_common::jobs;
+
+    /// Groups `due` on a burst nobody cancels.
+    fn grouped(due: Vec<Head>, resolve: impl Fn(&Path, &Slug) -> Option<Slug>) -> Vec<Group> {
+        jobs::on_this_thread(|b| groups_with(due, b, resolve)).expect("not cancelled")
+    }
 
     /// A transport whose every process is a closure.
     struct Fns<M, R, Q, P> {
@@ -1118,6 +1129,52 @@ mod tests {
         assert!(out.is_empty(), "a cancelled burst kept asking: {out:?}");
     }
 
+    /// Runs `due` through a burst whose job is cancelled before it starts,
+    /// returning what the burst answered.
+    fn cancelled_burst(due: Vec<Head>, transport: impl Transport + Send + 'static) -> PullRequests {
+        let (tx, rx) = mpsc::channel();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (gate_tx, gate_rx) = mpsc::channel::<()>();
+        let job = jobs::pool().spawn(jobs::Priority::Background, move |blocking| {
+            let _ = started_tx.send(());
+            let _ = gate_rx.recv();
+            let _ = tx.send(pull_requests_with(due, blocking, &transport));
+        });
+        started_rx.recv_timeout(Duration::from_secs(5)).expect("the job never started");
+        drop(job);
+        let _ = gate_tx.send(());
+        rx.recv_timeout(Duration::from_secs(30)).expect("the lookup never returned")
+    }
+
+    /// A resolve is a `gh` process too, and a caller that backed off will
+    /// not read the group it would name.
+    #[test]
+    fn a_cancelled_burst_resolves_nothing() {
+        let resolves = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&resolves);
+        let origin = "https://github.com/o/r.git";
+        let due = vec![Head {
+            path: PathBuf::from("/r"),
+            branch: "main".into(),
+            remotes: remotes(origin, origin),
+        }];
+
+        let out = cancelled_burst(
+            due,
+            fns(
+                move |_, _| {
+                    counted.fetch_add(1, Ordering::Relaxed);
+                    Some(("o".to_string(), "r".to_string()))
+                },
+                |_, _| None,
+                |_, _| Ok(None),
+            ),
+        );
+
+        assert_eq!(resolves.load(Ordering::Relaxed), 0);
+        assert!(out.is_empty(), "a cancelled burst kept asking: {out:?}");
+    }
+
     /// A worktree whose remotes could not be read has no repository to group
     /// by. Grouping must leave it on the per-branch path rather than dropping
     /// it, or its badge disappears.
@@ -1128,7 +1185,7 @@ mod tests {
             vec![Head { path: dir.path().to_path_buf(), branch: "topic".into(), remotes: None }];
         let resolves = AtomicUsize::new(0);
 
-        let out = groups_with(due, |_, _| {
+        let out = grouped(due, |_, _| {
             resolves.fetch_add(1, Ordering::Relaxed);
             Some(("resolved".to_string(), "repo".to_string()))
         });
@@ -1156,7 +1213,7 @@ mod tests {
         ];
         let resolves = AtomicUsize::new(0);
 
-        let out = groups_with(due, |_, _| {
+        let out = grouped(due, |_, _| {
             resolves.fetch_add(1, Ordering::Relaxed);
             Some(("upstream".to_string(), "repo".to_string()))
         });
@@ -1181,7 +1238,7 @@ mod tests {
             remotes,
         }];
 
-        let out = groups_with(due, |_, _| Some(("up".to_string(), "repo".to_string())));
+        let out = grouped(due, |_, _| Some(("up".to_string(), "repo".to_string())));
 
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].slug, Some(("up".to_string(), "repo".to_string())));
@@ -1199,7 +1256,7 @@ mod tests {
             remotes: remotes(origin, origin),
         }];
 
-        let out = groups_with(due, |_, _| None);
+        let out = grouped(due, |_, _| None);
 
         assert_eq!(out.len(), 1);
         assert!(out[0].slug.is_none());
@@ -1231,7 +1288,7 @@ mod tests {
             branch: branch.into(),
             remotes: remotes(origin, push),
         }];
-        let groups = groups_with(due, |_, _| Some(("upstream".to_string(), "repo".to_string())));
+        let groups = grouped(due, |_, _| Some(("upstream".to_string(), "repo".to_string())));
         assert_eq!(groups.len(), 1);
         let found = query_group(
             &groups[0],
@@ -1374,7 +1431,7 @@ mod tests {
             Head { path: PathBuf::from("/b"), branch: "y".into(), remotes: remotes(up, up) },
         ];
 
-        let out = groups_with(due, |_, _| Some(("up".to_string(), "tool".to_string())));
+        let out = grouped(due, |_, _| Some(("up".to_string(), "tool".to_string())));
 
         let mut labels: Vec<_> = out.iter().map(|g| g.label.as_str()).collect();
         labels.sort();
@@ -1391,7 +1448,7 @@ mod tests {
             Head { path: PathBuf::from("/a"), branch: "x".into(), remotes: remotes(fork, fork) };
         let b = Head { path: PathBuf::from("/b"), branch: "y".into(), remotes: remotes(up, up) };
         let label_of_a = |due: Vec<Head>| {
-            let out = groups_with(due, |_, _| Some(("up".to_string(), "tool".to_string())));
+            let out = grouped(due, |_, _| Some(("up".to_string(), "tool".to_string())));
             out.into_iter().find(|g| g.cwd == Path::new("/a")).expect("a's group").label
         };
 
@@ -1414,7 +1471,7 @@ mod tests {
             })
             .collect();
 
-        let out = groups_with(due, |_, _| Some(("owner".to_string(), "repo".to_string())));
+        let out = grouped(due, |_, _| Some(("owner".to_string(), "repo".to_string())));
 
         assert_eq!(out.len(), 2, "one chunk over the limit is two requests");
         assert!(out.iter().all(|g| g.slug == Some(("owner".into(), "repo".into()))));
@@ -1658,6 +1715,22 @@ mod tests {
             assert_eq!(answered, expected);
         }
 
+        /// Reading a distro's remotes is a `wsl.exe` process of its own.
+        #[test]
+        fn a_cancelled_burst_reads_no_remotes() {
+            let reads = Arc::new(AtomicUsize::new(0));
+            let counted = Arc::clone(&reads);
+            let transport =
+                fns(|_, _| None, |_, _| None, |_, _| Ok(None)).with_remotes(move |_, pairs| {
+                    counted.fetch_add(1, Ordering::Relaxed);
+                    Some(vec![None; pairs.len()])
+                });
+
+            cancelled_burst(heads(&["a", "b"]), transport);
+
+            assert_eq!(reads.load(Ordering::Relaxed), 0);
+        }
+
         /// A WSL request carries its body in argv, which the one-shot
         /// `wsl.exe` caps, so its chunks are smaller than native ones.
         #[test]
@@ -1665,7 +1738,7 @@ mod tests {
             let due: Vec<Head> = (0..distro::CHUNK + 1)
                 .map(|i| Head { remotes: remotes(ORIGIN, ORIGIN), ..wsl_head(&i.to_string()) })
                 .collect();
-            let out = groups_with(due, |_, _| Some(("o".to_string(), "r".to_string())));
+            let out = grouped(due, |_, _| Some(("o".to_string(), "r".to_string())));
             assert_eq!(out.len(), 2);
         }
 
@@ -1681,7 +1754,7 @@ mod tests {
                 },
                 Head { remotes: remotes(ORIGIN, ORIGIN), ..wsl_head("a") },
             ];
-            let out = groups_with(due, |_, _| Some(("o".to_string(), "r".to_string())));
+            let out = grouped(due, |_, _| Some(("o".to_string(), "r".to_string())));
             assert_eq!(out.len(), 2);
         }
     }
