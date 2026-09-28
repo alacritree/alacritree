@@ -28,7 +28,10 @@ done"#;
 pub(crate) fn per_branch_script() -> String {
     format!(
         r#"cd "$1" || exit 1
-[ -n "$(git remote)" ] || {{ printf '\n[]'; exit 0; }}
+if git rev-parse --git-dir >/dev/null 2>&1 && [ -z "$(git remote)" ]; then
+  printf '\n[]'
+  exit 0
+fi
 b=$3
 {PUSH_REMOTE}
 printf '%s\n' "$(git config --get "remote.$r.url" 2>/dev/null)"
@@ -313,6 +316,31 @@ mod tests {
 
             assert_eq!(stdout, "\n[]");
             assert!(!ran.exists(), "gh ran for a repository with no remote");
+        }
+
+        /// A folder git cannot read is no evidence of a missing remote, so it
+        /// keeps its lookup and whatever failure `gh` reports.
+        #[test]
+        fn the_per_branch_script_still_asks_outside_a_repository() {
+            use std::os::unix::fs::PermissionsExt;
+
+            let dir = tempfile::tempdir().unwrap();
+            let plain = dir.path().join("plain");
+            std::fs::create_dir(&plain).unwrap();
+            let ran = dir.path().join("ran");
+            let stub = dir.path().join("gh");
+            std::fs::write(&stub, format!("#!/bin/sh\ntouch '{}'\n", ran.display())).unwrap();
+            std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+            sh(&per_branch_script(), &[
+                plain.to_str().unwrap(),
+                stub.to_str().unwrap(),
+                "main",
+                "100",
+                "number",
+            ]);
+
+            assert!(ran.exists(), "gh never ran for an unreadable checkout");
         }
 
         /// The body rides in argv, since `run_batch` has no stdin, and branch
