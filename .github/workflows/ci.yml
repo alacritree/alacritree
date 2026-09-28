@@ -1,11 +1,15 @@
 name: CI
 
-on: [push, pull_request]
+# Branch work is checked through its pull_request run, so a push to a branch
+# with an open PR does not build the same commit twice. Only master pushes
+# run directly, so every merge gets checked.
+on:
+  push:
+    branches: [master]
+  pull_request:
 
-# A push to a branch with an open PR fires both events for the same commit.
-# Keying the group on the branch name (head_ref for PRs, ref_name for pushes)
-# puts them in one group, so the later run cancels the redundant earlier one,
-# as does a newer push. master keeps every run so each merge gets checked.
+# A newer push to a PR cancels its still-running older run. master keeps every
+# run.
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
@@ -67,10 +71,8 @@ jobs:
         run: python3 alacritree/tools/ui-thread-audit.py .
 
   # Compile the platform-specific process and notification integrations before
-  # a release tag reaches cargo-dist.  Branch pushes with an open PR already
-  # receive the pull_request run, so only run direct pushes for master.
+  # a release tag reaches cargo-dist.
   alacritree-macos:
-    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/master'
     runs-on: macos-14
 
     steps:
