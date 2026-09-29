@@ -423,19 +423,16 @@ impl Graphics {
     /// Store finished data in its image and start decoding it.
     fn commit(&mut self, target: Target, decode: Decode) -> Result<(), CommandError> {
         let Target::Image(internal_id) = target else {
-            decode.discard();
             return Ok(());
         };
         let (ready, waker) = (Arc::clone(&self.ready), self.waker.clone());
         let store = self.active_mut();
         let Some(index) = store.index_by_internal(internal_id) else {
-            decode.discard();
             return Err(CommandError::OrphanChunk);
         };
         let size = (decode.width, decode.height);
         if !store.fits(size.0, size.1) {
             store.remove_at(index);
-            decode.discard();
             return Err(CommandError::OverQuota);
         }
         let slot = Arc::new(Slot::default());

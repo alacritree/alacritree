@@ -147,19 +147,17 @@ impl Load {
             return Err(CommandError::ImageFile);
         }
         let path = image_path(path).ok_or(CommandError::ImageFile)?;
-        let delete = (medium == Medium::TempFile
-            && path.to_string_lossy().contains("tty-graphics-protocol"))
-        .then(|| path.clone());
-
         let opened = self.read_file(&path);
-        if opened.is_err() {
-            if let Some(path) = &delete {
-                let _ = std::fs::remove_file(path);
-            }
+        // Deleted as soon as it is open, as kitty does: the open handle keeps
+        // the data readable, and nothing that later drops the decode has to
+        // remember the file.
+        if medium == Medium::TempFile && path.to_string_lossy().contains("tty-graphics-protocol")
+        {
+            let _ = std::fs::remove_file(&path);
         }
         let (file, offset, len, head) = opened?;
         let (width, height) = self.check(&head, len, true)?;
-        let source = Source::File { file, offset, len, delete };
+        let source = Source::File { file, offset, len };
         Ok(self.decode(source, width, height))
     }
 

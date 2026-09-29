@@ -46,28 +46,46 @@ fn a_placement_at_the_bottom_scrolls_the_screen_to_fit_the_cursor() {
     assert_rect(pane.quads()[0].dest, [0.0, 1.0, 1.0, 4.0]);
 }
 
-type Gate = Arc<(Mutex<bool>, Condvar)>;
+/// Every interactive worker of the job pool, occupied until released, so a
+/// decode queued meanwhile waits.  Dropping it releases them, so a failed
+/// assertion ends the test instead of hanging it.
+struct HeldPool {
+    gate: Arc<(Mutex<bool>, Condvar)>,
+    _holders: Vec<jobs::Job<()>>,
+}
 
-/// Occupy every interactive worker of the job pool until the returned gate
-/// opens, so a decode queued meanwhile waits.
-fn hold_the_pool() -> (Gate, Vec<jobs::Job<()>>) {
-    let gate = Arc::new((Mutex::new(false), Condvar::new()));
-    let holders = (0..jobs::pool().background_ceiling())
-        .map(|_| {
-            let gate = Arc::clone(&gate);
-            jobs::pool().spawn(Priority::Interactive, move |_| {
-                let (open, condvar) = &*gate;
-                let _open = condvar.wait_while(open.lock().unwrap(), |open| !*open).unwrap();
+impl HeldPool {
+    fn hold() -> Self {
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let holders = (0..jobs::pool().background_ceiling())
+            .map(|_| {
+                let gate = Arc::clone(&gate);
+                jobs::pool().spawn(Priority::Interactive, move |_| {
+                    let (open, condvar) = &*gate;
+                    let _open =
+                        condvar.wait_while(open.lock().unwrap(), |open| !*open).unwrap();
+                })
             })
-        })
-        .collect();
-    (gate, holders)
+            .collect();
+        Self { gate, _holders: holders }
+    }
+
+    fn release(&self) {
+        *self.gate.0.lock().unwrap() = true;
+        self.gate.1.notify_all();
+    }
+}
+
+impl Drop for HeldPool {
+    fn drop(&mut self) {
+        self.release();
+    }
 }
 
 #[test]
 fn a_pending_image_draws_nothing_then_draws_after_its_decode_with_no_new_input() {
     let mut pane = Pane::new(10, 5);
-    let (gate, _holders) = hold_the_pool();
+    let pool = HeldPool::hold();
 
     let reply = pane.message("a=T,f=24,i=1,s=10,v=20", vec![0x80; 10 * 20 * 3]);
     assert_eq!(reply.as_deref(), Some("OK"), "the reply does not wait for the decode");
@@ -79,14 +97,29 @@ fn a_pending_image_draws_nothing_then_draws_after_its_decode_with_no_new_input()
     pane.term.graphics_mut().build_frame(&mut frame, viewport);
     assert!(frame.is_empty());
 
-    *gate.0.lock().unwrap() = true;
-    gate.1.notify_all();
+    pool.release();
     pane.wakes.wait_for(1);
 
     assert_ne!(pane.graphics().layout_generation(), generation);
     pane.term.graphics_mut().build_frame(&mut frame, viewport);
     assert_eq!(frame.quads().len(), 1);
     assert_eq!(frame.runs()[0].pixels.rgba()[..4], [0x80, 0x80, 0x80, 0xff]);
+}
+
+/// kitty deletes a `t=t` file once it has opened it, so an image dropped
+/// before its decode runs leaves nothing behind in the temporary directory.
+#[test]
+fn a_temporary_file_is_deleted_even_when_its_image_goes_before_the_decode() {
+    let mut pane = Pane::new(10, 5);
+    let file = TempFile::new("tty-graphics-protocol-dropped", &[0; 3]);
+    let pool = HeldPool::hold();
+
+    let reply = pane.send("a=t,t=t,i=40,f=24,s=1,v=1", file.path());
+    assert_eq!(reply.as_deref(), Some("_Gi=40;OK\\"));
+    pane.send("a=d,d=I,i=40", b"");
+    pool.release();
+
+    assert!(!file.0.exists(), "{} was left behind", file.path());
 }
 
 #[test]

@@ -8,7 +8,6 @@
 
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
@@ -42,8 +41,6 @@ pub(crate) enum Source {
         file: File,
         offset: u64,
         len: usize,
-        /// A temporary file the client asked to have deleted once read.
-        delete: Option<PathBuf>,
     },
 }
 
@@ -77,14 +74,6 @@ enum DecodeError {
 }
 
 impl Decode {
-    /// Drop the data without decoding it, deleting a temporary file the
-    /// client asked to have deleted.
-    pub(crate) fn discard(self) {
-        if let Source::File { delete: Some(path), .. } = self.source {
-            let _ = std::fs::remove_file(path);
-        }
-    }
-
     /// Decode on the job pool into `slot`, then bump `ready` and wake the
     /// pane.  Dropping the returned job before it starts cancels it.
     pub(crate) fn spawn(
@@ -111,12 +100,8 @@ impl Decode {
     fn run(self) -> Result<Pixels, DecodeError> {
         let data = match self.source {
             Source::Bytes(data) => data,
-            Source::File { file, offset, len, delete } => {
-                let data = read_file(file, offset, len);
-                if let Some(path) = delete {
-                    let _ = std::fs::remove_file(path);
-                }
-                data.map_err(DecodeError::Read)?
+            Source::File { file, offset, len } => {
+                read_file(file, offset, len).map_err(DecodeError::Read)?
             },
         };
         let data = if self.compressed {
