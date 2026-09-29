@@ -731,9 +731,6 @@ impl AlacritreeApp {
         ));
 
         alacritty_terminal::tty::setup_env();
-        crate::session::forget_host_terminal();
-        #[cfg(windows)]
-        crate::ipc::server::share_with_wsl();
 
         (font_chain, face_metrics)
     }
@@ -771,6 +768,9 @@ impl AlacritreeApp {
     pub fn new(cc: &CreationContext<'_>, config: Config) -> Self {
         let theme = Theme::from_config(&config);
         let fonts = Self::configure_context(&cc.egui_ctx, &config, &theme);
+        crate::session::forget_host_terminal();
+        #[cfg(windows)]
+        crate::ipc::server::share_with_wsl();
         let (ipc_socket, ipc_rx) = Self::start_ipc(&cc.egui_ctx, &config);
         let (persisted, projects) = Self::load_projects(&config);
 
