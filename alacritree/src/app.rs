@@ -732,6 +732,8 @@ impl AlacritreeApp {
 
         alacritty_terminal::tty::setup_env();
         crate::session::forget_host_terminal();
+        #[cfg(windows)]
+        crate::ipc::server::share_with_wsl();
 
         (font_chain, face_metrics)
     }

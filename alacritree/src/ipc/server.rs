@@ -77,17 +77,6 @@ pub(crate) fn spawn_listener(
     repaint: impl Repaint,
     config: CreateConfig,
 ) -> std::io::Result<(SocketHandle, Receiver<AppCall>)> {
-    // Set before binding, so the terminal's name reaches a distro even when
-    // the socket cannot bind. Startup runs before the first session spawns,
-    // so no other thread is reading the environment concurrently.
-    #[cfg(windows)]
-    unsafe {
-        std::env::set_var(
-            "WSLENV",
-            wslenv_with_alacritree_vars(std::env::var("WSLENV").ok().as_deref()),
-        )
-    };
-
     let listener = listen_at(socket_path(), repaint, config)?;
 
     // Advertise the socket to child PTYs, like alacritty does with
@@ -100,6 +89,16 @@ pub(crate) fn spawn_listener(
     }
 
     Ok(listener)
+}
+
+/// List alacritree's variables in `WSLENV` whether or not the socket is
+/// enabled, so the terminal's name reaches a distro either way. A listed
+/// variable that is never set carries nothing. Runs at startup, before the
+/// first session spawns, so no other thread is reading the environment.
+#[cfg(windows)]
+pub(crate) fn share_with_wsl() {
+    let wslenv = wslenv_with_alacritree_vars(std::env::var("WSLENV").ok().as_deref());
+    unsafe { std::env::set_var("WSLENV", wslenv) };
 }
 
 /// `WSLENV` extended with the variables alacritree exports, since only
