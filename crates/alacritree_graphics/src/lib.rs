@@ -201,13 +201,10 @@ impl Graphics {
     /// since the last call, and say whether it did.  A steady screen costs one
     /// comparison.  Pass the same frame every time.
     pub fn update_frame(&mut self, frame: &mut ImageFrame, viewport: Viewport) -> bool {
-        // Read before building, so a decode landing meanwhile rebuilds next time.
-        let key = (self.layout_generation(), viewport);
-        if self.built == Some(key) {
+        if self.built == Some((self.layout_generation(), viewport)) {
             return false;
         }
         self.build_frame(frame, viewport);
-        self.built = Some(key);
         true
     }
 
@@ -215,6 +212,8 @@ impl Graphics {
     /// shows, in draw order: z, then image creation order, then placement
     /// creation order.
     pub fn build_frame(&mut self, frame: &mut ImageFrame, viewport: Viewport) {
+        // Read before building, so a decode landing meanwhile rebuilds next time.
+        self.built = Some((self.layout_generation(), viewport));
         let Self { main, alt, alt_active, cell, visible, .. } = self;
         let store = if *alt_active { alt } else { main };
         frame.clear();
