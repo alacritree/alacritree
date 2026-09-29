@@ -27,6 +27,22 @@ use crate::repaint::Repaint;
 use crate::session::{EventProxy, Session, SessionId, SessionKind, TermSize};
 use crate::{decoration_sprites, mouse, paste};
 
+/// The pointer over the grid.  A hovered link wins, since it says a click
+/// does something; otherwise the application's OSC 22 choice, when allowed.
+fn grid_cursor(
+    requested: Option<CursorIcon>,
+    over_link: bool,
+    pointer_shape_enabled: bool,
+) -> Option<CursorIcon> {
+    if over_link {
+        Some(CursorIcon::PointingHand)
+    } else if pointer_shape_enabled {
+        requested
+    } else {
+        None
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn show(
     ui: &mut Ui,
@@ -98,8 +114,15 @@ pub(crate) fn show(
     let painter = ui.painter_at(rect);
 
     let peek = peek_term(ui, &response, session, rect, cell_w, cell_h, cols, rows);
-    if peek.link.is_some() {
-        ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+    if ui
+        .input(|i| i.pointer.hover_pos())
+        .is_some_and(|pos| pointer_owns_grid(ui.ctx(), ui.layer_id(), rect, pos))
+    {
+        if let Some(cursor) =
+            grid_cursor(session.pointer_shape, peek.link.is_some(), config.vt.pointer_shape)
+        {
+            ui.ctx().set_cursor_icon(cursor);
+        }
     }
     // Apps that negotiate mouse tracking want the raw button/motion stream, not
     // local selection — matching alacritty, Shift is the escape hatch that still
@@ -1682,6 +1705,50 @@ mod tests {
     use super::*;
     use crate::fonts::{BOLD_FAMILY, BOLD_ITALIC_FAMILY, ITALIC_FAMILY};
     use crate::repaint::Recorder;
+
+    #[test]
+    fn the_grid_cursor_prefers_what_the_application_asked_for() {
+        assert_eq!(
+            grid_cursor(Some(CursorIcon::Crosshair), false, true),
+            Some(CursorIcon::Crosshair)
+        );
+        assert_eq!(grid_cursor(None, false, true), None);
+        assert_eq!(
+            grid_cursor(Some(CursorIcon::Crosshair), true, false),
+            Some(CursorIcon::PointingHand),
+            "a hovered link still wins: it tells the user the click does something",
+        );
+        assert_eq!(grid_cursor(Some(CursorIcon::Wait), false, false), None);
+    }
+
+    /// With `[vt] pointer_shape` off, an application's OSC 22 request leaves
+    /// the pointer alone; a link under it still shows the hand.
+    #[test]
+    fn the_grid_cursor_ignores_the_application_when_pointer_shape_is_off() {
+        let ctx = egui::Context::default();
+        let mut config = Config::default();
+        config.window.padding_x = 0.0;
+        config.window.padding_y = 0.0;
+        let (mut session, _dir) = headless_session(&ctx, &config);
+        Processor::<StdSyncHandler>::new()
+            .advance(&mut *session.term.lock(), b"\x1b]8;;https://example.com\x07link\x1b]8;;\x07");
+        let mut caches = Caches::new();
+        let screen = Vec2::new(640.0, 480.0);
+        paint_one_frame(&ctx, &mut session, &config, &mut caches, screen);
+
+        for (requested, pos, expected) in [
+            (None, Pos2::new(100.0, 100.0), CursorIcon::Default),
+            (Some(CursorIcon::Crosshair), Pos2::new(100.0, 100.0), CursorIcon::Default),
+            (Some(CursorIcon::Crosshair), Pos2::new(12.0, 12.0), CursorIcon::PointingHand),
+            (Some(CursorIcon::Wait), Pos2::new(700.0, 500.0), CursorIcon::Default),
+        ] {
+            session.pointer_shape = requested;
+            let out = run_frame(&ctx, &mut session, &config, &mut caches, screen, vec![
+                Event::PointerMoved(pos),
+            ]);
+            assert_eq!(out.platform_output.cursor_icon, expected, "at {pos:?} with {requested:?}");
+        }
+    }
 
     fn term_running(output: &[u8]) -> Term<EventProxy<Recorder>> {
         let (proxy, _events) = EventProxy::new(Recorder::default());

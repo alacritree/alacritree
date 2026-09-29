@@ -1841,6 +1841,57 @@ pub(super) struct SessionRowAction {
     rect: egui::Rect,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProgressTone {
+    Normal,
+    Error,
+    Paused,
+}
+
+/// How much of `width` a progress bar covers.  Indeterminate progress has no
+/// fraction to show, so it fills the row.
+fn progress_bar_fill(progress: OscProgress, width: f32) -> f32 {
+    let fraction = match progress {
+        OscProgress::Clear => 0.0,
+        OscProgress::Set(p) | OscProgress::Error(p) | OscProgress::Paused(p) => {
+            f32::from(p) / 100.0
+        },
+        OscProgress::Indeterminate => 1.0,
+    };
+    width * fraction
+}
+
+fn progress_tone(progress: OscProgress) -> ProgressTone {
+    match progress {
+        OscProgress::Error(_) => ProgressTone::Error,
+        OscProgress::Paused(_) => ProgressTone::Paused,
+        _ => ProgressTone::Normal,
+    }
+}
+
+/// The session's name, then where its shell reported it is and the last
+/// notification it sent, under the mode that governs every sidebar name.
+fn session_name_tooltip(
+    resp: egui::Response,
+    row: &SessionRowData,
+    elided: bool,
+    mode: SidebarTooltips,
+) -> egui::Response {
+    if row.reported_cwd.is_none() && row.last_notification.is_none() {
+        return name_tooltip(resp, &row.name.text, elided, mode);
+    }
+    let mut tooltip = row.name.text.clone();
+    if let Some(path) = &row.reported_cwd {
+        tooltip.push('\n');
+        tooltip.push_str(&path.display().to_string());
+    }
+    if let Some(body) = &row.last_notification {
+        tooltip.push('\n');
+        tooltip.push_str(body);
+    }
+    name_tooltip(resp, &tooltip, elided, mode)
+}
+
 /// `draggable` makes the whole row the drag handle rather than adding a grip:
 /// a session row is a tab, where a project row's own controls are what a click
 /// there is usually for.
@@ -1855,6 +1906,8 @@ pub(super) fn session_row(
 ) -> SessionRowAction {
     // Reserve a slot *before* the labels so the hover bg paints beneath them.
     let bg_idx = ui.painter().add(egui::Shape::Noop);
+    let progress = row.progress.filter(|progress| *progress != OscProgress::Clear);
+    let progress_idx = progress.map(|_| ui.painter().add(egui::Shape::Noop));
     let panel_x = ui.max_rect().x_range();
 
     let mut close_clicked = false;
@@ -1929,7 +1982,7 @@ pub(super) fn session_row(
     // ask how to leave, and the name tooltip cannot say it.
     let resp = hints.apply(resp, theme.icon_tooltips, |resp| match &row.managed {
         Some(managed) if theme.icon_tooltips => resp.on_hover_text(managed_tooltip(managed)),
-        _ => name_tooltip(resp, &row.name.text, title_elided, theme.sidebar_tooltips),
+        _ => session_name_tooltip(resp, row, title_elided, theme.sidebar_tooltips),
     });
 
     // Frame allocates its space at end-of-show, so its retroactive `interact`
@@ -1954,6 +2007,19 @@ pub(super) fn session_row(
     let full_rect = egui::Rect::from_x_y_ranges(panel_x, resp.rect.y_range());
     if bg != Color32::TRANSPARENT {
         ui.painter().set(bg_idx, egui::Shape::rect_filled(full_rect, 0.0, bg));
+    }
+    if let (Some(progress), Some(index)) = (progress, progress_idx) {
+        let color = match progress_tone(progress) {
+            ProgressTone::Normal => theme.accent,
+            ProgressTone::Error => theme.attention,
+            ProgressTone::Paused => theme.text_muted,
+        };
+        let height = (2.0 * theme.ui_scale).min(full_rect.height());
+        let bar = egui::Rect::from_min_size(
+            egui::pos2(full_rect.left(), full_rect.bottom() - height),
+            egui::vec2(progress_bar_fill(progress, full_rect.width()), height),
+        );
+        ui.painter().set(index, egui::Shape::rect_filled(bar, 0.0, color));
     }
     if is_cursor {
         paint_cursor_outline(ui, full_rect, theme);
@@ -2387,6 +2453,9 @@ pub(super) struct DraggedSession(pub(super) SessionId);
 pub(super) struct SessionRowData {
     pub(super) id: SessionId,
     pub(super) name: RowName,
+    pub(super) reported_cwd: Option<PathBuf>,
+    pub(super) last_notification: Option<String>,
+    pub(super) progress: Option<OscProgress>,
     pub(super) needs_attention: bool,
     pub(super) done: bool,
     pub(super) activity: SessionActivity,
@@ -2582,6 +2651,23 @@ fn drag_handle(ui: &mut egui::Ui, theme: &Theme) -> egui::Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_progress_bar_fills_and_tones_by_state() {
+        for (progress, fill, tone) in [
+            (OscProgress::Set(50), 50.0, ProgressTone::Normal),
+            (OscProgress::Set(0), 0.0, ProgressTone::Normal),
+            (OscProgress::Set(100), 100.0, ProgressTone::Normal),
+            (OscProgress::Error(25), 25.0, ProgressTone::Error),
+            (OscProgress::Paused(75), 75.0, ProgressTone::Paused),
+            (OscProgress::Indeterminate, 100.0, ProgressTone::Normal),
+            (OscProgress::Clear, 0.0, ProgressTone::Normal),
+        ] {
+            assert_eq!(progress_bar_fill(progress, 100.0), fill);
+            assert_eq!(progress_bar_fill(progress, 200.0), fill * 2.0);
+            assert_eq!(progress_tone(progress), tone);
+        }
+    }
 
     #[test]
     fn git_rows_draw_no_backend_icon_by_default() {

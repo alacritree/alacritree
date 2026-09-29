@@ -182,6 +182,7 @@ mod tests {
             (8.0, 16.0),
             None,
             None,
+            None,
         )
         .0
     }

@@ -322,7 +322,14 @@ impl AlacritreeApp {
             .sessions
             .active(&workspace)
             .filter(|id| !focus.takes() && self.sessions.iter().any(|s| s.id == *id));
-        match self.spawn_session_with_shell(ctx, workspace.clone(), Some(shell), probe) {
+        match self.spawn_session_with_shell(
+            ctx,
+            workspace.clone(),
+            workspace.clone(),
+            Some(shell),
+            probe,
+            None,
+        ) {
             Ok(id) => {
                 if let Some(kept) = kept_tab {
                     self.sessions.set_active(workspace, kept);
