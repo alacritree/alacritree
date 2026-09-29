@@ -669,6 +669,31 @@ pub(crate) const SESSION_ID_ENV: &str = "ALACRITREE_SESSION_ID";
 pub(crate) const TERM_PROGRAM_ENV: [(&str, &str); 2] =
     [("TERM_PROGRAM", "alacritree"), ("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"))];
 
+/// Variables other terminals set to name themselves, the ones yazi's brand
+/// detection reads. alacritree started from one of them inherits its name,
+/// and a program in a pane would take the host's image protocol for
+/// alacritree's: `WT_SESSION` makes yazi pick sixel.
+const HOST_TERMINAL_ENV: [&str; 9] = [
+    "KITTY_WINDOW_ID",
+    "KONSOLE_VERSION",
+    "ITERM_SESSION_ID",
+    "WEZTERM_EXECUTABLE",
+    "GHOSTTY_RESOURCES_DIR",
+    "WT_SESSION",
+    "WARP_HONOR_PS1",
+    "VSCODE_INJECTION",
+    "TABBY_CONFIG_DIRECTORY",
+];
+
+/// Drop [`HOST_TERMINAL_ENV`] from the process environment, which every PTY
+/// inherits. Runs at startup, before the first session spawns, so no other
+/// thread is reading the environment.
+pub(crate) fn forget_host_terminal() {
+    for name in HOST_TERMINAL_ENV {
+        unsafe { std::env::remove_var(name) };
+    }
+}
+
 /// The environment a session's PTY starts with: the user's `[env]` table,
 /// [`TERM_PROGRAM_ENV`], the diff-pane `LESS` default, and the session's own
 /// id.
@@ -3154,6 +3179,54 @@ pub(crate) mod tests {
         assert!(
             grid_contains(&session, &expected, Duration::from_secs(20)),
             "the pane never printed {expected}"
+        );
+    }
+
+    /// alacritree started from Windows Terminal or kitty inherits the host's
+    /// identity, and a pane must not pass it on.
+    #[test]
+    fn a_pane_does_not_inherit_the_host_terminals_identity() {
+        // SAFETY: nextest runs each test in its own process.
+        unsafe {
+            std::env::set_var("WT_SESSION", "host");
+            std::env::set_var("KITTY_WINDOW_ID", "host");
+        }
+        forget_host_terminal();
+
+        #[cfg(windows)]
+        let (program, args) = ("cmd.exe".to_string(), vec![
+            "/q".into(),
+            "/k".into(),
+            "echo [%WT_SESSION%] [%KITTY_WINDOW_ID%]".into(),
+        ]);
+        #[cfg(not(windows))]
+        let (program, args) = (
+            "sh".to_string(),
+            vec![
+                "-c".into(),
+                r#"echo "[${WT_SESSION-%WT_SESSION%}] [${KITTY_WINDOW_ID-%KITTY_WINDOW_ID%}]"; sleep 5"#
+                    .into(),
+            ],
+        );
+        let session = Session::spawn_command(
+            Recorder::default(),
+            &Config::default(),
+            std::env::current_dir().ok(),
+            TermSize::new(80, 24),
+            (8.0, 16.0),
+            program,
+            args,
+            "probe".to_string(),
+            SessionKind::Shell,
+        )
+        .expect("spawn the pane");
+
+        // cmd echoes an unset variable's name back; sh prints the same text
+        // through the `${VAR-default}` fallback.
+        let unset = "[%WT_SESSION%] [%KITTY_WINDOW_ID%]";
+        assert!(
+            grid_contains(&session, unset, Duration::from_secs(20)),
+            "the pane still sees the host terminal's variables"
         );
     }
 
