@@ -111,6 +111,9 @@ pub struct Graphics {
     /// Moves when the active screen or the cell size changes.
     epoch: u64,
     visible: Vec<Visible>,
+    /// The layout generation and viewport the last [`Graphics::update_frame`]
+    /// built for.
+    built: Option<(u64, Viewport)>,
 }
 
 impl Default for Graphics {
@@ -126,6 +129,7 @@ impl Default for Graphics {
             ready: Arc::default(),
             epoch: 0,
             visible: Vec::new(),
+            built: None,
         }
     }
 }
@@ -191,6 +195,20 @@ impl Graphics {
     /// Whether an image of the active screen is still decoding.
     pub fn is_decoding(&self) -> bool {
         self.active().is_decoding()
+    }
+
+    /// Rebuild `frame` when the layout, the viewport or the cell size changed
+    /// since the last call, and say whether it did.  A steady screen costs one
+    /// comparison.  Pass the same frame every time.
+    pub fn update_frame(&mut self, frame: &mut ImageFrame, viewport: Viewport) -> bool {
+        // Read before building, so a decode landing meanwhile rebuilds next time.
+        let key = (self.layout_generation(), viewport);
+        if self.built == Some(key) {
+            return false;
+        }
+        self.build_frame(frame, viewport);
+        self.built = Some(key);
+        true
     }
 
     /// Fill `frame` with the active screen's decoded placements `viewport`

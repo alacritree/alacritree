@@ -7,6 +7,7 @@ mod common;
 use std::sync::{Arc, Condvar, Mutex};
 
 use alacritree_common::jobs::{self, Priority};
+use alacritree_graphics::Viewport;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use common::{Pane, TempFile, assert_rect, command};
@@ -86,6 +87,26 @@ fn a_pending_image_draws_nothing_then_draws_after_its_decode_with_no_new_input()
     pane.term.graphics_mut().build_frame(&mut frame, viewport);
     assert_eq!(frame.quads().len(), 1);
     assert_eq!(frame.runs()[0].pixels.rgba()[..4], [0x80, 0x80, 0x80, 0xff]);
+}
+
+#[test]
+fn a_frame_is_rebuilt_only_when_its_layout_or_viewport_changed() {
+    let mut pane = Pane::new(10, 5);
+    pane.message("a=T,f=24,i=1,s=10,v=20", vec![0; 10 * 20 * 3]);
+    pane.settle();
+    let mut frame = alacritree_graphics::frame::ImageFrame::default();
+    let viewport = alacritree_graphics::Viewport { display_offset: 0, rows: 5, columns: 10 };
+    let graphics = pane.term.graphics_mut();
+
+    assert!(graphics.update_frame(&mut frame, viewport));
+    let generation = frame.generation();
+    assert!(!graphics.update_frame(&mut frame, viewport));
+    assert_eq!(frame.generation(), generation);
+    assert_eq!(frame.quads().len(), 1);
+
+    assert!(graphics.update_frame(&mut frame, Viewport { display_offset: 1, ..viewport }));
+    graphics.set_cell_pixels(20, 40);
+    assert!(graphics.update_frame(&mut frame, Viewport { display_offset: 1, ..viewport }));
 }
 
 #[test]
