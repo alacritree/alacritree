@@ -364,8 +364,9 @@ What counts as a word when double-clicking, and whether a selection reaches the 
 
 ## `[terminal]`
 
-The program each session runs.
+The program each session runs and its OSC 52 clipboard access policy.
 
+- `osc52` (string, default `"onlycopy"`): Whether an application may use OSC 52 to write the clipboard, read it, both, or neither. Upstream alacritty's key, so it belongs in the shared `alacritty.toml`. An application that can read the clipboard can read whatever was last copied anywhere else.
 - `shell` (string or table): The program each session runs, as either a bare path or a table with arguments. Unset uses `$SHELL` (the login shell as a fallback) on Unix and PowerShell on Windows.
   - `args` (array of string, default `[]`): Arguments passed to the program.
   - `program` (string): Path to the program, e.g. `"/bin/zsh"`.
@@ -629,6 +630,15 @@ The tasks docked in a sidebar.
 Deprecated WSL options, superseded by the top-level `[wsl]` table.
 
 - `automount_root` (string): Deprecated location: `[wsl] automount_root` supersedes this and wins when both are set; kept so existing configs keep working.
+
+## `[vt]`
+
+Sequences read directly from the PTY byte stream. `alacritree.toml` only.
+
+- `notify` (boolean, default `false`): Surface OSC 9 and OSC 777 desktop notifications. The text reaches the sidebar row either way; `[ui] notifications` decides whether a desktop toast fires.
+- `pointer_shape` (boolean, default `false`): Let an application choose the mouse cursor over the grid with OSC 22.
+- `progress` (boolean, default `false`): Draw the ConEmu progress report (OSC 9;4) as a bar across the session's sidebar row.
+- `report_cwd` (boolean, default `false`): Track the shell's working directory from OSC 7 and OSC 9;9, and show it in the session row's hover text. A sibling session then starts where the shell is rather than at the workspace root.
 
 ## `[window]`
 

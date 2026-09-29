@@ -165,7 +165,7 @@ impl Action for action::ClearHistory {
 impl Action for action::SpawnNewInstance {
     fn run(&self, app: &mut AlacritreeApp, ctx: &Context, _: ActionOrigin) {
         let ws = app.current_workspace.clone();
-        if let Err(e) = app.spawn_session(ctx, ws.clone()) {
+        if let Err(e) = app.spawn_sibling_session(ctx) {
             app.report_spawn_failure(ctx, &ws, &e);
         }
     }

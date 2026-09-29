@@ -19,6 +19,7 @@ use std::time::Duration;
 
 use alacritree_common::settings::{ClosedSet, IconStyle, RawIconStyle, RgbStr};
 use alacritree_common::tools::{Tool, ToolConfig, ToolPaths};
+use alacritty_terminal::term::Osc52;
 use alacritty_terminal::vte::ansi::{CursorShape, CursorStyle, Rgb};
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -48,6 +49,8 @@ pub struct Config {
     pub shell: Option<ShellConfig>,
     pub selection: SelectionConfig,
     pub bindings: Vec<KeyBinding>,
+    pub vt: VtConfig,
+    pub osc52: Osc52,
     /// Offer the IPC socket that `alacritree mcp` connects to. Mirrors
     /// alacritty's `[general] ipc_socket`.
     pub ipc_socket: bool,
@@ -169,6 +172,25 @@ impl Default for DebugConfig {
             frame_log: false,
             log_dir: None,
         }
+    }
+}
+
+/// Sequences alacritree reads off the PTY byte stream rather than through
+/// `Term`.  Turning one on starts a parser thread per session and changes
+/// what the UI shows.
+#[derive(Debug, Default, Clone, Copy, serde::Serialize)]
+pub struct VtConfig {
+    pub report_cwd: bool,
+    pub notify: bool,
+    pub progress: bool,
+    pub pointer_shape: bool,
+}
+
+impl VtConfig {
+    /// Whether any sequence is wanted.  A session with none skips the tap
+    /// thread entirely.
+    pub fn any_enabled(&self) -> bool {
+        self.report_cwd || self.notify || self.progress || self.pointer_shape
     }
 }
 
@@ -1545,6 +1567,8 @@ impl Default for Config {
             shell: None,
             selection: SelectionConfig::default(),
             bindings: Vec::new(),
+            vt: VtConfig::default(),
+            osc52: Osc52::default(),
             ipc_socket: true,
             debug: DebugConfig::default(),
             working_directory: None,
@@ -1916,7 +1940,7 @@ struct RawConfig {
     /// sets itself.
     #[serde(default)]
     env: HashMap<String, String>,
-    /// The program each session runs.
+    /// The program each session runs and its OSC 52 clipboard access policy.
     terminal: RawTerminal,
     /// What counts as a word when double-clicking, and whether a selection
     /// reaches the clipboard on its own.
@@ -1929,6 +1953,9 @@ struct RawConfig {
     general: RawGeneral,
     /// Diagnostics written to disk.
     debug: RawDebug,
+    /// Sequences read directly from the PTY byte stream.  `alacritree.toml`
+    /// only.
+    vt: RawVt,
     /// How alacritree talks to WSL distros.  `alacritree.toml` only.
     wsl: RawWsl,
     /// The other tools alacritree can notice and cooperate with.
@@ -2030,6 +2057,25 @@ impl Default for RawDebug {
             log_dir: None,
         }
     }
+}
+
+/// alacritree-only, so it belongs in `alacritree.toml`.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[serde(default)]
+struct RawVt {
+    /// Track the shell's working directory from OSC 7 and OSC 9;9, and show
+    /// it in the session row's hover text.  A sibling session then starts
+    /// where the shell is rather than at the workspace root.
+    report_cwd: bool,
+    /// Surface OSC 9 and OSC 777 desktop notifications.  The text reaches
+    /// the sidebar row either way; `[ui] notifications` decides whether a
+    /// desktop toast fires.
+    notify: bool,
+    /// Draw the ConEmu progress report (OSC 9;4) as a bar across the
+    /// session's sidebar row.
+    progress: bool,
+    /// Let an application choose the mouse cursor over the grid with OSC 22.
+    pointer_shape: bool,
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -2338,6 +2384,26 @@ struct RawTerminal {
     /// arguments.  Unset uses `$SHELL` (the login shell as a fallback) on
     /// Unix and PowerShell on Windows.
     shell: Option<RawShell>,
+    /// Whether an application may use OSC 52 to write the clipboard, read
+    /// it, both, or neither.  Upstream alacritty's key, so it belongs in the
+    /// shared `alacritty.toml`.  An application that can read the clipboard
+    /// can read whatever was last copied anywhere else.
+    osc52: SerdeOsc52,
+}
+
+/// `Osc52` deserializes from TOML through upstream's own impl, but has no
+/// schema of its own.
+#[derive(Debug, Default, JsonSchema, serde::Serialize)]
+#[serde(transparent)]
+struct SerdeOsc52(#[schemars(with = "String")] Osc52);
+
+impl<'de> Deserialize<'de> for SerdeOsc52 {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        Osc52::deserialize(toml::Value::String(value))
+            .map(SerdeOsc52)
+            .map_err(serde::de::Error::custom)
+    }
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -3589,6 +3655,14 @@ impl RawConfig {
             RawShell::Program(program) => ShellConfig { program, args: Vec::new() },
             RawShell::Detailed { program, args } => ShellConfig { program, args },
         });
+        let osc52 = self.terminal.osc52.0;
+
+        let vt = VtConfig {
+            report_cwd: self.vt.report_cwd,
+            notify: self.vt.notify,
+            progress: self.vt.progress,
+            pointer_shape: self.vt.pointer_shape,
+        };
 
         let bindings = bindings::parse_bindings(self.keyboard.bindings);
 
@@ -3663,6 +3737,8 @@ impl RawConfig {
             shell,
             selection,
             bindings,
+            vt,
+            osc52,
             ipc_socket: self.general.ipc_socket,
             debug: DebugConfig {
                 crash_log: self.debug.crash_log,
@@ -4186,6 +4262,42 @@ show_panes = true
         let value: toml::Value = toml::from_str(input).expect("valid toml");
         let raw: RawConfig = value.try_into().expect("valid config");
         raw.into_config().ui
+    }
+
+    fn vt_from_toml(input: &str) -> VtConfig {
+        let value: toml::Value = toml::from_str(input).expect("valid toml");
+        let raw: RawConfig = value.try_into().expect("valid config");
+        raw.into_config().vt
+    }
+
+    #[test]
+    fn vt_keys_are_all_off_unless_asked_otherwise() {
+        let vt = vt_from_toml("");
+        assert!(!vt.report_cwd);
+        assert!(!vt.notify);
+        assert!(!vt.progress);
+        assert!(!vt.pointer_shape);
+        assert!(!vt.any_enabled());
+    }
+
+    #[test]
+    fn vt_keys_parse_and_report_enabled() {
+        let vt = vt_from_toml("[vt]\nreport_cwd = true");
+        assert!(vt.report_cwd);
+        assert!(!vt.notify);
+        assert!(vt.any_enabled());
+    }
+
+    #[test]
+    fn osc52_defaults_to_copy_only_and_parses() {
+        let value: toml::Value = toml::from_str("").expect("valid toml");
+        let raw: RawConfig = value.try_into().expect("valid config");
+        assert_eq!(raw.into_config().osc52, Osc52::OnlyCopy);
+
+        let value: toml::Value =
+            toml::from_str("[terminal]\nosc52 = \"copypaste\"").expect("valid toml");
+        let raw: RawConfig = value.try_into().expect("valid config");
+        assert_eq!(raw.into_config().osc52, Osc52::CopyPaste);
     }
 
     #[test]

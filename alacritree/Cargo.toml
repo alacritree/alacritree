@@ -37,7 +37,12 @@ eframe = { version = "0.31", default-features = false, features = ["default_font
 egui = { version = "0.31", features = ["serde"] }
 log = "0.4"
 env_logger = "0.11"
+# Names this machine, so an OSC 7 report naming it counts as local.
+gethostname = "1"
 pabal = "0.2"
+# PTY wrappers (`pty_tee`, `pty_rearm`) hand alacritty_terminal a `Poller`, so
+# this must resolve to the version it links.
+polling = "3.11"
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "async-std"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -115,10 +120,6 @@ libc = "0.2"
 fontconfig = "0.8"
 
 [target.'cfg(windows)'.dependencies]
-# Re-posts the console-pipe readiness that the emulated level mode drops
-# mid-burst (`pty_rearm`).  Must resolve to the same version alacritty_terminal
-# links, or the `Poller` handed to the registration is a different type.
-polling = "3.11"
 # Restricts the DLL search path at startup (`harden_dll_search_path`), borrows
 # the launching shell's console so the CLI can print (`attach_parent_console`),
 # reads the cursor during a file drag, which winit discards, and asks whether a

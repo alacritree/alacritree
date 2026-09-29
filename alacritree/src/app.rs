@@ -42,6 +42,7 @@ use crate::git_nav::{self, GitSection, SectionCount};
 use crate::in_flight::{Finished, InFlight};
 use crate::modal_gate::{ModalGate, ModalKind};
 use crate::multiplexer::Multiplexers;
+use crate::osc_tap::Progress as OscProgress;
 use crate::panel_filter::{self, PanelFilter};
 use crate::path_style::PathStyle;
 use crate::pr_status::{self, PrCache};
@@ -1153,8 +1154,31 @@ impl AlacritreeApp {
         ctx: &Context,
         working_directory: WorkspaceKey,
     ) -> std::io::Result<SessionId> {
-        let (shell, wsl_probe) = self.resolve_shell(&working_directory);
-        self.spawn_session_with_shell(ctx, working_directory, shell, wsl_probe)
+        let (shell, wsl_probe, wsl_distro) =
+            self.resolve_shell(&working_directory, working_directory.as_deref());
+        self.spawn_session_with_shell(
+            ctx,
+            working_directory.clone(),
+            working_directory,
+            shell,
+            wsl_probe,
+            wsl_distro,
+        )
+    }
+
+    /// A new shell in the current workspace, started where the active
+    /// session's shell last reported it was.
+    fn spawn_sibling_session(&mut self, ctx: &Context) -> std::io::Result<SessionId> {
+        let workspace = self.current_workspace.clone();
+        let directory = self.sibling_spawn_directory();
+        let (shell, wsl_probe, wsl_distro) = self.resolve_shell(&workspace, directory.as_deref());
+        self.spawn_session_with_shell(ctx, workspace, directory, shell, wsl_probe, wsl_distro)
+    }
+
+    fn sibling_spawn_directory(&self) -> Option<PathBuf> {
+        let reported =
+            self.active_session_index().and_then(|idx| self.sessions[idx].reported_cwd.as_ref());
+        session::spawn_directory(reported, self.current_workspace.as_ref())
     }
 
     /// The geometry to open a PTY at, so it is born at the size it will keep.
@@ -1184,14 +1208,19 @@ impl AlacritreeApp {
     /// the checkout hooks live here rather than in `spawn_session`: a named
     /// profile arrives with its shell already chosen and would otherwise open
     /// in a checkout Ctrl+T refuses.
+    ///
+    /// `directory` is where the shell starts, which differs from `workspace`
+    /// only for a sibling session opened in a reported directory.
     fn spawn_session_with_shell(
         &mut self,
         ctx: &Context,
-        working_directory: WorkspaceKey,
+        workspace: WorkspaceKey,
+        directory: Option<PathBuf>,
         shell: Option<ShellCommand>,
         wsl_probe: Option<WslProbe>,
+        wsl_distro: Option<String>,
     ) -> std::io::Result<SessionId> {
-        if let Some(dir) = &working_directory {
+        if let Some(dir) = &workspace {
             // A checkout git has forgotten is refused here rather than in
             // `session::open`, which can only see whether the directory
             // exists. A half-finished `git worktree remove` leaves one that
@@ -1208,17 +1237,19 @@ impl AlacritreeApp {
             self.sync_checkout_hooks(dir.clone());
         }
         let (size, cell_size) = self.next_spawn_geometry();
-        let (session, request) = Session::pending_shell(
+        let (mut session, request) = Session::pending_shell(
             ctx.clone(),
             &self.config,
-            working_directory.clone(),
+            directory,
             size,
             cell_size,
             shell,
+            wsl_distro,
             wsl_probe,
         );
+        session.working_directory = workspace.clone();
         let id = self.open_session(session, request)?;
-        self.sessions.set_active(working_directory, id);
+        self.sessions.set_active(workspace, id);
         Ok(id)
     }
 
@@ -1389,8 +1420,8 @@ impl AlacritreeApp {
             log::warn!("{msg}");
             return Err(std::io::Error::new(std::io::ErrorKind::NotFound, msg));
         };
-        let (shell, wsl_probe) = profile_session_shell(profile);
-        self.spawn_session_with_shell(ctx, ws, shell, wsl_probe)
+        let (shell, wsl_probe, wsl_distro) = profile_session_shell(profile, wsl_helper::enabled());
+        self.spawn_session_with_shell(ctx, ws.clone(), ws, shell, wsl_probe, wsl_distro)
     }
 
     /// Shell for a workspace; `None` means "no override", and
@@ -1398,7 +1429,14 @@ impl AlacritreeApp {
     /// shell with its OS-guaranteed fallback. The home tab (`None`
     /// workspace) has no project or location, so only the default profile can
     /// apply there.
-    fn resolve_shell(&self, workspace: &WorkspaceKey) -> (Option<ShellCommand>, Option<WslProbe>) {
+    ///
+    /// The project override follows `workspace`; the location follows
+    /// `directory`, where the shell actually starts.
+    fn resolve_shell(
+        &self,
+        workspace: &WorkspaceKey,
+        directory: Option<&Path>,
+    ) -> (Option<ShellCommand>, Option<WslProbe>, Option<String>) {
         let path = workspace.as_deref();
         let choice = path.and_then(|p| {
             self.projects
@@ -1406,11 +1444,12 @@ impl AlacritreeApp {
                 .find(|proj| proj.checkouts.iter().any(|wt| wt.path.as_path() == p))
                 .and_then(|proj| proj.shell_override.clone())
         });
-        let location_distro = path.and_then(|p| match wsl::classify(p) {
+        let location_distro = directory.and_then(|p| match wsl::classify(p) {
             wsl::Location::Wsl { distro, .. } => Some(distro),
             wsl::Location::Windows(_) => None,
         });
         let known: Vec<String> = wsl::distros().into_iter().map(|d| d.name).collect();
+        let helper_enabled = wsl_helper::enabled();
         match shell_decision(
             choice.as_ref(),
             location_distro.as_deref(),
@@ -1418,16 +1457,16 @@ impl AlacritreeApp {
             &self.config.profiles,
             self.config.default_profile.as_deref(),
         ) {
-            ShellDecision::ConfigShell => config_session_shell(&self.config),
-            // A WSL decision only arises from a workspace path (override or
-            // location), never from the home tab.
-            ShellDecision::WslDistro(distro) => match path {
-                Some(p) => wsl_session_shell(&distro, p),
-                None => (None, None),
+            ShellDecision::ConfigShell => config_session_shell(&self.config, helper_enabled),
+            // A WSL decision only arises from a path (override or location),
+            // never from the home tab.
+            ShellDecision::WslDistro(distro) => match directory {
+                Some(p) => wsl_session_shell(&distro, p, helper_enabled),
+                None => (None, None, None),
             },
             ShellDecision::Profile(name) => match self.config.profile(&name) {
-                Some(profile) => profile_session_shell(profile),
-                None => (None, None),
+                Some(profile) => profile_session_shell(profile, helper_enabled),
+                None => (None, None, None),
             },
         }
     }
@@ -2897,6 +2936,15 @@ impl AlacritreeApp {
             for (target, text) in &outcome.clipboard {
                 clipboard::write(*target, text);
             }
+            // Reads are answered only for the session the user is looking at,
+            // as upstream does.
+            if focused && Some(idx) == visible_idx {
+                for (target, format) in &outcome.clipboard_reads {
+                    if let Some(text) = clipboard::read(*target) {
+                        self.sessions[idx].write(format(&text).into_bytes());
+                    }
+                }
+            }
             // The exit is the last thing the PTY will ever deliver, so a
             // session that survives it says here how to dismiss it. Nothing
             // else on screen would.
@@ -2920,12 +2968,8 @@ impl AlacritreeApp {
                 continue;
             }
             let now = Instant::now();
-            let pending = PendingAttention::merge(
-                self.sessions[idx].pending_attention,
-                outcome.finished,
-                outcome.rang,
-                now,
-            );
+            let pending =
+                PendingAttention::merge(self.sessions[idx].pending_attention, &outcome, now);
             self.sessions[idx].pending_attention = pending;
             let Some(pending) = pending else {
                 continue;
@@ -2943,12 +2987,15 @@ impl AlacritreeApp {
                     let session = &mut self.sessions[idx];
                     let was_latched = session.done || session.needs_attention;
                     session.done |= pending.finished && is_agent;
-                    session.needs_attention |= pending.rang || (pending.finished && !is_agent);
+                    session.needs_attention |=
+                        pending.rang || pending.notified || (pending.finished && !is_agent);
                     // Only toast on the transition into a latch: BEL and the
                     // title settling in the same idle cycle are one "Claude is
-                    // done" event, not two.
-                    if !was_latched && self.config.ui.notifications {
-                        notify::attention(&self.sessions[idx], ctx);
+                    // done" event, not two.  An explicit notification has its
+                    // own text, so it toasts every time.
+                    let body = session.last_notification.clone().filter(|_| pending.notified);
+                    if (!was_latched || body.is_some()) && self.config.ui.notifications {
+                        notify::attention(&self.sessions[idx], ctx, body);
                     }
                 },
             }
@@ -3117,6 +3164,9 @@ impl AlacritreeApp {
                     Some(WorkspaceRowData::Session(SessionRowData {
                         id: s.id,
                         name: session_row_name(&s.title, activity, self.session_pane(s)),
+                        reported_cwd: s.reported_cwd.clone(),
+                        last_notification: s.last_notification.clone(),
+                        progress: s.progress,
                         needs_attention: s.needs_attention,
                         done: s.done,
                         activity,
@@ -3755,30 +3805,48 @@ fn wsl_shell(distro: &str, workdir: &Path) -> ShellCommand {
 }
 
 /// Shimmed when the resident helper is on; the plain wsl.exe login-shell
-/// launch (and an unknown probe) otherwise.
-fn wsl_session_shell(distro: &str, workdir: &Path) -> (Option<ShellCommand>, Option<WslProbe>) {
-    if !wsl_helper::enabled() {
-        return (Some(wsl_shell(distro, workdir)), None);
+/// launch (and an unknown probe) otherwise.  The distro comes back either
+/// way, since a cwd report needs it to be translated.
+fn wsl_session_shell(
+    distro: &str,
+    workdir: &Path,
+    helper_enabled: bool,
+) -> (Option<ShellCommand>, Option<WslProbe>, Option<String>) {
+    if !helper_enabled {
+        return (Some(wsl_shell(distro, workdir)), None, Some(distro.to_string()));
     }
     let key = wsl_helper::new_probe_key();
     let (program, args) = wsl_helper::shim_invocation(distro, workdir, &key);
-    (Some(ShellCommand::new(program, args)), Some(WslProbe { distro: distro.to_string(), key }))
+    (
+        Some(ShellCommand::new(program, args)),
+        Some(WslProbe { distro: distro.to_string(), key }),
+        Some(distro.to_string()),
+    )
 }
 
-/// The probe shim for any user-supplied wsl.exe argv (profile or
-/// `[terminal.shell]`): `Some` only when the argv is fully understood and
-/// a distro name is known. The probe registry needs one, so a wrapped
-/// default-distro launch resolves it via enumeration. Anything exotic
-/// runs unmodified and probes as unknown.
-fn shimmed_wsl_argv(program: &str, args: &[String]) -> Option<(ShellCommand, WslProbe)> {
-    if !wsl_helper::enabled() {
-        return None;
-    }
+/// The launch for any user-supplied wsl.exe argv (profile or
+/// `[terminal.shell]`): `Some` only when the argv is fully understood and a
+/// distro name is known, so a wrapped default-distro launch resolves it via
+/// enumeration.  The probe shim wraps the argv only when the helper is on;
+/// the distro comes back either way.  Anything exotic runs unmodified and
+/// probes as unknown.
+fn wsl_argv_launch(
+    program: &str,
+    args: &[String],
+    helper_enabled: bool,
+) -> Option<(Option<ShellCommand>, Option<WslProbe>, String)> {
     let key = wsl_helper::new_probe_key();
     let (args, distro) = wsl_helper::wrap_profile_argv(program, args, &key)?;
     let distro =
         distro.or_else(|| wsl::distros().into_iter().find(|d| d.is_default).map(|d| d.name))?;
-    Some((ShellCommand::new(program.to_string(), args), WslProbe { distro, key }))
+    if !helper_enabled {
+        return Some((None, None, distro));
+    }
+    Some((
+        Some(ShellCommand::new(program.to_string(), args)),
+        Some(WslProbe { distro: distro.clone(), key }),
+        distro,
+    ))
 }
 
 /// The probe shim for a multiplexer attach, which launches a command rather
@@ -3805,10 +3873,13 @@ pub(crate) fn multiplexer_attach_probe(
 
 fn profile_session_shell(
     profile: &crate::config::Profile,
-) -> (Option<ShellCommand>, Option<WslProbe>) {
-    match shimmed_wsl_argv(&profile.program, &profile.args) {
-        Some((shell, probe)) => (Some(shell), Some(probe)),
-        None => (Some(profile_shell(profile)), None),
+    helper_enabled: bool,
+) -> (Option<ShellCommand>, Option<WslProbe>, Option<String>) {
+    match wsl_argv_launch(&profile.program, &profile.args, helper_enabled) {
+        Some((shell, probe, distro)) => {
+            (Some(shell.unwrap_or_else(|| profile_shell(profile))), probe, Some(distro))
+        },
+        None => (Some(profile_shell(profile)), None, None),
     }
 }
 
@@ -3817,13 +3888,13 @@ fn profile_session_shell(
 /// `Session::pending_shell`'s own config-shell default.
 fn config_session_shell(
     config: &crate::config::Config,
-) -> (Option<ShellCommand>, Option<WslProbe>) {
-    match &config.shell {
-        Some(s) => match shimmed_wsl_argv(&s.program, &s.args) {
-            Some((shell, probe)) => (Some(shell), Some(probe)),
-            None => (None, None),
-        },
-        None => (None, None),
+    helper_enabled: bool,
+) -> (Option<ShellCommand>, Option<WslProbe>, Option<String>) {
+    let launch =
+        config.shell.as_ref().and_then(|s| wsl_argv_launch(&s.program, &s.args, helper_enabled));
+    match launch {
+        Some((shell, probe, distro)) => (shell, probe, Some(distro)),
+        None => (None, None, None),
     }
 }
 
@@ -4381,6 +4452,7 @@ mod tests {
             (8.0, 16.0),
             None,
             None,
+            None,
         );
         app.sessions.push(session);
         app
@@ -4686,6 +4758,212 @@ mod tests {
         assert_eq!(app.session_shown_state(&app.sessions[0]), Some(ShownState::Pinged));
     }
 
+    mod notifications {
+        use alacritty_terminal::event::Event;
+        use alacritty_terminal::term::ClipboardType;
+
+        use super::*;
+        use crate::notify::TOASTS;
+        use crate::osc_tap::OscEvent;
+
+        enum Visibility {
+            VisibleAndFocused,
+            VisibleAndUnfocused,
+            Hidden,
+        }
+
+        struct NotificationApp {
+            app: AlacritreeApp,
+            ctx: Context,
+            osc_tx: mpsc::Sender<OscEvent>,
+        }
+
+        /// `test_app` with toasts on, no grace window, and an OSC channel the
+        /// test writes into instead of a tap thread.
+        fn notification_app() -> NotificationApp {
+            TOASTS.with_borrow_mut(Vec::clear);
+            let mut app = test_app();
+            app.config.ui.notifications = true;
+            app.config.ui.attention_grace = Duration::ZERO;
+            let (osc_tx, osc_rx) = mpsc::channel();
+            app.sessions[0].osc_events = Some(osc_rx);
+            NotificationApp { app, ctx: Context::default(), osc_tx }
+        }
+
+        impl NotificationApp {
+            fn drain(&mut self, visibility: Visibility) {
+                let hidden = matches!(visibility, Visibility::Hidden);
+                self.app.current_workspace = if hidden {
+                    Some(PathBuf::from("elsewhere"))
+                } else {
+                    self.app.sessions[0].working_directory.clone()
+                };
+                if !hidden {
+                    self.app.set_active_in_current_workspace(self.app.sessions[0].id);
+                }
+                let mut input = egui::RawInput::default();
+                input.viewports.get_mut(&egui::ViewportId::ROOT).unwrap().focused =
+                    Some(!matches!(visibility, Visibility::VisibleAndUnfocused));
+                let _ = self.ctx.run(input, |ctx| self.app.process_session_events(ctx));
+            }
+
+            fn notify(&mut self, body: &str, visibility: Visibility) {
+                self.osc_tx.send(OscEvent::Notify(body.into())).unwrap();
+                self.drain(visibility);
+            }
+
+            fn term(&mut self, event: Event, visibility: Visibility) {
+                self.app.sessions[0].inject_for_test(event);
+                self.drain(visibility);
+            }
+
+            fn expire_grace(&mut self) {
+                let pending = self.app.sessions[0].pending_attention.as_mut().unwrap();
+                pending.since = Instant::now() - self.app.config.ui.attention_grace;
+            }
+
+            fn last_notification(&self) -> Option<&str> {
+                self.app.sessions[0].last_notification.as_deref()
+            }
+        }
+
+        fn toasts() -> Vec<String> {
+            TOASTS.with_borrow(Vec::clone)
+        }
+
+        /// Upstream answers a clipboard read only for the window the user is
+        /// typing into; an application in a hidden or unfocused session must
+        /// not read what was copied elsewhere.
+        #[test]
+        fn osc52_reads_are_refused_when_the_session_is_unfocused_or_hidden() {
+            for visibility in [Visibility::VisibleAndUnfocused, Visibility::Hidden] {
+                let mut app = notification_app();
+                let answered = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let marker = Arc::clone(&answered);
+                let formatter: session::ClipboardFormatter = Arc::new(move |_| {
+                    marker.store(true, std::sync::atomic::Ordering::SeqCst);
+                    "reply".to_string()
+                });
+                app.term(Event::ClipboardLoad(ClipboardType::Clipboard, formatter), visibility);
+                assert!(!answered.load(std::sync::atomic::Ordering::SeqCst));
+            }
+        }
+
+        #[test]
+        fn a_visible_session_keeps_notification_text_it_gets_no_toast_for() {
+            let mut app = notification_app();
+            app.notify("build failed", Visibility::VisibleAndFocused);
+            assert_eq!(app.last_notification(), Some("build failed"));
+            assert!(toasts().is_empty());
+            assert!(!app.app.sessions[0].needs_attention);
+            assert!(app.app.sessions[0].pending_attention.is_none());
+        }
+
+        #[test]
+        fn a_visible_unfocused_session_toasts() {
+            let mut app = notification_app();
+            app.notify("build failed", Visibility::VisibleAndUnfocused);
+            assert_eq!(toasts(), ["build failed"]);
+        }
+
+        /// A latch stops a second generic toast, but an explicit notification
+        /// carries text of its own, so each one still reaches the desktop.
+        #[test]
+        fn notifications_to_a_latched_session_each_toast_after_the_grace_window() {
+            let mut app = notification_app();
+            app.app.config.ui.attention_grace = Duration::from_secs(60);
+            app.notify("build started", Visibility::Hidden);
+            assert!(toasts().is_empty());
+            app.expire_grace();
+            app.drain(Visibility::Hidden);
+            assert!(app.app.sessions[0].needs_attention);
+            app.notify("build failed", Visibility::Hidden);
+            app.expire_grace();
+            app.drain(Visibility::Hidden);
+            assert_eq!(toasts(), ["build started", "build failed"]);
+        }
+
+        #[test]
+        fn a_notification_burst_coalesces_to_the_latest_body() {
+            let mut app = notification_app();
+            app.app.config.ui.attention_grace = Duration::from_secs(60);
+            for step in 0..100 {
+                app.osc_tx.send(OscEvent::Notify(format!("build step {step}"))).unwrap();
+            }
+            app.drain(Visibility::Hidden);
+            assert!(toasts().is_empty());
+            app.expire_grace();
+            app.drain(Visibility::Hidden);
+            assert_eq!(toasts(), ["build step 99"]);
+            assert!(app.app.sessions[0].needs_attention);
+        }
+
+        /// A bell pending when a notification arrives is the same event: one
+        /// toast, carrying the notification's text.
+        #[test]
+        fn an_explicit_notification_absorbs_pending_generic_attention() {
+            let mut app = notification_app();
+            app.app.config.ui.attention_grace = Duration::from_secs(60);
+            app.term(Event::Bell, Visibility::Hidden);
+            app.notify("build failed", Visibility::Hidden);
+            app.expire_grace();
+            app.drain(Visibility::Hidden);
+            assert_eq!(toasts(), ["build failed"]);
+        }
+
+        #[test]
+        fn a_busy_title_cancels_a_notification_during_the_grace_window() {
+            let mut app = notification_app();
+            app.app.config.ui.attention_grace = Duration::from_secs(60);
+            app.app.sessions[0].inject_for_test(Event::Title("\u{280b} working".into()));
+            app.notify("build failed", Visibility::Hidden);
+            assert!(toasts().is_empty());
+            assert_eq!(app.last_notification(), Some("build failed"));
+            assert!(app.app.sessions[0].pending_attention.is_none());
+        }
+
+        #[test]
+        fn viewing_a_session_discards_its_pending_notification() {
+            let mut app = notification_app();
+            app.app.config.ui.attention_grace = Duration::from_secs(60);
+            app.notify("build failed", Visibility::Hidden);
+            app.drain(Visibility::VisibleAndFocused);
+            app.drain(Visibility::Hidden);
+            assert!(toasts().is_empty());
+            assert_eq!(app.last_notification(), Some("build failed"));
+        }
+
+        /// The notification's text belongs to the notification.  A bell after
+        /// the user has looked says where the session is waiting instead.
+        #[test]
+        fn a_bell_after_viewing_a_notification_uses_the_generic_body() {
+            let mut app = notification_app();
+            app.notify("build failed", Visibility::Hidden);
+            app.drain(Visibility::VisibleAndFocused);
+            app.term(Event::Bell, Visibility::Hidden);
+            assert_eq!(toasts(), ["build failed", "shell is waiting for input"]);
+        }
+
+        #[test]
+        fn two_bells_to_a_latched_session_still_toast_once() {
+            let mut app = notification_app();
+            app.term(Event::Bell, Visibility::Hidden);
+            app.term(Event::Bell, Visibility::Hidden);
+            assert_eq!(toasts(), ["shell is waiting for input"]);
+        }
+
+        #[test]
+        fn disabled_toasts_keep_the_text_and_the_attention() {
+            let mut app = notification_app();
+            app.app.config.ui.notifications = false;
+            app.notify("build failed", Visibility::Hidden);
+            app.notify("retry failed", Visibility::Hidden);
+            assert!(toasts().is_empty());
+            assert_eq!(app.last_notification(), Some("retry failed"));
+            assert!(app.app.sessions[0].needs_attention);
+        }
+    }
+
     /// Going back to work retires a finished turn: the next one has started,
     /// so "done" no longer describes anything.
     #[test]
@@ -4744,6 +5022,7 @@ mod tests {
             (8.0, 16.0),
             None,
             None,
+            None,
         );
         session.bind_pane(Scripted::key(side, terminal), true);
         let id = session.id;
@@ -4758,6 +5037,7 @@ mod tests {
             None,
             TermSize { columns: 80, screen_lines: 24 },
             (8.0, 16.0),
+            None,
             None,
             None,
         );
@@ -6503,6 +6783,7 @@ mod tests {
             workspace,
             TermSize { columns: 80, screen_lines: 24 },
             (8.0, 16.0),
+            None,
             None,
             None,
         );
@@ -8961,6 +9242,9 @@ mod tests {
             let row = SessionRowData {
                 id: 1,
                 name: RowName::plain("zsh".to_owned()),
+                reported_cwd: None,
+                last_notification: None,
+                progress: None,
                 needs_attention: false,
                 done: false,
                 activity: SessionActivity::Shell,
@@ -8993,6 +9277,262 @@ mod tests {
                 want,
                 "home row, icon_tooltips = {icon_tooltips}"
             );
+        }
+    }
+
+    /// A drained progress report reaches the session's row as a bar along
+    /// its bottom edge, painted behind the row's text.
+    #[test]
+    fn progress_drains_into_the_session_row_as_a_bar() {
+        use crate::osc_tap::OscEvent;
+
+        let mut app = test_app();
+        app.session_rows_always = true;
+        let id = app.sessions[0].id;
+        app.set_active_in_current_workspace(id);
+        let (sender, receiver) = mpsc::channel();
+        app.sessions[0].osc_events = Some(receiver);
+        let theme = Theme::from_config(&app.config);
+        let icons = PaintedIcons::new(&app.config, &Multiplexers::new(&app.config.integrations));
+
+        for (progress, fraction, color) in [
+            (None, 0.0, None),
+            (Some(OscProgress::Set(50)), 0.5, Some(theme.accent)),
+            (Some(OscProgress::Error(25)), 0.25, Some(theme.attention)),
+            (Some(OscProgress::Paused(75)), 0.75, Some(theme.text_muted)),
+            (Some(OscProgress::Indeterminate), 1.0, Some(theme.accent)),
+            (Some(OscProgress::Clear), 0.0, None),
+        ] {
+            if let Some(progress) = progress {
+                sender.send(OscEvent::Progress(progress)).unwrap();
+            }
+            app.sessions[0].drain_events(&app.config.palette);
+
+            let listed = app.listed_workspace_rows();
+            let rows = app.workspace_rows(&None, &listed);
+            let row = rows
+                .iter()
+                .find_map(|row| match row {
+                    WorkspaceRowData::Session(row) if row.id == id => Some(row),
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(row.progress, progress);
+            let frames = frames_while_hovering_at(egui::pos2(-100.0, -100.0), 220.0, |ui| {
+                session_row(ui, row, false, false, true, &icons, &theme);
+            });
+            let shapes = frames.last().unwrap();
+            // The displayed row's background spans the whole row.
+            let rect = shapes
+                .iter()
+                .find_map(|clipped| match &clipped.shape {
+                    egui::Shape::Rect(shape) if shape.fill == theme.row_active_bg => {
+                        Some(shape.rect)
+                    },
+                    _ => None,
+                })
+                .expect("the displayed row paints its background");
+            let bars: Vec<_> = shapes
+                .iter()
+                .enumerate()
+                .filter_map(|(index, clipped)| match &clipped.shape {
+                    egui::Shape::Rect(shape)
+                        if shape.rect.bottom() == rect.bottom()
+                            && shape.rect.height() <= 3.0 * theme.ui_scale =>
+                    {
+                        Some((index, shape))
+                    },
+                    _ => None,
+                })
+                .collect();
+            let Some(color) = color else {
+                assert!(bars.is_empty(), "unexpected bar for {progress:?}");
+                continue;
+            };
+            let [(index, bar)] = bars[..] else { panic!("one bar for {progress:?}: {bars:?}") };
+            assert_eq!(bar.fill, color);
+            assert_eq!(bar.rect.left(), rect.left());
+            assert!((bar.rect.width() - rect.width() * fraction).abs() < 0.01);
+            let text_index = shapes
+                .iter()
+                .position(|clipped| matches!(clipped.shape, egui::Shape::Text(_)))
+                .expect("row text painted");
+            assert!(index < text_index, "the bar paints behind the row's text");
+        }
+    }
+
+    /// The reported directory and the last notification ride on the name's
+    /// tooltip, under the same mode as the name itself.  A managed row's own
+    /// tooltip still wins.
+    #[test]
+    fn a_session_rows_tooltip_carries_its_cwd_and_notification() {
+        let icons = PaintedIcons::new(
+            &Config::default(),
+            &Multiplexers::new(&Config::default().integrations),
+        );
+        let cwd = PathBuf::from("C:/repo/src");
+        let long = "feature/a-session-name-far-too-long-for-the-sidebar";
+
+        for (mode, name, want) in [
+            (SidebarTooltips::Off, "shell", false),
+            (SidebarTooltips::Elided, "shell", false),
+            (SidebarTooltips::Always, "shell", true),
+            (SidebarTooltips::Off, long, false),
+            (SidebarTooltips::Elided, long, true),
+            (SidebarTooltips::Always, long, true),
+        ] {
+            let mut config = Config::default();
+            config.ui.sidebar_tooltips = mode;
+            let theme = Theme::from_config(&config);
+            let mut row = SessionRowData {
+                id: 1,
+                name: RowName::plain(name.to_owned()),
+                reported_cwd: Some(cwd.clone()),
+                last_notification: Some("build failed".to_owned()),
+                progress: None,
+                needs_attention: false,
+                done: false,
+                activity: SessionActivity::Shell,
+                is_active: true,
+                is_displayed: true,
+                managed: None,
+            };
+            let tooltip = format!("{name}\n{}\nbuild failed", cwd.display());
+            let texts = texts_while_hovering(140.0, |ui| {
+                session_row(ui, &row, false, false, false, &icons, &theme);
+            });
+            let shown = |text: &str| texts.iter().flatten().any(|(t, _)| t == text);
+            assert_eq!(shown(&tooltip), want, "{mode:?} on {name:?}: {texts:?}");
+
+            let managed = Managed {
+                multiplexer: MultiplexerKind::Herdr,
+                detach: Some("Ctrl+B q".into()),
+                shared_view: false,
+                kind: None,
+                title: None,
+                status: None,
+            };
+            let managed_text = super::panes::managed_tooltip(&managed);
+            row.managed = Some(managed);
+            let texts = texts_while_hovering(140.0, |ui| {
+                session_row(ui, &row, false, false, false, &icons, &theme);
+            });
+            assert!(texts.iter().flatten().any(|(t, _)| t == &managed_text));
+            assert!(!texts.iter().flatten().any(|(t, _)| t == &tooltip));
+        }
+    }
+
+    /// A sibling started from a reported directory still belongs to the
+    /// workspace it was opened in, and a report that no longer exists falls
+    /// back to the workspace.
+    #[test]
+    fn a_sibling_session_starts_where_the_shell_reported_it_was() {
+        let mut app = test_app();
+        let workspace = tempfile::tempdir().unwrap();
+        let reported = tempfile::tempdir().unwrap();
+        app.current_workspace = Some(workspace.path().to_path_buf());
+        app.sessions[0].working_directory = app.current_workspace.clone();
+        app.set_active_in_current_workspace(app.sessions[0].id);
+
+        assert_eq!(app.sibling_spawn_directory(), app.current_workspace);
+        app.sessions[0].reported_cwd = Some(reported.path().to_path_buf());
+        assert_eq!(app.sibling_spawn_directory(), Some(reported.path().to_path_buf()));
+        app.sessions[0].reported_cwd = Some(PathBuf::from("/nowhere/at/all"));
+        assert_eq!(app.sibling_spawn_directory(), app.current_workspace);
+
+        app.current_workspace = Some(reported.path().join("no-session-here"));
+        assert_eq!(app.sibling_spawn_directory(), app.current_workspace);
+        app.current_workspace = None;
+        assert_eq!(app.sibling_spawn_directory(), None);
+    }
+
+    fn ubuntu_profile() -> crate::config::Profile {
+        crate::config::Profile {
+            name: "ubuntu".into(),
+            program: "wsl.exe".into(),
+            args: vec!["--distribution".into(), "Ubuntu".into(), "--cd".into(), "/home/dev".into()],
+        }
+    }
+
+    /// Without the resident helper a WSL profile runs its argv unchanged, and
+    /// its distro still comes back for a cwd report to be translated against.
+    #[test]
+    fn a_wsl_profile_names_its_distro_with_or_without_the_helper() {
+        let profile = ubuntu_profile();
+        for helper_enabled in [false, true] {
+            let (shell, probe, distro) = profile_session_shell(&profile, helper_enabled);
+            assert_eq!(distro.as_deref(), Some("Ubuntu"));
+            assert_eq!(
+                probe.as_ref().map(|probe| probe.distro.as_str()),
+                helper_enabled.then_some("Ubuntu")
+            );
+            match &probe {
+                Some(probe) => {
+                    let (wrapped, _) =
+                        wsl_helper::wrap_profile_argv(&profile.program, &profile.args, &probe.key)
+                            .unwrap();
+                    assert_eq!(shell, Some(ShellCommand::new(profile.program.clone(), wrapped)));
+                },
+                None => assert_eq!(shell, Some(profile_shell(&profile))),
+            }
+        }
+    }
+
+    #[test]
+    fn a_reported_cwd_reaches_a_wsl_profile_without_the_helper() {
+        let profile = ubuntu_profile();
+        let mut config = Config::default();
+        config.vt.report_cwd = true;
+        let (shell, probe, distro) = profile_session_shell(&profile, false);
+        assert!(probe.is_none());
+        session::tests::assert_wsl_reported_cwd_through_tap(
+            &config,
+            shell,
+            probe,
+            distro,
+            &profile.args,
+        );
+    }
+
+    #[test]
+    fn a_reported_cwd_reaches_a_wsl_config_shell_without_the_helper() {
+        let profile = ubuntu_profile();
+        let mut config = Config::default();
+        config.vt.report_cwd = true;
+        config.shell = Some(crate::config::ShellConfig {
+            program: profile.program.clone(),
+            args: profile.args.clone(),
+        });
+        let (shell, probe, distro) = config_session_shell(&config, false);
+        assert!(shell.is_none() && probe.is_none());
+        session::tests::assert_wsl_reported_cwd_through_tap(
+            &config,
+            shell,
+            probe,
+            distro,
+            &profile.args,
+        );
+    }
+
+    /// A sibling opened in a reported directory takes its shell from where it
+    /// starts, not from the workspace it belongs to.
+    #[cfg(windows)]
+    #[test]
+    fn the_sibling_directory_decides_whether_the_shell_is_wsl() {
+        let app = test_app();
+        let native = Path::new("C:/workspace");
+        let ubuntu = Path::new(r"\\wsl.localhost\Ubuntu\home\dev\src");
+        let debian = Path::new(r"\\wsl.localhost\Debian\home\dev\src");
+
+        for (workspace, directory, expected) in [
+            (None, ubuntu, Some("Ubuntu")),
+            (Some(native.to_path_buf()), ubuntu, Some("Ubuntu")),
+            (Some(ubuntu.to_path_buf()), debian, Some("Debian")),
+            (Some(ubuntu.to_path_buf()), native, None),
+        ] {
+            let (shell, _, distro) = app.resolve_shell(&workspace, Some(directory));
+            assert_eq!(distro.as_deref(), expected, "{workspace:?} at {directory:?}");
+            assert_eq!(shell.is_some(), expected.is_some(), "a WSL location needs a launch shell");
         }
     }
 
@@ -9059,6 +9599,9 @@ mod tests {
         let session = |attention, activity| SessionRowData {
             id: 1,
             name: RowName::plain("zsh".to_owned()),
+            reported_cwd: None,
+            last_notification: None,
+            progress: None,
             needs_attention: attention,
             done: false,
             activity,
@@ -9292,6 +9835,9 @@ mod tests {
         let row = SessionRowData {
             id: 1,
             name: RowName::plain("cargo test --workspace --all-features -- --nocapture".to_owned()),
+            reported_cwd: None,
+            last_notification: None,
+            progress: None,
             needs_attention: false,
             done: false,
             activity: SessionActivity::Shell,

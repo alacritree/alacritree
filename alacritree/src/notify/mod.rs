@@ -50,30 +50,55 @@ pub(crate) fn latest_click(rx: &Receiver<SessionId>) -> Option<SessionId> {
     latest
 }
 
+// Toast bodies `attention` would have posted, for tests that assert what
+// the user would see without a desktop to show it on.
+#[cfg(test)]
+thread_local! {
+    pub(crate) static TOASTS: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
 /// Spawn a throwaway thread so the platform notifier's synchronous calls
 /// don't stall the paint loop.  The thread posts the session's id back
-/// through `NOTIFY_TX` when the user clicks the notification.
-pub(crate) fn attention(session: &Session<impl Repaint>, repaint: &impl Repaint) {
-    let where_label = session
-        .working_directory
-        .as_ref()
-        .and_then(|p| p.file_name())
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| session.title.clone());
-    let body = if where_label.is_empty() {
-        "Session is waiting for input".to_string()
-    } else {
-        format!("{where_label} is waiting for input")
-    };
-    let id = session.id;
-    let repaint = repaint.clone();
-    std::thread::Builder::new()
-        .name("alacritree-notify".into())
-        .spawn(move || worker(body, id, repaint))
-        .ok();
+/// through `NOTIFY_TX` when the user clicks the notification.  `body` is an
+/// application's own notification text; without one the toast says where
+/// the session is waiting.
+pub(crate) fn attention(
+    session: &Session<impl Repaint>,
+    repaint: &impl Repaint,
+    body: Option<String>,
+) {
+    let body = body.unwrap_or_else(|| {
+        let where_label = session
+            .working_directory
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| session.title.clone());
+        if where_label.is_empty() {
+            "Session is waiting for input".to_string()
+        } else {
+            format!("{where_label} is waiting for input")
+        }
+    });
+    #[cfg(test)]
+    {
+        let _ = repaint;
+        TOASTS.with_borrow_mut(|bodies| bodies.push(body));
+    }
+    #[cfg(not(test))]
+    {
+        let id = session.id;
+        let repaint = repaint.clone();
+        std::thread::Builder::new()
+            .name("alacritree-notify".into())
+            .spawn(move || worker(body, id, repaint))
+            .ok();
+    }
 }
 
 /// Deliver a clicked notification's session id to the UI thread.
+#[cfg_attr(test, allow(dead_code))]
 pub(crate) fn click(id: SessionId, repaint: &impl Repaint) {
     if let Some(lock) = NOTIFY_TX.get() {
         if let Ok(tx) = lock.lock() {
@@ -84,6 +109,7 @@ pub(crate) fn click(id: SessionId, repaint: &impl Repaint) {
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
+#[cfg_attr(test, allow(dead_code))]
 fn worker(body: String, id: SessionId, repaint: impl Repaint) {
     // `default` is the action id freedesktop notifiers fire on body-click.
     let result = notify_rust::Notification::new()
@@ -107,6 +133,7 @@ fn worker(body: String, id: SessionId, repaint: impl Repaint) {
 }
 
 #[cfg(windows)]
+#[cfg_attr(test, allow(dead_code))]
 fn worker(body: String, id: SessionId, repaint: impl Repaint) {
     use tauri_winrt_notification::Toast;
     // notify-rust doesn't surface WinRT activation, so drive its own backend
@@ -126,6 +153,7 @@ fn worker(body: String, id: SessionId, repaint: impl Repaint) {
 }
 
 #[cfg(target_os = "macos")]
+#[cfg_attr(test, allow(dead_code))]
 fn worker(body: String, id: SessionId, _repaint: impl Repaint) {
     // Clicks come back through the UNUserNotificationCenter delegate that
     // `macos::init` installed, not through this worker.

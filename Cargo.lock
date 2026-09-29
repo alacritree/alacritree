@@ -90,6 +90,7 @@ dependencies = [
  "env_logger",
  "fontconfig",
  "fontdb",
+ "gethostname",
  "home",
  "interprocess",
  "libc",

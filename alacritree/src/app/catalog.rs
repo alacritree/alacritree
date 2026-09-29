@@ -706,6 +706,9 @@ fn session(
     SessionRowData {
         id,
         name: RowName::plain(name.into()),
+        reported_cwd: None,
+        last_notification: None,
+        progress: None,
         needs_attention,
         done: false,
         activity,

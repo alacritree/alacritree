@@ -1847,6 +1847,11 @@
     },
     "RawTerminal": {
       "properties": {
+        "osc52": {
+          "$ref": "#/$defs/SerdeOsc52",
+          "default": "onlycopy",
+          "description": "Whether an application may use OSC 52 to write the clipboard, read\nit, both, or neither.  Upstream alacritty's key, so it belongs in the\nshared `alacritty.toml`.  An application that can read the clipboard\ncan read whatever was last copied anywhere else."
+        },
         "shell": {
           "anyOf": [
             {
@@ -2445,6 +2450,32 @@
       },
       "type": "object"
     },
+    "RawVt": {
+      "description": "alacritree-only, so it belongs in `alacritree.toml`.",
+      "properties": {
+        "notify": {
+          "default": false,
+          "description": "Surface OSC 9 and OSC 777 desktop notifications.  The text reaches\nthe sidebar row either way; `[ui] notifications` decides whether a\ndesktop toast fires.",
+          "type": "boolean"
+        },
+        "pointer_shape": {
+          "default": false,
+          "description": "Let an application choose the mouse cursor over the grid with OSC 22.",
+          "type": "boolean"
+        },
+        "progress": {
+          "default": false,
+          "description": "Draw the ConEmu progress report (OSC 9;4) as a bar across the\nsession's sidebar row.",
+          "type": "boolean"
+        },
+        "report_cwd": {
+          "default": false,
+          "description": "Track the shell's working directory from OSC 7 and OSC 9;9, and show\nit in the session row's hover text.  A sibling session then starts\nwhere the shell is rather than at the workspace root.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
     "RawWindow": {
       "properties": {
         "opacity": {
@@ -2563,6 +2594,10 @@
         }
       },
       "type": "object"
+    },
+    "SerdeOsc52": {
+      "description": "`Osc52` deserializes from TOML through upstream's own impl, but has no\nschema of its own.",
+      "type": "string"
     }
   },
   "$id": "https://github.com/alacritree/alacritree/releases/latest/download/alacritree-config.json",
@@ -2619,11 +2654,15 @@
     },
     "terminal": {
       "$ref": "#/$defs/RawTerminal",
-      "description": "The program each session runs."
+      "description": "The program each session runs and its OSC 52 clipboard access policy."
     },
     "ui": {
       "$ref": "#/$defs/RawUi",
       "description": "alacritree's own presentation: sidebar colors, icons, tooltips, shell\nprofiles, and everything else the terminal grid does not own. Belongs\nin `alacritree.toml`, since upstream alacritty warns about it."
+    },
+    "vt": {
+      "$ref": "#/$defs/RawVt",
+      "description": "Sequences read directly from the PTY byte stream.  `alacritree.toml`\nonly."
     },
     "window": {
       "$ref": "#/$defs/RawWindow",
