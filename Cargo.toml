@@ -54,3 +54,7 @@ x11-clipboard = { git = "https://github.com/quininer/x11-clipboard.git", rev = "
 # when the clipboard isn't text (e.g. holds an image), matching alacritty's
 # raw 0x16 forwarding and letting TUIs like Claude Code do their own wl-paste.
 egui-winit = { path = "egui-winit" }
+# Vendored vte whose `Handler` receives the OSC sequences its `ansi` layer
+# does not interpret, so alacritree can read them from the terminal's own
+# parse.
+vte = { path = "vte" }
