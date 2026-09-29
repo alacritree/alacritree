@@ -1877,8 +1877,7 @@ impl<T: EventListener> Handler for Term<T> {
 
     #[inline]
     fn unhandled_osc(&mut self, params: &[&[u8]], bell_terminated: bool) {
-        let params = params.iter().map(|param| param.to_vec()).collect();
-        self.event_proxy.send_event(Event::UnhandledOsc { params, bell_terminated });
+        self.event_proxy.unhandled_osc(params, bell_terminated);
     }
 
     #[inline]
@@ -2529,39 +2528,44 @@ mod tests {
     use crate::term::test::TermSize;
     use crate::vte::ansi::{self, CharsetIndex, Handler, StandardCharset};
 
+    type Osc = (Vec<Vec<u8>>, bool);
+
     #[derive(Clone, Default)]
-    struct Recorder(Arc<std::sync::Mutex<Vec<Event>>>);
+    struct Recorder {
+        events: Arc<std::sync::Mutex<Vec<Event>>>,
+        oscs: Arc<std::sync::Mutex<Vec<Osc>>>,
+    }
 
     impl EventListener for Recorder {
         fn send_event(&self, event: Event) {
-            self.0.lock().unwrap().push(event);
+            self.events.lock().unwrap().push(event);
+        }
+
+        fn unhandled_osc(&self, params: &[&[u8]], bell_terminated: bool) {
+            let params = params.iter().map(|param| param.to_vec()).collect();
+            self.oscs.lock().unwrap().push((params, bell_terminated));
         }
     }
 
-    fn events(bytes: &[u8]) -> Vec<Event> {
+    fn parse(bytes: &[u8]) -> (Vec<Event>, Vec<Osc>) {
         let recorder = Recorder::default();
         let mut term = Term::new(Config::default(), &TermSize::new(5, 10), recorder.clone());
         ansi::Processor::<ansi::StdSyncHandler>::new().advance(&mut term, bytes);
-        mem::take(&mut *recorder.0.lock().unwrap())
+        let events = mem::take(&mut *recorder.events.lock().unwrap());
+        (events, mem::take(&mut *recorder.oscs.lock().unwrap()))
     }
 
     #[test]
     fn uninterpreted_osc_and_pointer_shape_reach_the_listener() {
-        assert!(matches!(
-            events(b"\x1b]7;file:///tmp\x07").as_slice(),
-            [Event::UnhandledOsc { params, bell_terminated: true }]
-                if params == &[b"7".to_vec(), b"file:///tmp".to_vec()]
-        ));
+        let file_tmp = vec![b"7".to_vec(), b"file:///tmp".to_vec()];
+        assert_eq!(parse(b"\x1b]7;file:///tmp\x07").1, vec![(file_tmp.clone(), true)]);
         // CAN ends the sequence without a terminator.
-        assert!(matches!(events(b"\x1b]7;file:///tmp\x18").as_slice(), [Event::UnhandledOsc {
-            bell_terminated: false,
-            ..
-        }]));
+        assert_eq!(parse(b"\x1b]7;file:///tmp\x18").1, vec![(file_tmp, false)]);
         assert!(matches!(
-            events(b"\x1b]22;pointer\x1b\\").as_slice(),
+            parse(b"\x1b]22;pointer\x1b\\").0.as_slice(),
             [Event::MouseCursorIcon(ansi::cursor_icon::CursorIcon::Pointer)]
         ));
-        assert!(!events(b"\x1b]0;t\x07").iter().any(|e| matches!(e, Event::UnhandledOsc { .. })));
+        assert!(parse(b"\x1b]0;t\x07").1.is_empty());
     }
 
     #[test]

@@ -251,9 +251,8 @@ impl OscFilter {
     }
 
     /// A sequence `vte` handed on uninterpreted, as its `;`-split params.
-    pub(crate) fn unhandled(&mut self, params: &[Vec<u8>]) -> Option<OscEvent> {
-        let params: Vec<&[u8]> = params.iter().map(Vec::as_slice).collect();
-        let event = classify(&params, &self.policy)?;
+    pub(crate) fn unhandled(&mut self, params: &[&[u8]]) -> Option<OscEvent> {
+        let event = classify(params, &self.policy)?;
         (!self.is_repeat(&event)).then_some(event)
     }
 
@@ -474,8 +473,8 @@ mod tests {
     #[test]
     fn a_repeated_state_is_emitted_once_and_a_repeated_notification_every_time() {
         let mut filter = OscFilter::new(policy(ShellPlatform::Unix)).unwrap();
-        let split = |payload: &str| -> Vec<Vec<u8>> {
-            payload.split(';').map(|param| param.as_bytes().to_vec()).collect()
+        let split = |payload: &'static str| -> Vec<&[u8]> {
+            payload.split(';').map(str::as_bytes).collect()
         };
         let mut emitted = Vec::new();
         for payload in ["9;4;1;50", "9;4;1;50", "9;done", "9;4;1;50", "9;done", "9;4;1;60"] {
@@ -500,7 +499,7 @@ mod tests {
         let mut pointer_only = policy(ShellPlatform::Unix);
         pointer_only.vt = VtConfig { pointer_shape: true, ..VtConfig::default() };
         let mut filter = OscFilter::new(pointer_only).unwrap();
-        assert_eq!(filter.unhandled(&[b"9".to_vec(), b"done".to_vec()]), None);
+        assert_eq!(filter.unhandled(&[b"9", b"done"]), None);
     }
 
     #[test]

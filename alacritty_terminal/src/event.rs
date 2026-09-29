@@ -58,9 +58,6 @@ pub enum Event {
     /// Child process exited.
     ChildExit(ExitStatus),
 
-    /// An OSC sequence the parser does not interpret, split on `;`.
-    UnhandledOsc { params: Vec<Vec<u8>>, bell_terminated: bool },
-
     /// OSC 22, the mouse pointer the application asked for.
     MouseCursorIcon(CursorIcon),
 }
@@ -81,10 +78,6 @@ impl Debug for Event {
             Event::Bell => write!(f, "Bell"),
             Event::Exit => write!(f, "Exit"),
             Event::ChildExit(status) => write!(f, "ChildExit({status:?})"),
-            Event::UnhandledOsc { params, bell_terminated } => {
-                let params: Vec<_> = params.iter().map(|param| String::from_utf8_lossy(param)).collect();
-                write!(f, "UnhandledOsc({params:?}, bell_terminated: {bell_terminated})")
-            },
             Event::MouseCursorIcon(icon) => write!(f, "MouseCursorIcon({icon:?})"),
         }
     }
@@ -114,6 +107,11 @@ pub trait OnResize {
 /// Event Loop for notifying the renderer about terminal events.
 pub trait EventListener {
     fn send_event(&self, _event: Event) {}
+
+    /// An OSC sequence the parser does not interpret, split on `;`. The
+    /// params are borrowed from the parser, so a listener that wants none
+    /// of them costs nothing.
+    fn unhandled_osc(&self, _params: &[&[u8]], _bell_terminated: bool) {}
 }
 
 /// Null sink for events.

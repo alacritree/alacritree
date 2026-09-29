@@ -64,15 +64,10 @@ impl<R: Repaint> EventProxy<R> {
 
     /// Wakes whether or not the session is on screen: the sidebar paints a
     /// hidden session's progress, and a notification toasts from one.
-    fn route_osc(&self, event: TermEvent) {
+    fn route_osc(&self, classify: impl FnOnce(&mut osc::OscFilter) -> Option<osc::OscEvent>) {
         let Some(route) = &self.osc else { return };
         let Ok(mut route) = route.lock() else { return };
-        let event = match event {
-            TermEvent::UnhandledOsc { params, .. } => route.filter.unhandled(&params),
-            TermEvent::MouseCursorIcon(icon) => route.filter.pointer_shape(icon),
-            _ => None,
-        };
-        if let Some(event) = event
+        if let Some(event) = classify(&mut route.filter)
             && route.sender.send(event).is_ok()
         {
             self.repaint.wake();
@@ -108,9 +103,13 @@ fn carries_payload(event: &TermEvent) -> bool {
 const SPINNER_COALESCE: Duration = Duration::from_millis(120);
 
 impl<R: Repaint> EventListener for EventProxy<R> {
+    fn unhandled_osc(&self, params: &[&[u8]], _bell_terminated: bool) {
+        self.route_osc(|filter| filter.unhandled(params));
+    }
+
     fn send_event(&self, event: TermEvent) {
-        if matches!(event, TermEvent::UnhandledOsc { .. } | TermEvent::MouseCursorIcon(_)) {
-            self.route_osc(event);
+        if let TermEvent::MouseCursorIcon(icon) = event {
+            self.route_osc(|filter| filter.pointer_shape(icon));
             return;
         }
         // A hidden session's grid is not on screen, so a repaint for it would
@@ -1668,10 +1667,7 @@ pub(crate) mod tests {
         let repaint = Recorder::default();
         let (proxy, events) = EventProxy::new(repaint.clone());
 
-        proxy.send_event(TermEvent::UnhandledOsc {
-            params: vec![b"133".to_vec(), b"A".to_vec()],
-            bell_terminated: true,
-        });
+        proxy.unhandled_osc(&[b"133", b"A"], true);
         proxy.send_event(TermEvent::MouseCursorIcon(CursorIcon::Pointer));
 
         assert!(events.try_recv().is_err());
@@ -1687,14 +1683,12 @@ pub(crate) mod tests {
             .0
             .with_osc(osc::OscFilter::new(all_on_policy()).unwrap());
         proxy.set_visible(false);
-        let progress = |value: &str| TermEvent::UnhandledOsc {
-            params: vec![b"9".to_vec(), b"4".to_vec(), b"1".to_vec(), value.as_bytes().to_vec()],
-            bell_terminated: true,
-        };
+        let progress =
+            |value: &str| proxy.unhandled_osc(&[b"9", b"4", b"1", value.as_bytes()], true);
 
-        proxy.send_event(progress("50"));
-        proxy.send_event(progress("50"));
-        proxy.send_event(progress("60"));
+        progress("50");
+        progress("50");
+        progress("60");
 
         assert_eq!(osc_events.try_iter().count(), 2);
         assert_eq!(repaint.wakes(), 2);

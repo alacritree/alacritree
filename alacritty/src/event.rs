@@ -1929,7 +1929,6 @@ impl input::Processor<EventProxy, ActionContext<'_, Notifier, EventProxy>> {
                     TerminalEvent::Exit
                     | TerminalEvent::ChildExit(_)
                     | TerminalEvent::Wakeup
-                    | TerminalEvent::UnhandledOsc { .. }
                     | TerminalEvent::MouseCursorIcon(_) => (),
                 },
                 #[cfg(unix)]
