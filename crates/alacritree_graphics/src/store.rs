@@ -3,7 +3,7 @@
 //!
 //! A placement's row is absolute, the store's scroll count plus the screen
 //! line it was placed on, so a scroll of the whole screen moves every
-//! placement by changing one number.  Only a scroll inside margins, which
+//! placement by changing one number. Only a scroll inside margins, which
 //! clips placements one by one, walks them.
 
 use std::sync::Arc;
@@ -26,7 +26,7 @@ pub(crate) struct Image {
     number: u32,
     width: u32,
     height: u32,
-    /// Where the decoded pixels land.  `None` until the transmission
+    /// Where the decoded pixels land. `None` until the transmission
     /// completes, and forever when it fails.
     data: Option<Arc<Slot>>,
     /// Dropping the job cancels a decode that has not started.
@@ -153,7 +153,7 @@ impl Store {
     }
 
     /// The image a transmission fills: the one with `id`, emptied, or a new
-    /// one.  An image with only a number gets the smallest free id.
+    /// one. An image with only a number gets the smallest free id.
     /// Returns its internal id and its client id.
     pub(crate) fn begin_image(&mut self, id: u32, number: u32, transient: bool) -> (u64, u32) {
         let atime = self.tick();
@@ -236,7 +236,7 @@ impl Store {
 
     /// Evict until the quota holds, keeping the image just transmitted:
     /// images with no data or no placements first, then transient ones, then
-    /// the least recently used.  kitty's `apply_storage_quota`.
+    /// the least recently used. kitty's `apply_storage_quota`.
     pub(crate) fn apply_quota(&mut self, keep: Option<u64>) {
         if self.used <= self.quota {
             return;

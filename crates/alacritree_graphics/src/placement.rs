@@ -122,7 +122,7 @@ impl Placement {
 
     /// Move a placement that lies wholly inside the scroll region `top..=bottom`
     /// by `amount` rows, clipping what leaves the region off its source.
-    /// `row` is its screen row.  Returns whether it should be removed.
+    /// `row` is its screen row. Returns whether it should be removed.
     ///
     /// kitty's `scroll_filter_margins_func`: a placement straddling a margin
     /// before the scroll stays where it is.

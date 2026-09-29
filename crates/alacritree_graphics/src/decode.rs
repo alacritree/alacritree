@@ -2,7 +2,7 @@
 //!
 //! A transmission is answered under the terminal lock before any of this
 //! runs, so an error found here reaches only the log: the image stays
-//! without pixels and draws nothing.  kitty decodes in its parser and can
+//! without pixels and draws nothing. kitty decodes in its parser and can
 //! still reply, which this crate cannot without holding the lock through
 //! the decode.
 
@@ -37,11 +37,7 @@ impl Slot {
 
 pub(crate) enum Source {
     Bytes(Vec<u8>),
-    File {
-        file: File,
-        offset: u64,
-        len: usize,
-    },
+    File { file: File, offset: u64, len: usize },
 }
 
 /// Everything a decode needs, fixed at parse time.
@@ -75,7 +71,7 @@ enum DecodeError {
 
 impl Decode {
     /// Decode on the job pool into `slot`, then bump `ready` and wake the
-    /// pane.  Dropping the returned job before it starts cancels it.
+    /// pane. Dropping the returned job before it starts cancels it.
     pub(crate) fn spawn(
         self,
         slot: Arc<Slot>,

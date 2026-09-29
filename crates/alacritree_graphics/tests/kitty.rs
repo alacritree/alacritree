@@ -1,5 +1,5 @@
-//! kitty's `kitty_tests/graphics.py`, ported.  Each test names the one it
-//! ports.  kitty asserts on normalized source rects and NDC destination
+//! kitty's `kitty_tests/graphics.py`, ported. Each test names the one it
+//! ports. kitty asserts on normalized source rects and NDC destination
 //! rects; these assert on the same rectangles in texels and cells.
 
 mod common;
@@ -22,7 +22,7 @@ impl Put {
     }
 
     /// kitty's `put_image`: an RGB image of `w`x`h` pixels, placed by
-    /// `a=T`.  `extra` carries the put keys.
+    /// `a=T`. `extra` carries the put keys.
     fn image(&mut self, w: u32, h: u32, extra: &str) -> (u32, Option<String>) {
         self.next_id += 1;
         let id = self.next_id;
@@ -197,7 +197,7 @@ fn load_png_simple() {
     let reply = pane.message("i=1,f=100", [b'x'; 25]).unwrap();
     assert_eq!(reply.split(':').next(), Some("EBADPNG"));
 
-    // kitty decodes in its parser and replies EBADPNG to a PNG whose body ends early.  Here the
+    // kitty decodes in its parser and replies EBADPNG to a PNG whose body ends early. Here the
     // header passes, so the reply is OK and the pool's decode fails: the image gets no pixels, and
     // a put finds no data as it does after kitty's EBADPNG.
     let full = png(3, 3, png::ColorType::Rgba, &byte_block(3 * 3 * 4));
@@ -521,7 +521,7 @@ fn delete() {
     assert_eq!(put.pane.image_count(), 1);
 }
 
-// test_graphics_quota_enforcement, without its animation frames.  kitty
+// test_graphics_quota_enforcement, without its animation frames. kitty
 // counts an RGB image at three bytes a pixel; the quota here counts the
 // decoded RGBA, four.
 #[test]

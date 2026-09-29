@@ -111,7 +111,7 @@ impl Load {
         Ok(())
     }
 
-    /// Add a direct chunk.  Returns whether it was the last one.
+    /// Add a direct chunk. Returns whether it was the last one.
     pub(crate) fn append(&mut self, payload: &[u8], more: bool) -> Result<bool, CommandError> {
         let used = self.buf.len() + payload.len();
         let limit = match self.format {
@@ -134,7 +134,7 @@ impl Load {
         Ok(self.decode(Source::Bytes(data), width, height))
     }
 
-    /// Validate an image file and hand it over for decoding.  `path` is the
+    /// Validate an image file and hand it over for decoding. `path` is the
     /// decoded payload.
     pub(crate) fn open_file(&mut self, path: &[u8]) -> Result<Decode, CommandError> {
         self.target = None;
@@ -164,8 +164,8 @@ impl Load {
     }
 
     /// Open `path`, check it is a regular file holding enough data, and read
-    /// its head.  A `temporary` file is deleted once it is open, as kitty
-    /// does, whether or not reading it succeeds.  The open handle keeps the
+    /// its head. A `temporary` file is deleted once it is open, as kitty
+    /// does, whether or not reading it succeeds. The open handle keeps the
     /// data readable, so nothing that drops the decode later has to remember
     /// the file.
     fn read_file(
@@ -211,8 +211,8 @@ impl Load {
         Ok((file, offset, len, head))
     }
 
-    /// kitty's size checks, and the PNG and zlib headers.  `head` starts the
-    /// data, which is `len` bytes long.  Returns the image's size.
+    /// kitty's size checks, and the PNG and zlib headers. `head` starts the
+    /// data, which is `len` bytes long. Returns the image's size.
     fn check(&self, head: &[u8], len: usize, from_file: bool) -> Result<(u32, u32), CommandError> {
         let insufficient = |got| {
             if from_file {
@@ -258,7 +258,7 @@ fn in_temp_dir(path: &Path) -> bool {
 }
 
 /// The path a client named, if it may be read at all: absolute, and once
-/// resolved outside `/proc`, `/sys` and `/dev` as kitty requires.  On
+/// resolved outside `/proc`, `/sys` and `/dev` as kitty requires. On
 /// Windows it must be a drive path, since opening a UNC path authenticates
 /// to the server it names.
 fn image_path(bytes: &[u8]) -> Option<PathBuf> {

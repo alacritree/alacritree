@@ -2395,7 +2395,7 @@ impl<T: EventListener> Term<T> {
         let wraps = column >= self.columns() as u64;
         let rows = u64::from(movement.rows) + u64::from(wraps);
 
-        // The row count is the client's.  Past the bottom margin every
+        // The row count is the client's. Past the bottom margin every
         // linefeed scrolls, so like Ghostty stop one screen past it.
         let line = self.grid.cursor.point.line;
         let to_margin = if self.scroll_region.contains(&line) {

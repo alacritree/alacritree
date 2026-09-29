@@ -47,7 +47,7 @@ fn a_placement_at_the_bottom_scrolls_the_screen_to_fit_the_cursor() {
 }
 
 /// Every interactive worker of the job pool, occupied until released, so a
-/// decode queued meanwhile waits.  Dropping it releases them, so a failed
+/// decode queued meanwhile waits. Dropping it releases them, so a failed
 /// assertion ends the test instead of hanging it.
 struct HeldPool {
     gate: Arc<(Mutex<bool>, Condvar)>,
@@ -62,8 +62,7 @@ impl HeldPool {
                 let gate = Arc::clone(&gate);
                 jobs::pool().spawn(Priority::Interactive, move |_| {
                     let (open, condvar) = &*gate;
-                    let _open =
-                        condvar.wait_while(open.lock().unwrap(), |open| !*open).unwrap();
+                    let _open = condvar.wait_while(open.lock().unwrap(), |open| !*open).unwrap();
                 })
             })
             .collect();
@@ -240,7 +239,7 @@ fn a_failed_file_transmission_says_only_that_the_file_could_not_be_read() {
 
 /// Claude Code probes with `a=q,t=f` and falls back to sending the bytes
 /// only on an error, so an `OK` for a file that was never read loses the
-/// image.  A WSL pane names a Linux path, which Windows refuses outright
+/// image. A WSL pane names a Linux path, which Windows refuses outright
 /// rather than guessing at the distro it lives in.
 #[test]
 fn a_file_query_is_refused_for_every_path_that_cannot_be_read() {
@@ -250,8 +249,7 @@ fn a_file_query_is_refused_for_every_path_that_cannot_be_read() {
     let from_wsl = "/tmp/tty-graphics-protocol-from-a-wsl-pane.png";
     let refused = "\x1b_Gi=33;EBADF:Failed to read image file\x1b\\";
 
-    for path in [missing.to_str().unwrap(), directory.to_str().unwrap(), from_wsl, "relative.png"]
-    {
+    for path in [missing.to_str().unwrap(), directory.to_str().unwrap(), from_wsl, "relative.png"] {
         let reply = pane.send("a=q,t=f,i=33,f=100", path);
         assert_eq!(reply.as_deref(), Some(refused), "{path}");
     }

@@ -1,7 +1,7 @@
 //! Ghostty's graphics tests for chunking, deletes, scroll-margin clipping,
 //! insert and delete line, and cursor movement, ported from
-//! `src/terminal/kitty/graphics_exec.zig` and `graphics_storage.zig`.  Each
-//! test names the one it ports.  Where Ghostty adds images and placements
+//! `src/terminal/kitty/graphics_exec.zig` and `graphics_storage.zig`. Each
+//! test names the one it ports. Where Ghostty adds images and placements
 //! to its storage directly, these send the commands that make them.
 
 mod common;

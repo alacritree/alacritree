@@ -45,7 +45,7 @@ const MAX_INTERMEDIATES: usize = 2;
 const MAX_OSC_PARAMS: usize = 16;
 const MAX_OSC_RAW: usize = 1024;
 /// Longest APC string passed to [`Perform::apc_dispatch`], kitty's limit for
-/// one escape code.  A longer one is dropped whole.
+/// one escape code. A longer one is dropped whole.
 #[cfg(feature = "std")]
 const MAX_APC_LEN: usize = 256 * 1024;
 
@@ -692,8 +692,8 @@ impl<const OSC_RAW_BUF_SIZE: usize> Parser<OSC_RAW_BUF_SIZE> {
 
     /// Collect APC string bytes up to the next ESC, CAN or SUB.
     ///
-    /// ESC ends the string and dispatches it, the way it ends an OSC.  CAN and
-    /// SUB cancel it.  Every other byte, C0 controls included, belongs to the
+    /// ESC ends the string and dispatches it, the way it ends an OSC. CAN and
+    /// SUB cancel it. Every other byte, C0 controls included, belongs to the
     /// string.
     #[cfg(feature = "std")]
     #[inline]

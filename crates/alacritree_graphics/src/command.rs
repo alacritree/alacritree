@@ -2,7 +2,7 @@
 //! generated `parse_graphics_code` parses it.
 //!
 //! A malformed command is dropped without a reply, as kitty drops it, so
-//! [`ParseError`] only reaches the log.  Its messages are kitty's.
+//! [`ParseError`] only reaches the log. Its messages are kitty's.
 
 /// What a command asks for, from its `a` key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -31,13 +31,13 @@ pub(crate) enum Medium {
     SharedMemory,
 }
 
-/// Every key kitty accepts.  Keys this crate has no use for are parsed so a
+/// Every key kitty accepts. Keys this crate has no use for are parsed so a
 /// command carrying them is not dropped as malformed.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct Command {
     pub action: Option<Action>,
     /// The `d` letter as sent, since its case decides whether images are
-    /// freed.  0 when absent.
+    /// freed. 0 when absent.
     pub delete: u8,
     pub medium: Option<Medium>,
     pub compressed: bool,

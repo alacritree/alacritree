@@ -1,7 +1,7 @@
 //! The kitty graphics protocol, from an APC payload to the list of images a
 //! frame draws.
 //!
-//! [`frame`] is the contract with the renderer.  Nothing in this crate knows
+//! [`frame`] is the contract with the renderer. Nothing in this crate knows
 //! about GL or about `alacritty_terminal`, which calls in with plain values.
 //! kitty's implementation is the reference, except that pixels are decoded
 //! on the job pool rather than under the terminal lock.
@@ -65,7 +65,7 @@ pub struct ApcOutcome {
 }
 
 /// kitty's cursor movement after a placement: right by `columns`, then down
-/// by `rows`.  The terminal wraps a column past the edge onto the next line
+/// by `rows`. The terminal wraps a column past the edge onto the next line
 /// and scrolls at the bottom margin.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CursorMove {
@@ -197,8 +197,8 @@ impl Graphics {
     }
 
     /// Rebuild `frame` when the layout, the viewport or the cell size changed
-    /// since the last call, and say whether it did.  A steady screen costs one
-    /// comparison.  Pass the same frame every time.
+    /// since the last call, and say whether it did. A steady screen costs one
+    /// comparison. Pass the same frame every time.
     pub fn update_frame(&mut self, frame: &mut ImageFrame, viewport: Viewport) -> bool {
         if self.built == Some((self.layout_generation(), viewport)) {
             return false;
@@ -266,7 +266,7 @@ impl Graphics {
     }
 
     /// Scroll the images of the active screen with the grid: `delta` rows,
-    /// negative for up.  Insert and delete line must not call this, since
+    /// negative for up. Insert and delete line must not call this, since
     /// they do not move images.
     #[inline]
     pub fn scroll(&mut self, region: ScrollRegion, delta: i32) {
@@ -311,9 +311,9 @@ impl Graphics {
         self.epoch += 1;
     }
 
-    /// The grid was resized.  When the column count held, each screen's
+    /// The grid was resized. When the column count held, each screen's
     /// content moved by `main_shift` and `alt_shift` rows, which its images
-    /// follow.  A column change reflows text and leaves images where they
+    /// follow. A column change reflows text and leaves images where they
     /// were, as kitty's `grman_resize` does.
     pub fn resize(&mut self, columns_changed: bool, main_shift: i32, alt_shift: i32) {
         if !columns_changed {
@@ -370,7 +370,7 @@ impl Graphics {
         ApcOutcome { reply: reply(to, &finished), cursor }
     }
 
-    /// Start a transmission from its first chunk.  Returns what it filled
+    /// Start a transmission from its first chunk. Returns what it filled
     /// once complete, `None` while chunks are still to come.
     fn begin_load(&mut self, mut command: Command) -> Result<Option<Target>, CommandError> {
         self.load.abort();

@@ -34,7 +34,7 @@ use crate::grid_images::{self, IMAGE_FRAG, IMAGE_VERT, ImageTextures, PASSES, Pa
 use crate::grid_instances::{GlyphInstance, GlyphSlot, GlyphTable, GridInstances};
 
 /// Attribute locations, bound before linking so every cell program reads the
-/// same record the same way.  `#version 140` has no `layout(location = ...)`,
+/// same record the same way. `#version 140` has no `layout(location = ...)`,
 /// so the binding has to come from this side.
 const ATTRIBUTES: [(u32, &str); 4] = [(0, "a_slot"), (1, "a_fg"), (2, "a_bg"), (3, "a_deco")];
 
@@ -398,7 +398,7 @@ impl GlResources {
                             timers.end(gl);
                         }
                     },
-                    // Holding a strip only says the atlas exists.  Every cell
+                    // Holding a strip only says the atlas exists. Every cell
                     // gets an instance either way, so without this test an
                     // undecorated screen pays a full-grid instanced draw to
                     // collapse every quad in the vertex shader.

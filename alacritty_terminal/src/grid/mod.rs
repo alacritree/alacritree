@@ -306,7 +306,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         }
     }
 
-    /// Scroll the viewport's content into history and clear it.  Returns how
+    /// Scroll the viewport's content into history and clear it. Returns how
     /// many lines were scrolled.
     pub fn clear_viewport<D>(&mut self) -> usize
     where

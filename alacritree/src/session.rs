@@ -517,7 +517,7 @@ fn color_query_reply(
     Some(format(rgb).into_bytes())
 }
 
-/// Bytes answering a CSI 14 t or 16 t size query.  Fed the same geometry the
+/// Bytes answering a CSI 14 t or 16 t size query. Fed the same geometry the
 /// PTY was last resized with, so the pixel answer can't drift from the cell
 /// grid the child already knows about.
 fn text_area_size_reply(
@@ -1338,7 +1338,7 @@ impl<R: Repaint> Session<R> {
                         self.write(bytes);
                     }
                 },
-                // CSI 14 t and 16 t.  Image protocols and TUIs that size themselves in
+                // CSI 14 t and 16 t. Image protocols and TUIs that size themselves in
                 // pixels block on this the same way the color queries do.
                 TermEvent::TextAreaSizeRequest(format) => {
                     let reply = text_area_size_reply(format.as_ref(), self.size, self.cell_size);

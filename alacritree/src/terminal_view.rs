@@ -1217,7 +1217,7 @@ impl GridSnapshot {
 /// Bring the grid's image frame up to date with the terminal's placements.
 ///
 /// Runs under the capture's lock and costs one comparison while nothing
-/// moved.  The frame belongs to whichever session filled it last, so a
+/// moved. The frame belongs to whichever session filled it last, so a
 /// session coming on screen rebuilds it whatever its own record says.
 fn capture_images(
     term: &mut Term<EventProxy<impl Repaint>>,

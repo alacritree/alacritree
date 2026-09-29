@@ -704,7 +704,7 @@ pub trait Handler {
     fn cell_size_pixels(&mut self) {}
 
     /// Handle an application program command, such as a kitty graphics
-    /// command.  `payload` is everything between `ESC _` and the string
+    /// command. `payload` is everything between `ESC _` and the string
     /// terminator.
     fn apc(&mut self, _payload: &[u8]) {}
 

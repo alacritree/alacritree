@@ -2,7 +2,7 @@
 //!
 //! The graphics layer fills an [`ImageFrame`] from its placements and the
 //! renderer draws it as it stands, so this module is the whole contract
-//! between them.  Everything here is plain data: no GL and no terminal lock.
+//! between them. Everything here is plain data: no GL and no terminal lock.
 //!
 //! A frame is rebuilt only when something it depends on changed, and a
 //! rebuild reuses the vectors it already holds, so a steady screen costs
@@ -90,8 +90,8 @@ impl Pixels {
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ImageQuad {
     /// `[left, top, right, bottom]`, in cells from the top-left corner of
-    /// the viewport's first cell.  Fractions carry pixel offsets and native
-    /// image sizes, so the renderer only scales by its cell size.  A
+    /// the viewport's first cell. Fractions carry pixel offsets and native
+    /// image sizes, so the renderer only scales by its cell size. A
     /// placement partly above the viewport has a negative top.
     pub dest: [f32; 4],
     /// `[left, top, right, bottom]`, in texels of the image.
@@ -127,7 +127,7 @@ impl ImageFrame {
         self.generation = self.generation.wrapping_add(1);
     }
 
-    /// Append one quad.  Quads must arrive in draw order; one that continues
+    /// Append one quad. Quads must arrive in draw order; one that continues
     /// the last run's band and pixels extends it.
     pub fn push(&mut self, band: Band, pixels: &Arc<Pixels>, quad: ImageQuad) {
         debug_assert!(self.runs.last().is_none_or(|last| last.band <= band), "bands out of order");

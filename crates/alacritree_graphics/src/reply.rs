@@ -55,7 +55,7 @@ pub(crate) struct ReplyTo {
     pub quiet: u32,
 }
 
-/// The reply to send, if any.  `Ok(false)` is a success that has nothing to
+/// The reply to send, if any. `Ok(false)` is a success that has nothing to
 /// report yet, such as a chunk that is not the last.
 ///
 /// A command with neither an id nor a number never gets a reply, `q=1`
