@@ -6,8 +6,6 @@
 
 use std::sync::OnceLock;
 
-use alacritty_terminal::vte;
-
 use crate::config::VtConfig;
 use crate::repaint::Repaint;
 
@@ -254,14 +252,28 @@ fn cursor_icon(name: &str) -> Option<egui::CursorIcon> {
     })
 }
 
-/// How many bytes one sequence may occupy before the parser is reset.
-pub(crate) const MAX_PENDING: usize = 1 << 20;
+/// How long a sequence the tap classifies may grow before it is dropped.  A
+/// directory or a notification never comes near it.
+pub(crate) const MAX_OSC_LEN: usize = 64 * 1024;
+
+/// The OSC numbers `classify` reads.  Any other sequence is skipped rather
+/// than buffered, however long its payload.
+fn classified(number: &[u8]) -> bool {
+    matches!(number, b"7" | b"9" | b"22" | b"777")
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ScanState {
     Ground,
+    /// After an ESC, waiting for the byte that says what it starts.
     Escape,
-    Osc,
+    /// Inside an OSC, before the `;` that ends its number.
+    OscNumber,
+    /// Inside an OSC that `classify` reads.
+    OscPayload,
+    /// Inside an OSC the tap has no use for, or one longer than
+    /// `MAX_OSC_LEN`.
+    OscSkip,
 }
 
 enum Destination<R> {
@@ -273,11 +285,15 @@ enum Destination<R> {
     Collected(Vec<OscEvent>),
 }
 
+/// Extracts OSC sequences from the byte stream and ignores everything else.
+/// A full VT parser would spend nearly all its time on the CSI sequences a
+/// TUI repaints with, which the tap has no use for.
 pub(crate) struct Sink<R> {
     policy: TapPolicy,
     destination: Destination<R>,
-    pending: usize,
-    scan_state: ScanState,
+    state: ScanState,
+    osc: Vec<u8>,
+    introducer: memchr::memmem::Finder<'static>,
     last_cwd: Option<OscEvent>,
     last_progress: Option<OscEvent>,
     last_pointer_shape: Option<OscEvent>,
@@ -302,8 +318,9 @@ impl<R: Repaint> Sink<R> {
         Self {
             policy,
             destination,
-            pending: 0,
-            scan_state: ScanState::Ground,
+            state: ScanState::Ground,
+            osc: Vec::new(),
+            introducer: memchr::memmem::Finder::new(b"\x1b]"),
             last_cwd: None,
             last_progress: None,
             last_pointer_shape: None,
@@ -314,44 +331,107 @@ impl<R: Repaint> Sink<R> {
         Self::new(policy, Destination::Channel { tx, repaint })
     }
 
-    fn reset_pending(&mut self) {
-        self.pending = 0;
-        self.scan_state = ScanState::Ground;
+    /// Feeds one chunk, starting over when the stream had a hole in it.
+    pub(crate) fn feed(&mut self, chunk: &crate::pty_tee::Chunk) {
+        if chunk.gap_before {
+            self.state = ScanState::Ground;
+        }
+        let mut rest = chunk.bytes.as_slice();
+        while !rest.is_empty() {
+            rest = match self.state {
+                ScanState::Ground => self.ground(rest),
+                ScanState::Escape => self.escape(rest),
+                ScanState::OscNumber | ScanState::OscPayload | ScanState::OscSkip => self.osc(rest),
+            };
+        }
     }
 
-    fn scan(&mut self, bytes: &[u8]) {
-        let mut rest = bytes;
-        while let Some((&byte, tail)) = rest.split_first() {
-            rest = tail;
-            match self.scan_state {
-                ScanState::Ground => {
-                    // Nearly all output is ground state, and only an escape
-                    // leaves it.
-                    if byte != 0x1b {
-                        let Some(at) = memchr::memchr(0x1b, rest) else { return };
-                        rest = &rest[at + 1..];
+    /// Searches for `ESC ]` as a pair, so every other escape sequence is
+    /// passed over without stopping.  vte would also open an OSC for an ESC
+    /// followed by C0 controls and then `]`, which the pair search misses.
+    fn ground<'a>(&mut self, bytes: &'a [u8]) -> &'a [u8] {
+        if let Some(at) = self.introducer.find(bytes) {
+            self.start_osc();
+            return &bytes[at + 2..];
+        }
+        if bytes.last() == Some(&0x1b) {
+            self.state = ScanState::Escape;
+        }
+        &[]
+    }
+
+    fn escape<'a>(&mut self, bytes: &'a [u8]) -> &'a [u8] {
+        match bytes[0] {
+            b']' => self.start_osc(),
+            // vte executes these without leaving the escape.
+            0x00..=0x17 | 0x19 | 0x1b..=0x1f | 0x7f..=0xff => {},
+            _ => self.state = ScanState::Ground,
+        }
+        &bytes[1..]
+    }
+
+    fn start_osc(&mut self) {
+        self.osc.clear();
+        self.state = ScanState::OscNumber;
+    }
+
+    /// Takes payload up to the next C0 control, the only kind of byte that
+    /// ends an OSC.
+    fn osc<'a>(&mut self, bytes: &'a [u8]) -> &'a [u8] {
+        let end = bytes.iter().position(|&byte| byte < 0x20).unwrap_or(bytes.len());
+        self.collect(&bytes[..end]);
+        let Some(&control) = bytes.get(end) else { return &[] };
+        match control {
+            0x07 | 0x18 | 0x1a => {
+                self.finish_osc();
+                self.state = ScanState::Ground;
+            },
+            0x1b => {
+                self.finish_osc();
+                self.state = ScanState::Escape;
+            },
+            // vte ignores the other C0 controls inside an OSC.
+            _ => {},
+        }
+        &bytes[end + 1..]
+    }
+
+    fn collect(&mut self, payload: &[u8]) {
+        let payload = match self.state {
+            ScanState::OscNumber => match memchr::memchr(b';', payload) {
+                None => payload,
+                Some(at) => {
+                    self.osc.extend_from_slice(&payload[..at]);
+                    if !classified(&self.osc) {
+                        self.state = ScanState::OscSkip;
+                        return;
                     }
-                    self.scan_state = ScanState::Escape;
+                    self.state = ScanState::OscPayload;
+                    &payload[at..]
                 },
-                ScanState::Escape => match byte {
-                    0x5d => {
-                        self.pending = 0;
-                        self.scan_state = ScanState::Osc;
-                    },
-                    0x1b => {},
-                    0x18 | 0x1a => self.scan_state = ScanState::Ground,
-                    0x00..=0x17 | 0x19 | 0x1c..=0x1f | 0x7f..=0xff => {},
-                    _ => self.scan_state = ScanState::Ground,
-                },
-                ScanState::Osc => match byte {
-                    0x07 | 0x18 | 0x1a => self.reset_pending(),
-                    0x1b => {
-                        self.pending = 0;
-                        self.scan_state = ScanState::Escape;
-                    },
-                    _ => self.pending = self.pending.saturating_add(1),
-                },
-            }
+            },
+            ScanState::OscPayload => payload,
+            _ => return,
+        };
+        if self.osc.len() + payload.len() > MAX_OSC_LEN {
+            self.state = ScanState::OscSkip;
+            return;
+        }
+        self.osc.extend_from_slice(payload);
+    }
+
+    fn finish_osc(&mut self) {
+        let wanted = match self.state {
+            ScanState::OscPayload => true,
+            ScanState::OscNumber => classified(&self.osc),
+            _ => false,
+        };
+        if !wanted {
+            return;
+        }
+        let params: Vec<&[u8]> = self.osc.split(|&byte| byte == b';').collect();
+        if let Some(event) = classify(&params, &self.policy) {
+            self.emit(event);
         }
     }
 
@@ -387,33 +467,6 @@ impl<R: Repaint> Sink<R> {
     }
 }
 
-impl<R: Repaint> vte::Perform for Sink<R> {
-    fn osc_dispatch(&mut self, params: &[&[u8]], _bell_terminated: bool) {
-        self.pending = 0;
-        if let Some(event) = classify(params, &self.policy) {
-            self.emit(event);
-        }
-    }
-}
-
-/// Feeds one chunk, resetting first when the stream had a hole in it.
-pub(crate) fn feed<R: Repaint>(
-    parser: &mut vte::Parser,
-    sink: &mut Sink<R>,
-    chunk: &crate::pty_tee::Chunk,
-) {
-    if chunk.gap_before {
-        *parser = vte::Parser::new();
-        sink.reset_pending();
-    }
-    parser.advance(sink, &chunk.bytes);
-    sink.scan(&chunk.bytes);
-    if sink.pending > MAX_PENDING {
-        *parser = vte::Parser::new();
-        sink.reset_pending();
-    }
-}
-
 /// Starts the parser thread for a session when any OSC feature is enabled.
 pub(crate) fn spawn<R: Repaint>(
     policy: TapPolicy,
@@ -428,10 +481,9 @@ pub(crate) fn spawn<R: Repaint>(
     let (event_tx, event_rx) = std::sync::mpsc::channel();
 
     let started = std::thread::Builder::new().name("alacritree-osc-tap".into()).spawn(move || {
-        let mut parser = vte::Parser::new();
         let mut sink = Sink::channel(policy, event_tx, repaint);
         while let Ok(chunk) = chunk_rx.recv() {
-            feed(&mut parser, &mut sink, &chunk);
+            sink.feed(&chunk);
             let _ = pool_tx.send(chunk.bytes);
         }
     });
@@ -607,69 +659,71 @@ mod tests {
 
     #[test]
     fn a_sequence_split_across_chunks_still_dispatches() {
-        let mut parser = vte::Parser::new();
         let mut sink = Sink::collecting(policy(ShellPlatform::Unix));
 
-        feed(&mut parser, &mut sink, &chunk(b"\x1b]7;file:///home/", false));
+        sink.feed(&chunk(b"\x1b]7;file:///home/", false));
         assert!(sink.take().is_empty(), "nothing is complete yet");
 
-        feed(&mut parser, &mut sink, &chunk(b"dev/src\x1b\\", false));
+        sink.feed(&chunk(b"dev/src\x1b\\", false));
         assert_eq!(sink.take(), vec![OscEvent::Cwd(Some("/home/dev/src".into()))]);
     }
 
     #[test]
-    fn ordinary_output_before_a_split_sequence_does_not_reset_the_parser() {
-        let mut parser = vte::Parser::new();
+    fn an_escape_split_from_its_bracket_still_opens_a_sequence() {
         let mut sink = Sink::collecting(policy(ShellPlatform::Unix));
-        let mut prefix = vec![b'x'; MAX_PENDING + 1];
+
+        sink.feed(&chunk(b"plain output\x1b", false));
+        sink.feed(&chunk(b"]7;file:///tmp\x07", false));
+        assert_eq!(sink.take(), vec![OscEvent::Cwd(Some("/tmp".into()))]);
+    }
+
+    #[test]
+    fn ordinary_output_does_not_count_toward_the_sequence_bound() {
+        let mut sink = Sink::collecting(policy(ShellPlatform::Unix));
+        let mut prefix = b"\x1b[1;31m".repeat(MAX_OSC_LEN);
         prefix.extend_from_slice(b"\x1b]7;file:///home/");
 
-        feed(&mut parser, &mut sink, &chunk(&prefix, false));
-        assert!(sink.take().is_empty(), "nothing is complete yet");
-
-        feed(&mut parser, &mut sink, &chunk(b"dev/src\x1b\\", false));
+        sink.feed(&chunk(&prefix, false));
+        sink.feed(&chunk(b"dev/src\x1b\\", false));
         assert_eq!(sink.take(), vec![OscEvent::Cwd(Some("/home/dev/src".into()))]);
     }
 
     #[test]
-    fn osc_terminations_reset_the_pending_byte_bound() {
+    fn each_terminator_ends_a_sequence() {
         for terminator in [0x07, 0x18, 0x1a, 0x1b] {
-            let mut parser = vte::Parser::new();
             let mut sink = Sink::collecting(policy(ShellPlatform::Unix));
-            let mut prefix = b"\x1b]0;ignored".to_vec();
-            prefix.push(terminator);
-            prefix.extend(vec![b'x'; MAX_PENDING + 1]);
-            prefix.extend_from_slice(b"\x1b]7;file:///home/");
+            let mut stream = b"\x1b]7;file:///a".to_vec();
+            stream.push(terminator);
+            stream.extend_from_slice(b"\x1b]7;file:///b\x07");
 
-            feed(&mut parser, &mut sink, &chunk(&prefix, false));
-            assert!(sink.take().is_empty(), "nothing is complete yet");
-
-            feed(&mut parser, &mut sink, &chunk(b"dev/src\x1b\\", false));
-            assert_eq!(sink.take(), vec![OscEvent::Cwd(Some("/home/dev/src".into()))]);
+            sink.feed(&chunk(&stream, false));
+            assert_eq!(
+                sink.take(),
+                vec![OscEvent::Cwd(Some("/a".into())), OscEvent::Cwd(Some("/b".into()))],
+                "terminator {terminator:#04x}",
+            );
         }
     }
 
     #[test]
     fn a_gap_discards_the_sequence_it_interrupted() {
-        let mut parser = vte::Parser::new();
         let mut sink = Sink::collecting(policy(ShellPlatform::Unix));
 
-        feed(&mut parser, &mut sink, &chunk(b"\x1b]7;file:///home/", false));
-        feed(&mut parser, &mut sink, &chunk(b"dev/src\x1b\\", true));
+        sink.feed(&chunk(b"\x1b]7;file:///home/", false));
+        sink.feed(&chunk(b"dev/src\x1b\\", true));
         assert!(sink.take().is_empty(), "a hole in the stream must not be framed across");
 
-        feed(&mut parser, &mut sink, &chunk(b"\x1b]7;file:///tmp\x1b\\", false));
+        sink.feed(&chunk(b"\x1b]7;file:///tmp\x1b\\", false));
         assert_eq!(sink.take(), vec![OscEvent::Cwd(Some("/tmp".into()))]);
     }
 
     #[test]
     fn a_repeated_state_is_emitted_once_and_a_repeated_notification_every_time() {
-        let mut parser = vte::Parser::new();
         let mut sink = Sink::collecting(policy(ShellPlatform::Unix));
         let stream = b"\x1b]9;4;1;50\x07\x1b]9;4;1;50\x07\x1b]9;done\x07\
                        \x1b]22;pointer\x07\x1b]9;4;1;50\x07\x1b]9;done\x07\x1b]9;4;1;60\x07";
 
-        feed(&mut parser, &mut sink, &chunk(stream, false));
+        sink.feed(&chunk(stream, false));
         assert_eq!(sink.take(), vec![
             OscEvent::Progress(Progress::Set(50)),
             OscEvent::Notify("done".into()),
@@ -680,27 +734,27 @@ mod tests {
     }
 
     #[test]
-    fn the_scan_follows_an_escape_split_from_its_sequence() {
+    fn a_sequence_the_tap_does_not_read_is_never_buffered() {
         let mut sink = Sink::collecting(policy(ShellPlatform::Unix));
 
-        sink.scan(b"plain output\x1b");
-        sink.scan(b"]7;file");
-        assert_eq!((sink.scan_state, sink.pending), (ScanState::Osc, 6));
+        let mut clipboard = b"\x1b]52;c;".to_vec();
+        clipboard.extend(vec![b'A'; 4096]);
+        sink.feed(&chunk(&clipboard, false));
+        assert_eq!(sink.osc, b"52");
 
-        sink.scan(b"\x07more output");
-        assert_eq!((sink.scan_state, sink.pending), (ScanState::Ground, 0));
+        sink.feed(&chunk(b"\x07\x1b]0;7;file:///x\x07\x1b[1m]7;file:///y\x07", false));
+        assert!(sink.take().is_empty());
     }
 
     #[test]
-    fn an_unterminated_sequence_does_not_grow_without_bound() {
-        let mut parser = vte::Parser::new();
+    fn an_oversized_sequence_is_dropped_without_growing_past_the_bound() {
         let mut sink = Sink::collecting(policy(ShellPlatform::Unix));
 
-        feed(&mut parser, &mut sink, &chunk(b"\x1b]7;", false));
-        let flood = vec![b'x'; MAX_PENDING + 1];
-        feed(&mut parser, &mut sink, &chunk(&flood, false));
+        sink.feed(&chunk(b"\x1b]7;file:///", false));
+        sink.feed(&chunk(&vec![b'x'; MAX_OSC_LEN], false));
+        assert!(sink.osc.len() <= MAX_OSC_LEN);
 
-        feed(&mut parser, &mut sink, &chunk(b"\x1b]7;file:///tmp\x1b\\", false));
+        sink.feed(&chunk(b"\x07\x1b]7;file:///tmp\x1b\\", false));
         assert_eq!(sink.take(), vec![OscEvent::Cwd(Some("/tmp".into()))]);
     }
 }
