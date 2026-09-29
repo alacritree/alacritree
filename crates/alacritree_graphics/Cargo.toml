@@ -8,3 +8,10 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+alacritree_common.workspace = true
+base64 = "0.22"
+flate2 = "1"
+log = "0.4"
+png = "0.17"
+thiserror.workspace = true
+
