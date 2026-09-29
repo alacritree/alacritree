@@ -17,21 +17,29 @@
 //! descender crossing an underline has to come out the same way here.
 //! Emoji, box-drawing glyphs and over-wide icons are rare, and each needs its
 //! own texture or its neighbours, so they stay on egui's painter.
+//!
+//! Kitty graphics placements draw in three bands around those passes, from
+//! their own instance buffer and one texture per image (`grid_images`).
 
 use std::sync::{Arc, Mutex};
 
+use alacritree_graphics::frame::{Band, ImageFrame, ImageQuad};
 use eframe::egui_glow::ShaderVersion;
 use eframe::glow::{self, HasContext};
 use egui::Rect;
 
 use crate::decoration_sprites::DecorationAtlas;
 use crate::gpu_timing::{self, GpuTimers};
+use crate::grid_images::{self, IMAGE_FRAG, IMAGE_VERT, ImageTextures, PASSES, Pass};
 use crate::grid_instances::{GlyphInstance, GlyphSlot, GlyphTable, GridInstances};
 
-/// Attribute locations, bound before linking so every program reads the same
-/// record the same way.  `#version 140` has no `layout(location = ...)`, so
-/// the binding has to come from this side.
+/// Attribute locations, bound before linking so every cell program reads the
+/// same record the same way.  `#version 140` has no `layout(location = ...)`,
+/// so the binding has to come from this side.
 const ATTRIBUTES: [(u32, &str); 4] = [(0, "a_slot"), (1, "a_fg"), (2, "a_bg"), (3, "a_deco")];
+
+/// The image program's attributes, read from an [`ImageQuad`].
+const IMAGE_ATTRIBUTES: [(u32, &str); 2] = [(0, "a_dest"), (1, "a_src")];
 
 /// Slots packed across a texture row, two RGBA32F texels each.  A row per
 /// slot would cap the table at the 2048 rows a driver is obliged to offer,
@@ -73,6 +81,10 @@ pub(crate) struct GridState {
     /// Rows rewritten since the last upload, as a half-open range.  Empty
     /// means the GPU copy is already current and only uniforms need sending.
     pub dirty_rows: std::ops::Range<usize>,
+    /// The kitty graphics placements on screen. Rebuild it in place with
+    /// [`ImageFrame::clear`] rather than replacing it, so its generation never
+    /// repeats one the GPU copy was made from.
+    pub images: ImageFrame,
     uploaded_generation: u32,
     uploaded_dims: (usize, usize),
 }
@@ -216,6 +228,14 @@ struct GlResources {
     /// `None` unless `[debug] gpu_timing` asked for it and the context can
     /// answer.
     timers: Option<GpuTimers>,
+    image: Program,
+    /// Holds the image attributes, enabled and instanced once at build time,
+    /// so the cell records' bindings in `vao` are never disturbed.
+    image_vao: glow::VertexArray,
+    image_quads: glow::Buffer,
+    image_quad_capacity: usize,
+    image_textures: ImageTextures<glow::Texture>,
+    max_texture_side: u32,
 }
 
 struct Program {
@@ -255,12 +275,13 @@ impl GlResources {
                 gl.get_parameter_string(glow::VERSION),
             );
             let mut programs = Vec::new();
-            for (vertex, fragment) in [
-                (GLYPH_VERT, GLYPH_FRAG),
-                (BACKGROUND_VERT, BACKGROUND_FRAG),
-                (DECORATION_VERT, DECORATION_FRAG),
+            for (attributes, vertex, fragment) in [
+                (&ATTRIBUTES[..], GLYPH_VERT, GLYPH_FRAG),
+                (&ATTRIBUTES[..], BACKGROUND_VERT, BACKGROUND_FRAG),
+                (&ATTRIBUTES[..], DECORATION_VERT, DECORATION_FRAG),
+                (&IMAGE_ATTRIBUTES[..], IMAGE_VERT, IMAGE_FRAG),
             ] {
-                match link(gl, header, vertex, fragment) {
+                match link(gl, header, attributes, vertex, fragment) {
                     Ok(program) => programs.push(program),
                     Err(err) => {
                         for spent in programs {
@@ -270,7 +291,7 @@ impl GlResources {
                     },
                 }
             }
-            let [glyph, background, decoration]: [Program; 3] =
+            let [glyph, background, decoration, image]: [Program; 4] =
                 programs.try_into().unwrap_or_else(|_| unreachable!("one program per pair"));
             // `glGen*` returns zero only on a context that is already dead, and
             // the caller latches the failure, so the objects a partial run
@@ -287,6 +308,15 @@ impl GlResources {
             ] {
                 gl.tex_parameter_i32(glow::TEXTURE_2D, name, value as i32);
             }
+            let image_vao = gl.create_vertex_array().map_err(BuildError::Create)?;
+            let image_quads = gl.create_buffer().map_err(BuildError::Create)?;
+            gl.bind_vertex_array(Some(image_vao));
+            for (index, _) in IMAGE_ATTRIBUTES {
+                gl.enable_vertex_attrib_array(index);
+                gl.vertex_attrib_divisor(index, 1);
+            }
+            gl.bind_vertex_array(None);
+            let max_texture_side = gl.get_parameter_i32(glow::MAX_TEXTURE_SIZE).max(0) as u32;
             let timers = time_gpu.then(|| GpuTimers::new(gl)).flatten();
             Ok(Self {
                 glyph,
@@ -298,6 +328,12 @@ impl GlResources {
                 slot_texture,
                 slot_scratch: Vec::new(),
                 timers,
+                image,
+                image_vao,
+                image_quads,
+                image_quad_capacity: 0,
+                image_textures: ImageTextures::default(),
+                max_texture_side,
             })
         }
     }
@@ -333,47 +369,58 @@ impl GlResources {
                 timers.begin(gl, gpu_timing::UPLOAD);
             }
             self.upload(gl, state);
+            self.upload_images(gl, &state.images);
             if let Some(timers) = &timers {
                 timers.end(gl);
             }
             gl.bind_vertex_array(Some(self.vao));
             self.bind_records(gl);
 
-            if let Some(timers) = &mut timers {
-                timers.begin(gl, gpu_timing::BACKGROUNDS);
-            }
-            self.draw_backgrounds(gl, state, cols * rows, state.frame.default_bg);
-            if let Some(timers) = &timers {
-                timers.end(gl);
-            }
-            if let Some(atlas) = atlas {
-                if let Some(timers) = &mut timers {
-                    timers.begin(gl, gpu_timing::GLYPHS);
+            for pass in PASSES {
+                match pass {
+                    Pass::Images(band) => self.draw_images(gl, state, band),
+                    Pass::Backgrounds => {
+                        if let Some(timers) = &mut timers {
+                            timers.begin(gl, gpu_timing::BACKGROUNDS);
+                        }
+                        self.draw_backgrounds(gl, state, cols * rows, state.frame.default_bg);
+                        if let Some(timers) = &timers {
+                            timers.end(gl);
+                        }
+                    },
+                    Pass::Glyphs => {
+                        let Some(atlas) = atlas else { continue };
+                        if let Some(timers) = &mut timers {
+                            timers.begin(gl, gpu_timing::GLYPHS);
+                        }
+                        self.draw_glyphs(gl, state, atlas, atlas_size, cols * rows, &self.glyph);
+                        if let Some(timers) = &timers {
+                            timers.end(gl);
+                        }
+                    },
+                    // Holding a strip only says the atlas exists.  Every cell
+                    // gets an instance either way, so without this test an
+                    // undecorated screen pays a full-grid instanced draw to
+                    // collapse every quad in the vertex shader.
+                    Pass::Decorations => {
+                        match decorations.filter(|_| state.instances.any_decorated()) {
+                            Some(strip) => {
+                                if let Some(timers) = &mut timers {
+                                    timers.begin(gl, gpu_timing::DECORATIONS);
+                                }
+                                self.draw_decorations(gl, state, strip, cols * rows);
+                                if let Some(timers) = &timers {
+                                    timers.end(gl);
+                                }
+                            },
+                            None => {
+                                if let Some(timers) = &mut timers {
+                                    timers.skipped_decorations();
+                                }
+                            },
+                        }
+                    },
                 }
-                self.draw_glyphs(gl, state, atlas, atlas_size, cols * rows, &self.glyph);
-                if let Some(timers) = &timers {
-                    timers.end(gl);
-                }
-            }
-            // Holding a strip only says the atlas exists.  Every cell gets an
-            // instance either way, so without this test an undecorated screen
-            // pays a full-grid instanced draw to collapse every quad in the
-            // vertex shader.
-            match decorations.filter(|_| state.instances.any_decorated()) {
-                Some(strip) => {
-                    if let Some(timers) = &mut timers {
-                        timers.begin(gl, gpu_timing::DECORATIONS);
-                    }
-                    self.draw_decorations(gl, state, strip, cols * rows);
-                    if let Some(timers) = &timers {
-                        timers.end(gl);
-                    }
-                },
-                None => {
-                    if let Some(timers) = &mut timers {
-                        timers.skipped_decorations();
-                    }
-                },
             }
 
             for (index, _) in ATTRIBUTES {
@@ -436,6 +483,66 @@ impl GlResources {
             }
 
             state.dirty_rows = 0..0;
+        }
+    }
+
+    /// Give a new image frame its textures and send its quads. A frame the
+    /// GPU already holds costs one compare.
+    unsafe fn upload_images(&mut self, gl: &glow::Context, frame: &ImageFrame) {
+        let max_side = self.max_texture_side;
+        let fresh = self.image_textures.sync(
+            frame,
+            |pixels| unsafe { grid_images::upload_texture(gl, pixels, max_side) },
+            |texture| unsafe { gl.delete_texture(texture) },
+        );
+        if !fresh || frame.quads().is_empty() {
+            return;
+        }
+        unsafe {
+            gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.image_quads));
+            let bytes = bytemuck_cast(frame.quads());
+            if self.image_quad_capacity < bytes.len() {
+                gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes, glow::DYNAMIC_DRAW);
+                self.image_quad_capacity = bytes.len();
+            } else {
+                gl.buffer_sub_data_u8_slice(glow::ARRAY_BUFFER, 0, bytes);
+            }
+        }
+    }
+
+    /// One band of image placements, one instanced draw per run.
+    ///
+    /// GL 3.3 and GLES 3.0 have no base-instance draw, so each run points the
+    /// attributes at its own first quad instead.
+    unsafe fn draw_images(&self, gl: &glow::Context, state: &GridState, band: Band) {
+        let frame = &state.images;
+        let runs = frame.band(band);
+        if runs.is_empty() {
+            return;
+        }
+        let first = frame.runs().partition_point(|run| run.band < band);
+        let stride = size_of::<ImageQuad>() as i32;
+        let src = std::mem::offset_of!(ImageQuad, src) as i32;
+        unsafe {
+            gl.bind_vertex_array(Some(self.image_vao));
+            gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.image_quads));
+            gl.use_program(Some(self.image.program));
+            gl.active_texture(glow::TEXTURE0);
+            set_i32(gl, &self.image, "u_image", 0);
+            set_vec2(gl, &self.image, "u_origin", state.frame.origin);
+            set_vec2(gl, &self.image, "u_cell", state.frame.cell);
+            set_vec2(gl, &self.image, "u_viewport", viewport_points(state));
+            for (index, run) in runs.iter().enumerate() {
+                let Some(texture) = self.image_textures.run_texture(first + index) else {
+                    continue;
+                };
+                gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+                let at = run.quads.start as i32 * stride;
+                gl.vertex_attrib_pointer_f32(0, 4, glow::FLOAT, false, stride, at);
+                gl.vertex_attrib_pointer_f32(1, 4, glow::FLOAT, false, stride, at + src);
+                gl.draw_arrays_instanced(glow::TRIANGLE_STRIP, 0, 4, run.quads.len() as i32);
+            }
+            gl.bind_vertex_array(Some(self.vao));
         }
     }
 
@@ -596,12 +703,13 @@ unsafe fn discard(gl: &glow::Context, program: glow::Program, shaders: &[glow::S
 unsafe fn link(
     gl: &glow::Context,
     header: &str,
+    attributes: &[(u32, &str)],
     vertex: &str,
     fragment: &str,
 ) -> Result<Program, BuildError> {
     unsafe {
         let program = gl.create_program().map_err(BuildError::Create)?;
-        for (index, name) in ATTRIBUTES {
+        for &(index, name) in attributes {
             gl.bind_attrib_location(program, index, name);
         }
         let mut shaders = Vec::new();

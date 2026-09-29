@@ -33,6 +33,7 @@ pub(crate) mod git_nav;
 pub(crate) mod glyph_cache;
 pub(crate) mod gpu_timing;
 pub(crate) mod grid_gl;
+pub(crate) mod grid_images;
 pub(crate) mod grid_instances;
 pub(crate) mod ime;
 pub mod in_flight;
