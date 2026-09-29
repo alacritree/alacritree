@@ -29,7 +29,7 @@ use crate::bindings::{self, KeyBinding};
 use crate::path_style::PathStyle;
 
 /// `[env]` carries whatever the user's environment carries, and a config dump
-/// ends up attached to bug reports.  Key names survive: that `FOO` was set is
+/// ends up attached to bug reports. Key names survive: that `FOO` was set is
 /// diagnostic, what it was set to is not.
 const REDACTED_VALUE: &str = "<redacted>";
 
@@ -56,13 +56,13 @@ pub struct Config {
     pub ipc_socket: bool,
     pub debug: DebugConfig,
     /// Start dir for sessions with no explicit workspace (the home tab);
-    /// worktree tabs always use their checkout path.  Mirrors alacritty's
+    /// worktree tabs always use their checkout path. Mirrors alacritty's
     /// `[general] working_directory`, except a leading `~` expands to the
     /// home directory (upstream only expands `~` in config imports) so one
     /// shared config works on every platform.
     pub working_directory: Option<PathBuf>,
     /// Where `state.toml` and the scratchpad notes live, from `[general]
-    /// state_dir`.  `None` means the per-user config base.
+    /// state_dir`. `None` means the per-user config base.
     pub state_dir: Option<PathBuf>,
     pub wsl_automount_root: String,
     pub wsl_resident_helper: bool,
@@ -73,7 +73,7 @@ pub struct Config {
     pub integrations: IntegrationsConfig,
 }
 
-/// Environment values never serialise.  Enforced on the field rather than by
+/// Environment values never serialise. Enforced on the field rather than by
 /// the caller, so no dump of a `Config` can leak one by forgetting to ask.
 fn redacted_env<S: serde::Serializer>(
     env: &HashMap<String, String>,
@@ -89,11 +89,11 @@ fn redacted_env<S: serde::Serializer>(
 
 impl Config {
     /// The effective config as one line of JSON, carrying only what differs
-    /// from the defaults; `None` when nothing does.  Follows ghostty's
+    /// from the defaults; `None` when nothing does. Follows ghostty's
     /// `+show-config`, whose `changes-only` is on by default.
     ///
     /// Effective values rather than the config file as written, so reading one
-    /// out of a log needs no knowledge of this version's defaults.  Diffed
+    /// out of a log needs no knowledge of this version's defaults. Diffed
     /// against the defaults because a whole config is mostly the 256-entry
     /// indexed palette and the sidebar colours, which almost nobody touches
     /// and which would bury the handful of keys that explain a run.
@@ -109,7 +109,7 @@ impl Config {
 }
 
 /// The config an install with no config file gets, and what "defaults" means
-/// anywhere the real config cannot be used.  Not `Config::default`: the
+/// anywhere the real config cannot be used. Not `Config::default`: the
 /// built-in key bindings are filled in on the way through `RawConfig`, so the
 /// bare struct default carries none, which makes it both the wrong baseline to
 /// diff a dump against and the wrong config to hand a running window.
@@ -147,19 +147,19 @@ pub struct DebugConfig {
     pub crash_log: bool,
     /// Upstream's name and upstream's default.
     pub persistent_logging: bool,
-    /// alacritree-only, set in `alacritree.toml`.  Log what the GPU grid's
+    /// alacritree-only, set in `alacritree.toml`. Log what the GPU grid's
     /// paint callback costs: the wall time of issuing a frame, and the GPU's
     /// own time for the upload and each of the three draws. Timer queries are
     /// cheap but not free, and the line is only meaningful to someone reading
-    /// it.  Needs a GL 3.3 context.
+    /// it. Needs a GL 3.3 context.
     /// Keeps this session's log file for as long as it is on, since the
     /// report has nowhere else to go.
     pub gpu_timing: bool,
     /// alacritree-only, set in `alacritree.toml`. `ALACRITREE_FRAME_LOG`
     /// overrides it.
     pub frame_log: bool,
-    /// alacritree-only, set in `alacritree.toml`.  Crash artifacts and session
-    /// logs go here.  `None` means whatever `logdir::log_dir` resolves.
+    /// alacritree-only, set in `alacritree.toml`. Crash artifacts and session
+    /// logs go here. `None` means whatever `logdir::log_dir` resolves.
     pub log_dir: Option<PathBuf>,
 }
 
@@ -176,7 +176,7 @@ impl Default for DebugConfig {
 }
 
 /// Sequences alacritree reads off the PTY byte stream rather than through
-/// `Term`.  Turning one on starts a parser thread per session and changes
+/// `Term`. Turning one on starts a parser thread per session and changes
 /// what the UI shows.
 #[derive(Debug, Default, Clone, Copy, serde::Serialize)]
 pub struct VtConfig {
@@ -187,7 +187,7 @@ pub struct VtConfig {
 }
 
 impl VtConfig {
-    /// Whether any sequence is wanted.  A session with none skips the tap
+    /// Whether any sequence is wanted. A session with none skips the tap
     /// thread entirely.
     pub fn any_enabled(&self) -> bool {
         self.report_cwd || self.notify || self.progress || self.pointer_shape
@@ -201,12 +201,12 @@ pub struct FontConfig {
     pub bold: FontFace,
     pub italic: FontFace,
     pub bold_italic: FontFace,
-    /// Extra spacing per cell, mirroring alacritty's `font.offset`.  Added to
+    /// Extra spacing per cell, mirroring alacritty's `font.offset`. Added to
     /// the per-cell width/height after the egui glyph metrics have been
     /// floored to whole device pixels.
     pub offset: FontDelta,
     /// Pixel offset applied when painting glyphs inside the cell, mirroring
-    /// alacritty's `font.glyph_offset`.  Built-in glyphs deliberately ignore
+    /// alacritty's `font.glyph_offset`. Built-in glyphs deliberately ignore
     /// this offset (they already align to the cell), matching alacritty.
     pub glyph_offset: FontDelta,
     /// When true, render box drawing / block / Powerline / Symbols-for-Legacy-
@@ -216,11 +216,11 @@ pub struct FontConfig {
     /// Ordered fallback families or font file paths, consulted after the four
     /// primary faces and before the automatic system fallback chain.
     pub fallback: Vec<String>,
-    /// Draw emoji from their font's colour tables.  Turning this off falls
+    /// Draw emoji from their font's colour tables. Turning this off falls
     /// through to the first fallback face that has ordinary outlines, so
     /// emoji render monochrome rather than in colour.
     pub color_glyphs: bool,
-    /// Ceiling on the rasterized colour glyph cache.  The cache is already
+    /// Ceiling on the rasterized colour glyph cache. The cache is already
     /// bounded by how many codepoints the colour fonts cover (a few thousand),
     /// but that ceiling moves with cell size and with the fallback list, so it
     /// is worth a budget rather than a promise.
@@ -234,7 +234,7 @@ pub struct FontConfig {
 }
 
 /// Pixel delta with x/y, mirroring alacritty's `Delta<i8>` for `font.offset`
-/// and `font.glyph_offset`.  Kept as `i8` because that's the type alacritty's
+/// and `font.glyph_offset`. Kept as `i8` because that's the type alacritty's
 /// schema accepts and going wider would silently lose round-trip equivalence.
 #[derive(Debug, Clone, Copy, Default, serde::Serialize)]
 pub struct FontDelta {
@@ -253,7 +253,7 @@ impl FontConfig {
 
     /// Convert the user-configured size (typographic points, matching
     /// alacritty's `font.size`) into the logical-pixel value egui's `FontId`
-    /// expects.  Without this step egui treats the number as logical pixels
+    /// expects. Without this step egui treats the number as logical pixels
     /// and renders 25% smaller than alacritty for the same config value.
     pub fn logical_size(&self) -> f32 {
         self.size * 96.0 / 72.0
@@ -270,7 +270,7 @@ impl FontConfig {
     }
 }
 
-/// A single weight/style face.  `family` mirrors alacritty's `[font.*].family`;
+/// A single weight/style face. `family` mirrors alacritty's `[font.*].family`;
 /// `style` mirrors `[font.*].style` (e.g. "Bold", "Italic", "Bold Italic"), and
 /// is used both as a hint to the font matcher and to disambiguate faces that
 /// only differ by style within a family.
@@ -281,7 +281,7 @@ pub struct FontFace {
 }
 
 /// `CursorShape` comes from `vte` and carries no serde derives, so it is
-/// written by name.  The spellings are the ones `alacritty.toml` accepts, so a
+/// written by name. The spellings are the ones `alacritty.toml` accepts, so a
 /// dumped value can be pasted back into a config file.
 fn cursor_shape_name<S: serde::Serializer>(
     shape: &CursorShape,
@@ -311,12 +311,12 @@ pub struct CursorBlink {
     pub blinking: CursorBlinking,
     /// One show or one hide, not a full cycle.
     pub interval: Duration,
-    /// How long blinking runs before the cursor is left solid.  `ZERO` blinks
+    /// How long blinking runs before the cursor is left solid. `ZERO` blinks
     /// for as long as the window keeps focus.
     pub timeout: Duration,
 }
 
-/// `[cursor] style.blinking`, mirroring alacritty's `CursorBlinking`.  A
+/// `[cursor] style.blinking`, mirroring alacritty's `CursorBlinking`. A
 /// program can ask for a blinking cursor over DECSCUSR, and these four values
 /// say whether it gets to: `Never` and `Always` overrule it, `Off` and `On`
 /// only choose the state it starts in.
@@ -345,7 +345,7 @@ impl CursorBlinking {
     }
 }
 
-/// How the cursor gets from one cell to the next, from `[ui.cursor]`.  Its own
+/// How the cursor gets from one cell to the next, from `[ui.cursor]`. Its own
 /// table because alacritty has no equivalent keys and warns about ones it does
 /// not know, so these cannot ride in the shared `[cursor]`.
 #[derive(Debug, Clone, Copy, serde::Serialize)]
@@ -383,7 +383,7 @@ pub struct ShellConfig {
     pub args: Vec<String>,
 }
 
-/// A named shell launch profile from `[[ui.profiles]]`.  Program + args
+/// A named shell launch profile from `[[ui.profiles]]`. Program + args
 /// only; cwd and env come from the session as usual.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct Profile {
@@ -438,7 +438,7 @@ pub struct Palette {
     pub draw_bold_with_bright: bool,
 }
 
-/// Which glyph set an agent's status mark draws from.  Both sets share the
+/// Which glyph set an agent's status mark draws from. Both sets share the
 /// braille loader for working, and `[ui.icons]` overrides either one state
 /// at a time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, EnumIter, IntoStaticStr)]
@@ -477,7 +477,7 @@ impl ConfirmSessionClose {
     }
 }
 
-/// `[ui.drop] quote` as written in the config.  The five concrete modes are
+/// `[ui.drop] quote` as written in the config. The five concrete modes are
 /// ported from wezterm's `quote_dropped_files` so an existing wezterm config
 /// carries over unchanged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, EnumIter, IntoStaticStr)]
@@ -542,7 +542,7 @@ impl ShellQuoting {
     }
 }
 
-/// How a path is written for the shell that receives it.  Separate from
+/// How a path is written for the shell that receives it. Separate from
 /// `DropConfig` because a paste spells paths too, and must not be handed flags
 /// about whether drops are accepted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -595,10 +595,10 @@ pub struct PasteConfig {
     pub files: bool,
     /// Write a clipboard bitmap to a PNG and paste its path.
     pub image: bool,
-    /// Where those PNGs go.  `None` is the app-owned default, the only
+    /// Where those PNGs go. `None` is the app-owned default, the only
     /// directory the count cap is ever applied to.
     pub image_dir: Option<PathBuf>,
-    /// How many generated PNGs the owned directory keeps.  At least one: the
+    /// How many generated PNGs the owned directory keeps. At least one: the
     /// file a paste just handed to the shell has to still be there when the
     /// shell opens it, so zero is not a reachable state.
     pub image_keep: usize,
@@ -611,7 +611,7 @@ impl Default for PasteConfig {
 }
 
 impl PasteConfig {
-    /// The directory to write into, and whether alacritree owns it.  Ownership
+    /// The directory to write into, and whether alacritree owns it. Ownership
     /// is what licenses deleting anything: a directory the user named may hold
     /// files alacritree never wrote.
     pub fn image_target(&self) -> (PathBuf, bool) {
@@ -673,7 +673,7 @@ impl IntegrationsConfig {
     }
 }
 
-/// Disposable by nature.  Unix keeps captures in the user's cache rather than
+/// Disposable by nature. Unix keeps captures in the user's cache rather than
 /// a shared fixed-name tmp directory; Windows' `%TEMP%` is already per-user and
 /// remains reachable from WSL through the usual automount.
 #[cfg(unix)]
@@ -750,7 +750,7 @@ macro_rules! baked_glyphs {
 
 baked_glyphs! {
     DEFAULT_ICON_GLYPHS:
-    /// Text-presentation magnifier (U+2315).  Not in egui's bundled fonts; it
+    /// Text-presentation magnifier (U+2315). Not in egui's bundled fonts; it
     /// resolves through the system fallback chain `fonts.rs` registers.
     DEFAULT_SEARCH_ICON = "⌕";
     /// Default glyphs for every other `[ui.icons]` key, shared between
@@ -760,11 +760,11 @@ baked_glyphs! {
     DEFAULT_WORKTREE_MAIN_ICON = "●";
     DEFAULT_WORKTREE_ICON = "○";
     DEFAULT_SESSION_ICON = "▪";
-    /// herdr's ram, drawn from `assets/herdr-ram.svg`.  A geometric shape
+    /// herdr's ram, drawn from `assets/herdr-ram.svg`. A geometric shape
     /// reads as a missing glyph at row size, which is what the bisected
     /// square used here did, so each multiplexer gets its own silhouette.
     DEFAULT_HERDR_ICON = alacritree_herdr::DEFAULT_ICON;
-    /// zellij's hexagon, drawn from `assets/zellij-hexagon.svg`.  DejaVu's
+    /// zellij's hexagon, drawn from `assets/zellij-hexagon.svg`. DejaVu's
     /// U+2B21 was used here first and its hairline stroke closes up at row
     /// size, so this one is drawn with a stroke an eighth of its height.
     DEFAULT_ZELLIJ_ICON = alacritree_zellij::DEFAULT_ICON;
@@ -782,7 +782,7 @@ baked_glyphs! {
     DEFAULT_VCS_GIT_ICON = "⎇";
 }
 
-/// The codepoints the multiplexer icons are spelled at.  Each is drawn from
+/// The codepoints the multiplexer icons are spelled at. Each is drawn from
 /// an SVG beside the font, and nothing else on a machine maps plane 16, so a
 /// default spelled this way reaches the face that fits it to the row instead
 /// of whichever fallback claims a real character first; see
@@ -792,21 +792,21 @@ pub(crate) const PRIVATE_GLYPHS: &[char] = &['\u{10FF00}', '\u{10FF01}'];
 
 baked_glyphs! {
     CHROME_GLYPHS:
-    /// Agent status marks.  Every recognized agent shares them; identity
+    /// Agent status marks. Every recognized agent shares them; identity
     /// belongs in the tooltip and title instead of changing the sidebar's
-    /// visual grammar.  Each codepoint is one the baked face already carries
+    /// visual grammar. Each codepoint is one the baked face already carries
     /// for another icon, so the set costs no rebuild.
     ///
     /// Every circle is one of the two large ones, so no state reads as
-    /// smaller than another.  The hollow circle is idle in both sets and
+    /// smaller than another. The hollow circle is idle in both sets and
     /// unknown in dots; the filled one is a ping in both sets and blocked and
-    /// done in dots.  Within a shape, colour tells the states apart.
+    /// done in dots. Within a shape, colour tells the states apart.
     DEFAULT_HOLLOW_MARK = "◯";
     DEFAULT_FILLED_MARK = "⬤";
     /// The symbols set, herdr's own shapes for these states.
     DEFAULT_BLOCKED_SYMBOL = "×";
     DEFAULT_DONE_SYMBOL = "✓";
-    /// Action buttons.  Each takes a config key of its own; the glyphs are
+    /// Action buttons. Each takes a config key of its own; the glyphs are
     /// declared here because coverage is owed regardless of who names them.
     DEFAULT_ADD_ICON = "+";
     DEFAULT_CLOSE_ICON = "×";
@@ -854,7 +854,7 @@ pub enum LastSessionClose {
 }
 
 impl LastSessionClose {
-    /// Whether the destination comes from the session ring.  Both removal
+    /// Whether the destination comes from the session ring. Both removal
     /// paths build that ring only when this is true, so the default costs
     /// no allocation.
     pub fn rings(self) -> bool {
@@ -902,7 +902,7 @@ impl HoldExitedSessions {
 }
 
 /// How far the projects sidebar goes when the cursor's row stops being
-/// rendered.  Both values keep the cursor; they differ only in whether the
+/// rendered. Both values keep the cursor; they differ only in whether the
 /// terminal comes along.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, EnumIter, IntoStaticStr)]
 #[serde(into = "&'static str")]
@@ -910,7 +910,7 @@ impl HoldExitedSessions {
 pub enum SidebarFocus {
     /// A filtered-out cursor climbs to its nearest visible ancestor and is
     /// restored when the filter widens; a removed cursor slides to a sibling
-    /// bounded by its parent.  The terminal stays where it is.
+    /// bounded by its parent. The terminal stays where it is.
     #[default]
     Preserve,
     /// `Preserve`, and a removal landing that has a live session also moves
@@ -935,7 +935,7 @@ pub enum ScrollAlign {
     /// view, which leaves it against whichever edge it entered from.
     #[default]
     Minimal,
-    /// Park the row in the middle of the panel.  The list scrolls past its
+    /// Park the row in the middle of the panel. The list scrolls past its
     /// first and last rows to do so, leaving blank space above or below.
     Center,
 }
@@ -954,7 +954,7 @@ pub enum SearchScope {
     All,
 }
 
-/// `[ui] search_depth`: how far a sidebar query reaches.  `search_scope`
+/// `[ui] search_depth`: how far a sidebar query reaches. `search_scope`
 /// says what a query is confined by; this says how far down it descends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, EnumIter, IntoStaticStr)]
 #[serde(into = "&'static str")]
@@ -968,7 +968,7 @@ pub enum SearchDepth {
 }
 
 /// `[ui.session_reorder] scope`: how far a session may travel when the user
-/// reorders it.  Widening it makes a reorder step able to change which
+/// reorders it. Widening it makes a reorder step able to change which
 /// workspace a session belongs to, which is why the default keeps a session
 /// inside the one it was spawned in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, EnumIter, IntoStaticStr)]
@@ -978,7 +978,7 @@ pub enum ReorderScope {
     /// Only among the sessions of its own workspace.
     #[default]
     Workspace,
-    /// Across the worktrees of the project that owns its workspace.  Home
+    /// Across the worktrees of the project that owns its workspace. Home
     /// belongs to no project, so a home session stays home.
     Project,
     /// Home and every project's worktrees, in sidebar order.
@@ -986,7 +986,7 @@ pub enum ReorderScope {
 }
 
 /// Whether session rows can be dragged, and how far a reorder may carry a
-/// session.  `drag` is a startup default only: the app copies it into runtime
+/// session. `drag` is a startup default only: the app copies it into runtime
 /// state that `ToggleSessionDrag` flips, and nothing is persisted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
 pub struct SessionReorder {
@@ -1006,7 +1006,7 @@ pub enum SidebarTooltips {
     /// Only where the row had to ellipsize the name.
     #[default]
     Elided,
-    /// On every row.  egui opens the next tooltip instantly while one was just
+    /// On every row. egui opens the next tooltip instantly while one was just
     /// shown, so a row that offers none breaks that chain and the name after it
     /// has to wait out the delay again; offering one everywhere keeps a sweep
     /// down the list from stalling on the short names.
@@ -1015,7 +1015,7 @@ pub enum SidebarTooltips {
 
 /// Whether per-session UI (sidebar session rows, tab-strip segments) renders
 /// for a single-session workspace instead of waiting for the two-session
-/// threshold.  These are startup defaults only: the app copies them into
+/// threshold. These are startup defaults only: the app copies them into
 /// runtime state that key bindings can toggle, and nothing is persisted.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
 pub struct SessionDisplay {
@@ -1058,7 +1058,7 @@ impl Default for UiFont {
 }
 
 /// Sidebar glyphs, each independently overridable from `[ui.icons]` as a bare
-/// glyph or a table styling color/weight/slant/size.  An absent key falls back
+/// glyph or a table styling color/weight/slant/size. An absent key falls back
 /// to the default below; a table with no `glyph` key keeps the default glyph
 /// but applies its own styling.
 ///
@@ -1093,7 +1093,7 @@ pub struct Icons<C = Rgb> {
     pub close_session: IconStyle<C>,
     pub refresh: IconStyle<C>,
     pub reorder: IconStyle<C>,
-    /// Agent status marks.  An unset glyph follows `[ui] status_indicators`.
+    /// Agent status marks. An unset glyph follows `[ui] status_indicators`.
     pub agent_idle: IconStyle<C>,
     /// Replaces the braille loader once it carries a glyph.
     pub agent_working: IconStyle<C>,
@@ -1218,7 +1218,7 @@ impl Default for Icons {
     }
 }
 
-/// How one text span is emphasized.  `color: None` inherits whatever color the
+/// How one text span is emphasized. `color: None` inherits whatever color the
 /// site normally paints, so an emphasis that sets only `bold` still tracks the
 /// theme.
 #[derive(Debug, Clone, Copy, Default, PartialEq, serde::Serialize)]
@@ -1262,8 +1262,8 @@ impl<C: Copy> PathStyleConfig<C> {
 }
 
 /// One correction to a decoration the font placed: a shift in physical pixels,
-/// a shift in points, or a multiplier.  kitty's grammar, so a value copied
-/// from a kitty config parses the same way here.  Where it lands can still
+/// a shift in points, or a multiplier. kitty's grammar, so a value copied
+/// from a kitty config parses the same way here. Where it lands can still
 /// differ: kitty derives its double and curly underline positions from the
 /// face's underline position, while here those two styles are placed from
 /// the descent instead, so `underline_position` does not reach them.
@@ -1279,7 +1279,7 @@ impl Adjust {
     pub const NONE: Self = Self::Pixels(0.0);
 
     /// `"2px"`, `"2pt"`, a bare `"2"` (points, which is how kitty spells it),
-    /// or `"150%"`.  `None` for anything else, a signed percentage included.
+    /// or `"150%"`. `None` for anything else, a signed percentage included.
     pub fn parse(raw: &str) -> Option<Self> {
         if let Some(number) = raw.strip_suffix('%') {
             let percent = finite(number)?;
@@ -1348,7 +1348,7 @@ pub struct UiTheme {
     /// Fire a desktop notification when a non-visible session needs attention.
     pub notifications: bool,
     /// How long an attention trigger must survive without the session going
-    /// back to work before it pings.  Zero pings on the trigger itself.
+    /// back to work before it pings. Zero pings on the trigger itself.
     pub attention_grace: Duration,
     /// Which glyph set agent status marks draw from.
     pub status_indicators: StatusIndicators,
@@ -1432,10 +1432,10 @@ pub struct UiTheme {
     /// the window is in the background. Windows only.
     pub focus_priority_boost: bool,
     /// `[ui] async_session_spawn`: open a session's PTY on a worker instead
-    /// of inside the frame that asked for it.  Creating a console process
+    /// of inside the frame that asked for it. Creating a console process
     /// costs milliseconds when the machine is idle and hundreds when it is
     /// busy, and the frame pays all of it, so the click that opens a tab is
-    /// what stutters.  The tab appears at once and starts painting when its
+    /// what stutters. The tab appears at once and starts painting when its
     /// PTY attaches; anything typed in between is replayed.
     pub async_session_spawn: bool,
     /// `[ui] reap_descendants_on_close`: end everything a session started when
@@ -1537,7 +1537,7 @@ pub struct WorktreeOverride {
 impl WorkspaceConfig {
     /// Base directory for a project's new worktrees: first matching override,
     /// then the global `worktree_dir`, then `None` (the caller falls back to
-    /// the built-in default).  Paths compare canonicalized so a symlinked
+    /// the built-in default). Paths compare canonicalized so a symlinked
     /// spelling of the same root still matches; canonicalization failure
     /// (path doesn't exist) falls back to the literal path.
     pub fn base_dir_for(&self, project_root: &Path) -> Option<PathBuf> {
@@ -1726,7 +1726,7 @@ fn installed_config(stem: &str, suffix: &str) -> Option<PathBuf> {
     candidate.exists().then_some(candidate)
 }
 
-/// One config file inside an explicitly named directory.  Both stems resolve
+/// One config file inside an explicitly named directory. Both stems resolve
 /// there and nowhere else, so a directory holding only `alacritree.toml` runs
 /// without an `alacritty.toml` rather than quietly merging the installed one:
 /// an override the search path can still reach is not an override.
@@ -1795,7 +1795,7 @@ pub struct ConfigFile {
 /// What [`load`] papers over.
 ///
 /// A broken config must never stop a terminal from opening, so `load` logs the
-/// problem and carries on with defaults.  The cost is that an ignored file looks
+/// problem and carries on with defaults. The cost is that an ignored file looks
 /// exactly like an absent one; this reports what `load` swallowed.
 #[derive(Debug, Clone)]
 pub struct ConfigDiagnosis {
@@ -1812,7 +1812,7 @@ pub fn diagnose(config_dir: Option<&Path>, overrides: &[toml::Value]) -> ConfigD
 }
 
 /// Read both config files off the search path and merge them, alacritree over
-/// alacritty, then the `-o` overrides over both.  A file that fails to parse
+/// alacritty, then the `-o` overrides over both. A file that fails to parse
 /// contributes nothing and is reported through its [`ConfigFile::error`].
 fn assemble(
     config_dir: Option<&Path>,
@@ -1836,7 +1836,7 @@ fn assemble(
     }
 
     // Through the same merge as the files, so `-o` and a line in
-    // `alacritree.toml` mean the same thing.  One consequence worth knowing:
+    // `alacritree.toml` mean the same thing. One consequence worth knowing:
     // arrays concatenate, so `-o` adds a key binding rather than replacing the
     // list, exactly as writing it into the file would.
     for value in overrides {
@@ -1848,7 +1848,7 @@ fn assemble(
 
 fn read_toml_value(path: &std::path::Path) -> std::io::Result<Option<toml::Value>> {
     // toml 0.9's `<Value as FromStr>::from_str` is broken; go through the
-    // serde entry point instead.  This matches alacritty's `deserialize_config`.
+    // serde entry point instead. This matches alacritty's `deserialize_config`.
     match std::fs::read_to_string(path) {
         Ok(mut contents) => {
             // Strip UTF-8 BOM the same way alacritty does.
@@ -1867,7 +1867,7 @@ fn read_toml_value(path: &std::path::Path) -> std::io::Result<Option<toml::Value
 
 /// Merge two TOML values using alacritty's semantics: arrays are
 /// **concatenated** (not replaced), tables are merged recursively, and
-/// primitives are replaced.  This matches `alacritty::config::serde_utils::merge`
+/// primitives are replaced. This matches `alacritty::config::serde_utils::merge`
 /// so a `[[keyboard.bindings]]` array in `alacritree.toml` adds to (rather
 /// than replaces) the bindings from `alacritty.toml`.
 fn merge(base: toml::Value, replacement: toml::Value) -> toml::Value {
@@ -1898,7 +1898,7 @@ fn merge_tables(
 
 /// The JSON Schema for a config file, reflected off the same `Raw*` structs
 /// serde reads, so the published schema cannot describe a key the parser does
-/// not accept.  Lives here rather than beside the CLI command that prints it
+/// not accept. Lives here rather than beside the CLI command that prints it
 /// because those structs are private to this module.
 pub fn json_schema() -> schemars::Schema {
     schemars::schema_for!(RawConfig)
@@ -1908,7 +1908,7 @@ pub fn json_schema() -> schemars::Schema {
 //
 // These structs are the whole of what alacritree reads out of the two TOML
 // files, so they are also what `alacritree schema` reflects over to publish a
-// JSON Schema.  Every field's doc comment becomes the hover text an editor
+// JSON Schema. Every field's doc comment becomes the hover text an editor
 // shows for that key; a field left undocumented is a key nobody can look up
 // without reading this file.
 
@@ -1922,7 +1922,7 @@ struct RawConfig {
     /// profiles, and everything else the terminal grid does not own. Belongs
     /// in `alacritree.toml`, since upstream alacritty warns about it.
     ui: RawUi,
-    /// Where alacritree creates git worktrees.  `alacritree.toml` only.
+    /// Where alacritree creates git worktrees. `alacritree.toml` only.
     workspace: RawWorkspace,
     /// The terminal grid's font: the four faces, size, cell offsets, and
     /// alacritree's fallback chain.
@@ -1936,7 +1936,7 @@ struct RawConfig {
     /// Window padding and background opacity.
     window: RawWindow,
     /// Environment variables added to every process alacritree spawns,
-    /// including the shell.  Entries here may override variables alacritree
+    /// including the shell. Entries here may override variables alacritree
     /// sets itself.
     #[serde(default)]
     env: HashMap<String, String>,
@@ -1945,7 +1945,7 @@ struct RawConfig {
     /// What counts as a word when double-clicking, and whether a selection
     /// reaches the clipboard on its own.
     selection: RawSelection,
-    /// Key bindings.  Arrays concatenate across the two files, so bindings
+    /// Key bindings. Arrays concatenate across the two files, so bindings
     /// written in `alacritree.toml` add to the shared ones rather than
     /// replacing them.
     keyboard: RawKeyboard,
@@ -1953,10 +1953,10 @@ struct RawConfig {
     general: RawGeneral,
     /// Diagnostics written to disk.
     debug: RawDebug,
-    /// Sequences read directly from the PTY byte stream.  `alacritree.toml`
+    /// Sequences read directly from the PTY byte stream. `alacritree.toml`
     /// only.
     vt: RawVt,
-    /// How alacritree talks to WSL distros.  `alacritree.toml` only.
+    /// How alacritree talks to WSL distros. `alacritree.toml` only.
     wsl: RawWsl,
     /// The other tools alacritree can notice and cooperate with.
     /// `alacritree.toml` only.
@@ -1974,22 +1974,22 @@ struct RawGeneral {
     /// connect to.
     ipc_socket: bool,
     /// Directory sessions on the home tab start in; worktree tabs always start
-    /// in their checkout.  A leading `~` expands to the home directory.  Unset
+    /// in their checkout. A leading `~` expands to the home directory. Unset
     /// inherits the launching process's directory.
     working_directory: Option<String>,
     /// Where alacritree keeps what it remembers between runs: `state.toml`
     /// (project roots, expanded rows, sidebar visibility, per-worktree base
-    /// branches) and the per-workspace scratchpad notes.  alacritree-only, so
-    /// it belongs in `alacritree.toml`.  A leading `~` expands to the home
+    /// branches) and the per-workspace scratchpad notes. alacritree-only, so
+    /// it belongs in `alacritree.toml`. A leading `~` expands to the home
     /// directory; a relative path is ignored.
     ///
     /// Unset keeps the per-user config base, where these files have always
     /// lived: `%APPDATA%\alacritree` on Windows, `$XDG_CONFIG_HOME/alacritree`
     /// or `~/.config/alacritree` elsewhere.
     ///
-    /// Setting this moves nothing.  The old state and notes stay where they
+    /// Setting this moves nothing. The old state and notes stay where they
     /// are and the new directory starts empty, so move the files across
-    /// yourself if you want them.  Every alacritree on the machine needs the
+    /// yourself if you want them. Every alacritree on the machine needs the
     /// same value: the CLI resolves this key the way the window does, so a
     /// command run against a different config reads a state file the window is
     /// not writing.
@@ -2006,39 +2006,39 @@ impl Default for RawGeneral {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(default)]
 struct RawDebug {
-    /// Write an artifact when the process panics.  alacritree-only, so it
-    /// belongs in `alacritree.toml`.  A crash that leaves no record is the
+    /// Write an artifact when the process panics. alacritree-only, so it
+    /// belongs in `alacritree.toml`. A crash that leaves no record is the
     /// failure this exists to prevent.
     crash_log: bool,
-    /// Keep the log file after quitting.  Upstream's name and upstream's
+    /// Keep the log file after quitting. Upstream's name and upstream's
     /// default.
     persistent_logging: bool,
     /// Log what the GPU grid's paint callback costs: the wall time of
     /// issuing a frame, and the GPU's own time for the upload and each of
-    /// the three draws.  alacritree-only, so it belongs in
-    /// `alacritree.toml`.  Timer queries are cheap but not free, and the
-    /// line is only meaningful to someone reading it.  Needs a GL 3.3
-    /// context.  Keeps this session's log file for as long as it is on,
+    /// the three draws. alacritree-only, so it belongs in
+    /// `alacritree.toml`. Timer queries are cheap but not free, and the
+    /// line is only meaningful to someone reading it. Needs a GL 3.3
+    /// context. Keeps this session's log file for as long as it is on,
     /// since the report has nowhere else to go.
     gpu_timing: bool,
     /// Measure whole frames and report the period, CPU time, grid share and
-    /// keystroke echo every few seconds.  alacritree-only, so it belongs in
+    /// keystroke echo every few seconds. alacritree-only, so it belongs in
     /// `alacritree.toml`.
     ///
     /// `ALACRITREE_FRAME_LOG` wins over this key both ways: `1` turns
-    /// measurements on, `0` and the empty string turn them off.  The variable
+    /// measurements on, `0` and the empty string turn them off. The variable
     /// is the only switch available before the config is read.
     ///
-    /// Keeps this session's log file for as long as it is on.  The report goes
+    /// Keeps this session's log file for as long as it is on. The report goes
     /// to the log stream, and a GUI-subsystem binary has no console.
     frame_log: bool,
-    /// Where crash artifacts and session logs are written.  alacritree-only,
-    /// so it belongs in `alacritree.toml`.  A leading `~` expands to the home
+    /// Where crash artifacts and session logs are written. alacritree-only,
+    /// so it belongs in `alacritree.toml`. A leading `~` expands to the home
     /// directory; a relative path is ignored.
     ///
     /// Unset writes to the machine-local state directory: `%LOCALAPPDATA%\
     /// alacritree` on Windows, `$XDG_STATE_HOME/alacritree` or
-    /// `~/.local/state/alacritree` elsewhere.  Logs stay out of the config
+    /// `~/.local/state/alacritree` elsewhere. Logs stay out of the config
     /// directory, which on Windows roams between machines.
     ///
     /// Setting this moves no log already written, and a panic during config
@@ -2064,10 +2064,10 @@ impl Default for RawDebug {
 #[serde(default)]
 struct RawVt {
     /// Track the shell's working directory from OSC 7 and OSC 9;9, and show
-    /// it in the session row's hover text.  A sibling session then starts
+    /// it in the session row's hover text. A sibling session then starts
     /// where the shell is rather than at the workspace root.
     report_cwd: bool,
-    /// Surface OSC 9 and OSC 777 desktop notifications.  The text reaches
+    /// Surface OSC 9 and OSC 777 desktop notifications. The text reaches
     /// the sidebar row either way; `[ui] notifications` decides whether a
     /// desktop toast fires.
     notify: bool,
@@ -2081,7 +2081,7 @@ struct RawVt {
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 #[serde(default)]
 struct RawKeyboard {
-    /// Key bindings, as `[[keyboard.bindings]]` entries.  Vi- and search-mode
+    /// Key bindings, as `[[keyboard.bindings]]` entries. Vi- and search-mode
     /// bindings are accepted and ignored: alacritree tracks neither mode.
     bindings: Vec<bindings::RawBinding>,
 }
@@ -2093,17 +2093,17 @@ struct RawFont {
     size: f32,
     /// The face ordinary text is drawn with.
     normal: RawFontFace,
-    /// The bold face.  An unset family falls back to `normal`'s.
+    /// The bold face. An unset family falls back to `normal`'s.
     bold: RawFontFace,
-    /// The italic face.  An unset family falls back to `normal`'s.
+    /// The italic face. An unset family falls back to `normal`'s.
     italic: RawFontFace,
-    /// The bold-italic face.  An unset family falls back to `normal`'s.
+    /// The bold-italic face. An unset family falls back to `normal`'s.
     bold_italic: RawFontFace,
     /// Extra space around each cell in pixels: `y` is line spacing, `x` is
     /// letter spacing.
     offset: RawFontDelta,
-    /// Where the glyph sits inside its cell, in pixels.  Increasing `x` moves
-    /// it right, increasing `y` moves it up.  Built-in glyphs ignore this,
+    /// Where the glyph sits inside its cell, in pixels. Increasing `x` moves
+    /// it right, increasing `y` moves it up. Built-in glyphs ignore this,
     /// matching alacritty.
     glyph_offset: RawFontDelta,
     /// Draw box-drawing (U+2500–U+259F), legacy computing (U+1FB00–U+1FB3B)
@@ -2112,16 +2112,16 @@ struct RawFont {
     builtin_box_drawing: bool,
     /// Ordered list of fallback font families or font file paths, tried in
     /// order after the four primary faces and before the automatic system
-    /// chain.  Recommended home is `alacritree.toml`: upstream alacritty
+    /// chain. Recommended home is `alacritree.toml`: upstream alacritty
     /// warns about unknown keys, so putting it in the shared `alacritty.toml`
     /// would make the real alacritty noisy.
     fallback: Vec<String>,
-    /// Draw emoji from their font's colour tables.  Turning this off falls
+    /// Draw emoji from their font's colour tables. Turning this off falls
     /// through to the first fallback face with ordinary outlines, so emoji
-    /// render monochrome.  Also alacritree-only, so it belongs in
+    /// render monochrome. Also alacritree-only, so it belongs in
     /// `alacritree.toml` alongside `fallback`.
     color_glyphs: bool,
-    /// Budget in megabytes for the rasterized colour-glyph cache.  The cache
+    /// Budget in megabytes for the rasterized colour-glyph cache. The cache
     /// is already bounded by how many codepoints the colour fonts cover, but
     /// that ceiling moves with cell size and with the fallback list.
     color_glyph_cache_mb: usize,
@@ -2138,7 +2138,7 @@ struct RawFont {
 
 impl Default for RawFont {
     fn default() -> Self {
-        // Match alacritty's default of 11.25pt.  See `FontConfig::logical_size`
+        // Match alacritty's default of 11.25pt. See `FontConfig::logical_size`
         // for the pt-to-logical-pixel conversion applied at use sites.
         Self {
             size: 11.25,
@@ -2216,7 +2216,7 @@ const MIN_BLINK_INTERVAL_MS: u64 = 10;
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(default)]
 struct RawCursor {
-    /// Cursor shape and blinking.  Older alacritty configs write just
+    /// Cursor shape and blinking. Older alacritty configs write just
     /// `style = "Block"` rather than `style.shape = "Block"`; both are
     /// accepted.
     style: Option<RawCursorStyle>,
@@ -2227,7 +2227,7 @@ struct RawCursor {
     /// calling it a blink.
     blink_interval: u64,
     /// Seconds of blinking after which the cursor is left solid; `0` blinks
-    /// forever.  A timeout that would cut the first blink short is stretched
+    /// forever. A timeout that would cut the first blink short is stretched
     /// to one full show and hide.
     blink_timeout: u8,
 }
@@ -2258,21 +2258,21 @@ impl RawCursor {
 #[serde(untagged)]
 enum RawCursorStyle {
     /// Just the shape: `"Block"`, `"Underline"`, `"Beam"`, `"HollowBlock"` or
-    /// `"Hidden"`.  Lowercase spellings are accepted too.
+    /// `"Hidden"`. Lowercase spellings are accepted too.
     Shape(String),
     /// Shape and blinking together.
     Detailed {
         /// `"Block"`, `"Underline"`, `"Beam"`, `"HollowBlock"` or `"Hidden"`.
         /// Lowercase spellings are accepted too.
         shape: Option<String>,
-        /// `"Never"`, `"Off"`, `"On"` or `"Always"`.  Lowercase spellings are
-        /// accepted too.  `Never` and `Always` overrule what the running
+        /// `"Never"`, `"Off"`, `"On"` or `"Always"`. Lowercase spellings are
+        /// accepted too. `Never` and `Always` overrule what the running
         /// program asks for; `Off` and `On` only choose the starting state.
         blinking: Option<String>,
     },
 }
 
-/// `[ui.cursor]`: the cursor keys alacritty has no equivalent for.  Upstream
+/// `[ui.cursor]`: the cursor keys alacritty has no equivalent for. Upstream
 /// warns about keys it does not know, so these live in `alacritree.toml`
 /// rather than beside `[cursor]` in the shared file.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -2280,10 +2280,10 @@ enum RawCursorStyle {
 struct RawUiCursor {
     /// Glide the cursor to its new cell instead of redrawing it there.
     animate: bool,
-    /// How long that glide takes, in milliseconds.  Zero draws every cell
+    /// How long that glide takes, in milliseconds. Zero draws every cell
     /// directly, the same as leaving `animate` off.
     animation_ms: u64,
-    /// Cells the cursor has to jump before the glide is worth playing.  Below
+    /// Cells the cursor has to jump before the glide is worth playing. Below
     /// this it snaps, which keeps ordinary typing from smearing.
     animation_min_cells: u8,
 }
@@ -2307,7 +2307,7 @@ impl RawUiCursor {
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 #[serde(default)]
 struct RawMouse {
-    /// Hide the mouse pointer while typing.  The next pointer motion, click
+    /// Hide the mouse pointer while typing. The next pointer motion, click
     /// or wheel tick brings it back.
     hide_when_typing: bool,
 }
@@ -2381,12 +2381,12 @@ struct RawPadding {
 #[serde(default)]
 struct RawTerminal {
     /// The program each session runs, as either a bare path or a table with
-    /// arguments.  Unset uses `$SHELL` (the login shell as a fallback) on
+    /// arguments. Unset uses `$SHELL` (the login shell as a fallback) on
     /// Unix and PowerShell on Windows.
     shell: Option<RawShell>,
     /// Whether an application may use OSC 52 to write the clipboard, read
-    /// it, both, or neither.  Upstream alacritty's key, so it belongs in the
-    /// shared `alacritty.toml`.  An application that can read the clipboard
+    /// it, both, or neither. Upstream alacritty's key, so it belongs in the
+    /// shared `alacritty.toml`. An application that can read the clipboard
     /// can read whatever was last copied anywhere else.
     osc52: SerdeOsc52,
 }
@@ -2468,10 +2468,10 @@ struct RawColors {
     /// The eight bright ANSI colors (8–15).
     #[serde(default)]
     bright: RawBrightSet,
-    /// The eight dim ANSI colors.  Unset derives them from `normal`.
+    /// The eight dim ANSI colors. Unset derives them from `normal`.
     #[serde(default)]
     dim: Option<RawSet>,
-    /// Overrides within the 16–255 range of the 256-color palette.  Unlisted
+    /// Overrides within the 16–255 range of the 256-color palette. Unlisted
     /// indices keep their standard values.
     #[serde(default)]
     indexed_colors: Vec<RawIndexed>,
@@ -2488,10 +2488,10 @@ struct RawPrimary {
     /// Default background color.
     background: RgbStr,
     /// Foreground for bold text, used only when
-    /// `draw_bold_text_with_bright_colors` is `true`.  Unset uses
+    /// `draw_bold_text_with_bright_colors` is `true`. Unset uses
     /// `foreground`.
     bright_foreground: Option<RgbStr>,
-    /// Foreground for dimmed text.  Unset derives it from `foreground`.
+    /// Foreground for dimmed text. Unset derives it from `foreground`.
     dim_foreground: Option<RgbStr>,
 }
 
@@ -2510,9 +2510,9 @@ impl Default for RawPrimary {
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 #[serde(default)]
 struct RawInverted {
-    /// Foreground glyph color.  Alacritty calls this `text`; we accept both.
+    /// Foreground glyph color. Alacritty calls this `text`; we accept both.
     text: Option<RgbStr>,
-    /// Background block color.  Alacritty calls this `cursor`; we accept both.
+    /// Background block color. Alacritty calls this `cursor`; we accept both.
     cursor: Option<RgbStr>,
     /// Alias for `text`.
     foreground: Option<RgbStr>,
@@ -2621,22 +2621,22 @@ struct RawIndexed {
 #[serde(default)]
 struct RawWsl {
     /// Keep a resident helper process per distro for foreground probes,
-    /// batched git queries, and tool discovery.  `false` restores one-shot
+    /// batched git queries, and tool discovery. `false` restores one-shot
     /// wsl.exe spawns everywhere; WSL sessions then always report "no
     /// TUI", so FocusLeft/FocusRight always move panel focus.
     resident_helper: bool,
     /// Distro-side mount point for Windows drives, mirroring wsl.conf's
-    /// `[automount] root`.  Only used for paths *we* translate (git output
+    /// `[automount] root`. Only used for paths *we* translate (git output
     /// from inside a distro); `wsl.exe --cd` translates with the distro's
-    /// real mount table regardless of this value.  Unset means `/mnt`; the
+    /// real mount table regardless of this value. Unset means `/mnt`; the
     /// key stays optional so the deprecated `[ui.wsl]` spelling can still win
     /// when this one is absent.
     automount_root: Option<String>,
     /// Keep one pre-launched terminal per distro a session has opened in, and
     /// hand it to the next WSL session there instead of launching `wsl.exe`.
     /// A launch can hang for half a minute while WSL compacts memory; a spare
-    /// is already past that point.  Costs one idle `wsl.exe` and `sh` per
-    /// distro.  Read at startup.
+    /// is already past that point. Costs one idle `wsl.exe` and `sh` per
+    /// distro. Read at startup.
     warm_spare: bool,
 }
 
@@ -2646,8 +2646,8 @@ impl Default for RawWsl {
     }
 }
 
-/// `[ui.icons]`: sidebar glyph overrides.  A bare string sets the glyph
-/// alone; a table also styles color/weight/slant/size.  Any glyph works, so
+/// `[ui.icons]`: sidebar glyph overrides. A bare string sets the glyph
+/// alone; a table also styles color/weight/slant/size. Any glyph works, so
 /// Nerd Font users can substitute their own icons.
 #[derive(Debug, Deserialize, serde::Serialize, JsonSchema)]
 #[serde(default)]
@@ -2705,27 +2705,27 @@ struct RawIcons {
     refresh: RawIconStyle,
     /// The drag handle a row is reordered by.
     reorder: RawIconStyle,
-    /// An agent waiting with nothing in flight.  Unset follows
+    /// An agent waiting with nothing in flight. Unset follows
     /// `[ui] status_indicators`: `◯` in both sets.
     #[serde(skip_serializing_if = "Option::is_none")]
     agent_idle: Option<RawIconStyle>,
-    /// An agent at work.  Unset draws the braille loader; a glyph replaces
+    /// An agent at work. Unset draws the braille loader; a glyph replaces
     /// it.
     #[serde(skip_serializing_if = "Option::is_none")]
     agent_working: Option<RawIconStyle>,
-    /// An agent held at a dialog it needs a human to answer.  Unset follows
+    /// An agent held at a dialog it needs a human to answer. Unset follows
     /// `[ui] status_indicators`: `⬤` for dots, `×` for symbols.
     #[serde(skip_serializing_if = "Option::is_none")]
     agent_blocked: Option<RawIconStyle>,
-    /// An agent that finished a turn while nobody was looking.  Unset follows
+    /// An agent that finished a turn while nobody was looking. Unset follows
     /// `[ui] status_indicators`: `⬤` for dots, `✓` for symbols.
     #[serde(skip_serializing_if = "Option::is_none")]
     agent_done: Option<RawIconStyle>,
-    /// An agent nothing could read a state from.  Unset follows
+    /// An agent nothing could read a state from. Unset follows
     /// `[ui] status_indicators`: `◯` for dots, `?` for symbols.
     #[serde(skip_serializing_if = "Option::is_none")]
     agent_unknown: Option<RawIconStyle>,
-    /// A session that rang while nobody was looking.  Unset draws `⬤` in
+    /// A session that rang while nobody was looking. Unset draws `⬤` in
     /// both sets.
     #[serde(skip_serializing_if = "Option::is_none")]
     attention: Option<RawIconStyle>,
@@ -2839,20 +2839,20 @@ struct RawSessionReorder {
 }
 
 /// Corrections applied to what the font reports for its underline and
-/// strikeout.  Each value is `"2px"` (physical pixels, added), `"2pt"` or a
-/// bare `"2"` (points, added), or `"150%"` (a multiplier).  Positive moves a
-/// line down, matching kitty and ghostty.  A percentage takes no sign.  A
+/// strikeout. Each value is `"2px"` (physical pixels, added), `"2pt"` or a
+/// bare `"2"` (points, added), or `"150%"` (a multiplier). Positive moves a
+/// line down, matching kitty and ghostty. A percentage takes no sign. A
 /// zero offset draws what the font asked for.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(default)]
 struct RawDecorations {
     /// Shift or scale of how far the underline sits from the top of the
-    /// cell, for the straight, dotted and dashed styles.  The double and
+    /// cell, for the straight, dotted and dashed styles. The double and
     /// curly styles are placed from the font's descent instead, so this
     /// knob does not reach them.
     #[schemars(extend("pattern" = r"^(-?[0-9]*\.?[0-9]+(px|pt)?|[0-9]*\.?[0-9]+%)$"))]
     underline_position: String,
-    /// Shift or scale of the underline's stroke weight.  Every style draws
+    /// Shift or scale of the underline's stroke weight. Every style draws
     /// with this value, including double and curly.
     #[schemars(extend("pattern" = r"^(-?[0-9]*\.?[0-9]+(px|pt)?|[0-9]*\.?[0-9]+%)$"))]
     underline_thickness: String,
@@ -2878,15 +2878,15 @@ impl Default for RawDecorations {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(default)]
 struct RawUiFont {
-    /// Family for sidebars, tabs and dialogs.  Unset uses the terminal font.
+    /// Family for sidebars, tabs and dialogs. Unset uses the terminal font.
     family: Option<String>,
     /// Point size for the sidebar font.
     size: Option<f32>,
-    /// Family used where the sidebar draws bold.  Unset uses `family`.
+    /// Family used where the sidebar draws bold. Unset uses `family`.
     bold_family: Option<String>,
-    /// Family used where the sidebar draws italic.  Unset uses `family`.
+    /// Family used where the sidebar draws italic. Unset uses `family`.
     italic_family: Option<String>,
-    /// Family used where the sidebar draws bold italic.  Unset uses `family`.
+    /// Family used where the sidebar draws bold italic. Unset uses `family`.
     bold_italic_family: Option<String>,
     /// Draw the sidebar's own symbols from the bundled subset rather than from
     /// the configured family, so a font missing them still renders.
@@ -2913,7 +2913,7 @@ struct RawFocusOutline {
     sidebar: bool,
     /// Outline the terminal when it holds keyboard focus.
     terminal: bool,
-    /// Outline color.  Unset uses the sidebar accent.
+    /// Outline color. Unset uses the sidebar accent.
     color: Option<RgbStr>,
     /// Outline thickness in pixels.
     thickness: f32,
@@ -3075,7 +3075,7 @@ struct RawTasksSidebarColors {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(default)]
 struct RawUiDrop {
-    /// Accept dropped files at all.  `false` turns every target off.
+    /// Accept dropped files at all. `false` turns every target off.
     enabled: bool,
     /// Write a dropped file's path into the terminal.
     terminal: bool,
@@ -3117,7 +3117,7 @@ struct RawUiPaste {
     /// Paste an image held on the clipboard by writing it to a file and
     /// pasting that path.
     image: bool,
-    /// Where pasted images are written.  Unset uses a cache directory.
+    /// Where pasted images are written. Unset uses a cache directory.
     image_dir: Option<String>,
     /// How many pasted images to keep before the oldest are removed, at least
     /// one. A directory named by `image_dir` is never swept.
@@ -3191,16 +3191,16 @@ struct MovedUiKeys {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(default)]
 struct RawUi {
-    /// Sidebar background.  Unset derives it from the terminal palette.
+    /// Sidebar background. Unset derives it from the terminal palette.
     sidebar_background: Option<RgbStr>,
-    /// Sidebar text color.  Unset derives it from the terminal palette.
+    /// Sidebar text color. Unset derives it from the terminal palette.
     sidebar_foreground: Option<RgbStr>,
     /// Color of the line between a sidebar and the terminal.
     sidebar_border: Option<RgbStr>,
-    /// Accent for selected rows and focus outlines.  Unset uses the palette's
+    /// Accent for selected rows and focus outlines. Unset uses the palette's
     /// `normal.blue`.
     sidebar_accent: Option<RgbStr>,
-    /// Badge color for a session asking to be looked at.  Unset uses the
+    /// Badge color for a session asking to be looked at. Unset uses the
     /// palette's `normal.yellow`.
     sidebar_attention: Option<RgbStr>,
     /// Post a desktop notification when a hidden session rings the bell;
@@ -3210,8 +3210,8 @@ struct RawUi {
     /// session that resumes work inside it swallows the ping.
     attention_grace_ms: u64,
     /// Glyph set for agent status marks, on native and multiplexer rows
-    /// alike: "dots" | "symbols".  Dots draws two same-sized circles, hollow
-    /// and filled, and tells states apart by colour; symbols by shape.  `[ui.icons]` overrides one
+    /// alike: "dots" | "symbols". Dots draws two same-sized circles, hollow
+    /// and filled, and tells states apart by colour; symbols by shape. `[ui.icons]` overrides one
     /// state at a time.
     status_indicators: ClosedSet<StatusIndicators>,
     /// When the sidebar × on a session row asks before killing the PTY:
@@ -3224,7 +3224,7 @@ struct RawUi {
     confirm_session_detach: bool,
     /// Whether the sidebar's sessions toggle counts an unattached herdr row
     /// the same as a live session: an agent nothing is attached to, and,
-    /// once `show_panes` is on, an agentless pane.  Off keeps the toggle's
+    /// once `show_panes` is on, an agentless pane. Off keeps the toggle's
     /// original session-only behavior, and those rows stay hidden even under
     /// a workspace a live session keeps.
     sessions_filter_counts_detached: bool,
@@ -3238,8 +3238,8 @@ struct RawUi {
     /// closed falls back to that sibling.
     return_to_previous_session: bool,
     /// Whether a session whose child has exited stays on screen instead of
-    /// closing with it: "never" | "on_error" | "always".  A held session
-    /// writes one line into its own grid naming the key that closes it.  A
+    /// closing with it: "never" | "on_error" | "always". A held session
+    /// writes one line into its own grid naming the key that closes it. A
     /// herdr attach that was refused is held whatever this says, since its
     /// refusal message is the only report of what happened.
     hold_exited_sessions: ClosedSet<HoldExitedSessions>,
@@ -3294,7 +3294,7 @@ struct RawUi {
     upstream_status: bool,
     /// Re-check on a 1.5 s tick whether each listed worktree's checkout is
     /// still on disk, so a `git worktree remove` typed into one of our own
-    /// sessions greys the row without waiting for a manual refresh.  The
+    /// sessions greys the row without waiting for a manual refresh. The
     /// probe is one `stat` per listed row, which an exotic filesystem could
     /// make expensive.
     worktree_liveness: bool,
@@ -3315,7 +3315,7 @@ struct RawUi {
     wsl: RawUiWsl,
     /// Named shell launch profiles, offered when starting a session.
     profiles: Vec<RawProfile>,
-    /// Name of the profile new sessions use.  Must match a `[[ui.profiles]]`
+    /// Name of the profile new sessions use. Must match a `[[ui.profiles]]`
     /// entry, or it is ignored with a warning.
     default_profile: Option<String>,
     /// Cursor movement, which alacritty's `[cursor]` has no keys for.
@@ -3425,7 +3425,7 @@ struct RawPathStyle {
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 #[serde(default)]
 struct RawTextEmphasis {
-    /// Text color.  Unset inherits the row's foreground.
+    /// Text color. Unset inherits the row's foreground.
     color: Option<RgbStr>,
     /// Draw bold.
     bold: bool,
@@ -3433,7 +3433,7 @@ struct RawTextEmphasis {
     italic: bool,
 }
 
-/// One `[[ui.profiles]]` entry.  Fields are optional so a malformed entry
+/// One `[[ui.profiles]]` entry. Fields are optional so a malformed entry
 /// degrades to a warning instead of failing the whole config parse.
 #[derive(Debug, Default, Deserialize, serde::Serialize, JsonSchema)]
 #[serde(default)]
@@ -3449,7 +3449,7 @@ struct RawProfile {
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 #[serde(default)]
 struct RawWorkspace {
-    /// Where new worktrees are created.  `$project` expands to the
+    /// Where new worktrees are created. `$project` expands to the
     /// repository's directory name.
     worktree_dir: Option<String>,
     /// Per-project overrides of `worktree_dir`.
@@ -3465,9 +3465,9 @@ struct RawWorktreeOverride {
 }
 
 /// Expand a leading `~` to the home directory and require the result to be
-/// absolute.  Relative paths are rejected rather than resolved against the
+/// absolute. Relative paths are rejected rather than resolved against the
 /// process CWD, which is meaningless for a GUI app; `~user` expansion is not
-/// supported.  Returns `None` (after logging) for anything unusable.
+/// supported. Returns `None` (after logging) for anything unusable.
 fn parse_config_path(raw: &str, key: &str) -> Option<PathBuf> {
     let path = if raw == "~" || raw.starts_with("~/") || raw.starts_with("~\\") {
         let Some(home) = home::home_dir() else {
@@ -3983,7 +3983,7 @@ mod tests {
         serde_json::from_str(&dump).expect("valid JSON")
     }
 
-    /// An install with no config file writes nothing.  The baseline has to be
+    /// An install with no config file writes nothing. The baseline has to be
     /// the config that path produces, not `Config::default`, which carries no
     /// key bindings and would report all of the built-in ones as changes.
     #[test]
@@ -4597,7 +4597,7 @@ list = ['ls']
     #[test]
     fn a_retired_sidebar_focus_value_still_parses_to_the_default() {
         // "reset" named the pre-reconciler behavior and was removed rather than
-        // kept as a mode.  A config file carrying it must start, not refuse.
+        // kept as a mode. A config file carrying it must start, not refuse.
         let ui = ui_from_toml("[ui]\nsidebar_focus = \"reset\"");
         assert_eq!(ui.sidebar_focus, SidebarFocus::Preserve);
     }
@@ -5140,7 +5140,7 @@ program = "second"
     }
 
     /// Three buttons paint the same glyph for three different actions, one of
-    /// which deletes a branch.  Separate keys are what let the destructive one
+    /// which deletes a branch. Separate keys are what let the destructive one
     /// be marked without touching the others.
     #[test]
     fn each_chrome_action_takes_its_own_icon_key() {
@@ -5631,7 +5631,7 @@ program = "second"
 
     /// Asserts against bare literals independent of the constants, like
     /// `the_chrome_slice_carries_the_action_and_decorative_glyphs` below, so a
-    /// typo'd `DEFAULT_*_ICON` fails here.  Three PR-status icons share `⬤`,
+    /// typo'd `DEFAULT_*_ICON` fails here. Three PR-status icons share `⬤`,
     /// so a per-glyph `contains` would miss a typo hiding behind a duplicate;
     /// comparing the full sorted multiset catches it instead.
     #[test]
@@ -5759,7 +5759,7 @@ program = "second"
         assert_eq!(Adjust::parse("150%"), Some(Adjust::Scale(1.5)));
     }
 
-    /// A percentage is a magnitude.  kitty silently takes the absolute value of a
+    /// A percentage is a magnitude. kitty silently takes the absolute value of a
     /// negative one, which gives back a line the user did not ask for and no way
     /// to tell that happened.
     #[test]
@@ -5781,7 +5781,7 @@ program = "second"
     /// `"0"` parses to `Points(0.0)` where `NONE` is `Pixels(0.0)`: the same
     /// line through `apply`, but unequal under the `PartialEq` that
     /// `changed_from_defaults` compares with, so a `"0"` default would report
-    /// an untouched config as modified.  That is why the default is `"0px"`.
+    /// an untouched config as modified. That is why the default is `"0px"`.
     #[test]
     fn the_decoration_default_parses_to_no_adjustment() {
         assert_eq!(Adjust::parse("0px"), Some(Adjust::NONE));
@@ -5823,12 +5823,12 @@ program = "second"
         assert_eq!(original, back);
     }
 
-    /// What an install with no config file resolves to.  Every literal this plan
+    /// What an install with no config file resolves to. Every literal this plan
     /// moves out of an `unwrap_or` and into a `Default` has to land on the same
     /// value it had before, and a moved literal is invisible to every other test
     /// here: the schema would publish the wrong default and agree with itself.
     ///
-    /// `ALACRITREE_UPDATE_STOCK=1` rewrites the fixture.  Doing that is only ever
+    /// `ALACRITREE_UPDATE_STOCK=1` rewrites the fixture. Doing that is only ever
     /// correct when a default genuinely changed on purpose.
     #[test]
     fn the_stock_config_is_unchanged() {
@@ -5838,7 +5838,7 @@ program = "second"
         ));
         // `default_bindings` adds Cmd chords under `#[cfg(target_os = "macos")]`,
         // so a fixture holding them fails on a Mac for a reason that has nothing
-        // to do with a default moving.  No binding literal moves in this change.
+        // to do with a default moving. No binding literal moves in this change.
         let mut resolved = serde_json::to_value(super::stock_config()).unwrap();
         resolved.as_object_mut().unwrap().remove("bindings");
         let now = serde_json::to_string_pretty(&resolved).unwrap() + "\n";

@@ -1,4 +1,4 @@
-//! Where egui key presses meet the bindings table.  `bindings` names keys and
+//! Where egui key presses meet the bindings table. `bindings` names keys and
 //! modifiers in its own types so the config parser links no GUI framework, and
 //! this module translates them once, when the app is built.
 
@@ -32,7 +32,7 @@ impl Shortcuts {
         Self { entries }
     }
 
-    /// Every binding that fires for a key press.  Alacritty runs *all*
+    /// Every binding that fires for a key press. Alacritty runs *all*
     /// matching bindings (see `Processor::process_key_bindings`), so the
     /// user's typical pattern of stacking `ClearLogNotice` + `chars = "\f"` on
     /// Ctrl+L works: the first action is our `Unsupported` no-op, the second

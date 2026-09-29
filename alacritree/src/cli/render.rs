@@ -1,6 +1,6 @@
 //! Human-readable output for the CLI.
 //!
-//! Plain `println!` — no colour, no tables, no alignment.  The replies are
+//! Plain `println!` — no colour, no tables, no alignment. The replies are
 //! short (a handful of projects, a handful of sessions), and `--json` already
 //! serves anyone who wants structure.
 

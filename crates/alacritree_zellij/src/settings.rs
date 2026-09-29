@@ -24,7 +24,7 @@ pub struct ZellijConfig {
     pub poll_interval: Duration,
     /// List panes whose working directory matches no worktree, under Home.
     pub show_unmatched: bool,
-    /// The session a new pane opens in.  `None` takes the one session
+    /// The session a new pane opens in. `None` takes the one session
     /// running on the side, and refuses when there are several.
     pub session: Option<String>,
 }

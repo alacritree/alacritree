@@ -341,7 +341,7 @@ mod tests {
         assert_eq!(roots(&list_projects(&state)).len(), 2);
     }
 
-    /// A session is a live PTY owned by a process that isn't there.  Reporting
+    /// A session is a live PTY owned by a process that isn't there. Reporting
     /// an empty session list would read as "no sessions are open", which is a
     /// different claim from "nothing can answer that".
     #[test]

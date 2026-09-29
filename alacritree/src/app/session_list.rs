@@ -1,4 +1,4 @@
-//! The open sessions and each workspace's active one.  Sessions leave only
+//! The open sessions and each workspace's active one. Sessions leave only
 //! through `remove`, which repairs the active entries a removal invalidates,
 //! so no caller has to remember to.
 
@@ -19,7 +19,7 @@ pub(super) struct SessionList {
     returns_to: HashMap<SessionId, SessionId>,
 }
 
-/// Read and per-session access.  A slice has no way to add or drop an element,
+/// Read and per-session access. A slice has no way to add or drop an element,
 /// so both stay behind `push` and `remove`.
 impl Deref for SessionList {
     type Target = [AppSession];
@@ -87,10 +87,10 @@ impl SessionList {
             .then_some(previous)
     }
 
-    /// Take `ids` out of the list and hand them back, in the order given.  A
+    /// Take `ids` out of the list and hand them back, in the order given. A
     /// workspace whose active session went hands its entry to the
     /// [`Self::return_target`] when `return_to_previous` allows one, else to
-    /// the sibling `mode` lands on, or loses it when no sibling is left.  Ids
+    /// the sibling `mode` lands on, or loses it when no sibling is left. Ids
     /// not in the list are skipped.
     pub(super) fn remove(
         &mut self,
@@ -125,7 +125,7 @@ impl SessionList {
     }
 
     /// Re-home the session at `idx` to `target` and repair both workspaces'
-    /// active entries.  True means the user was watching it, so the view
+    /// active entries. True means the user was watching it, so the view
     /// should follow it there.
     pub(super) fn move_to(
         &mut self,

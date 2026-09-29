@@ -16,7 +16,7 @@ use alacritree_vcs::{ChangeKind, FileChange, Status};
 
 pub(crate) const SOCKET_ENV: &str = "ALACRITREE_SOCKET";
 
-/// Everything a client can ask of a running alacritree.  Tagged so the wire
+/// Everything a client can ask of a running alacritree. Tagged so the wire
 /// format is `{"type": "list_sessions", …fields}` — the MCP bridge builds
 /// these directly from tool names + arguments.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,18 +78,18 @@ pub(crate) enum IpcRequest {
         branch: String,
     },
     /// Every pane the multiplexer integration has detected, whether or not a
-    /// session is attached to one.  A caller reaches an unattached pane no
+    /// session is attached to one. A caller reaches an unattached pane no
     /// other way: `ListSessions` describes only what alacritree already
     /// holds.
     ListMultiplexerPanes,
     /// Open a session on a detected multiplexer pane, the way clicking its
-    /// sidebar row does.  `side` and `terminal_id` are what
-    /// `ListMultiplexerPanes` reports.  The pane id is deliberately not the
+    /// sidebar row does. `side` and `terminal_id` are what
+    /// `ListMultiplexerPanes` reports. The pane id is deliberately not the
     /// target: it is positional and changes when a pane moves.
     ///
     /// `no_focus` opens the session behind the scenes: the workspace on
     /// screen, each workspace's active tab and the multiplexer's own focus
-    /// all stay where they were.  `multiplexer` names the one to search, as
+    /// all stay where they were. `multiplexer` names the one to search, as
     /// `ListMultiplexerPanes` spells it; omitted, every enabled one is.
     AttachMultiplexerPane {
         #[serde(default)]
@@ -99,11 +99,11 @@ pub(crate) enum IpcRequest {
         #[serde(default)]
         no_focus: bool,
     },
-    /// Open a new pane in the multiplexer and a session on it.  `side` and
+    /// Open a new pane in the multiplexer and a session on it. `side` and
     /// `workspace` both default: an omitted side picks the one the active
     /// session already belongs to, and an omitted workspace opens the pane
     /// in the focused one. `no_focus` means what it does for
-    /// `AttachMultiplexerPane`.  An omitted `multiplexer` is the active
+    /// `AttachMultiplexerPane`. An omitted `multiplexer` is the active
     /// session's, and failing that the first one enabled.
     CreateMultiplexerPane {
         #[serde(default)]
@@ -116,7 +116,7 @@ pub(crate) enum IpcRequest {
         no_focus: bool,
     },
     /// Run a named key-binding action (`FocusLeft`, `ToggleLeftSidebar`, …)
-    /// as if its key had been pressed.  `bindings::parse_action` defines the
+    /// as if its key had been pressed. `bindings::parse_action` defines the
     /// accepted names, so every action a key can be bound to is reachable
     /// over the socket without a dedicated request.
     RunAction {
@@ -165,7 +165,7 @@ fn kind_name(kind: ChangeKind) -> &'static str {
 ///
 /// [`NoInstance`](SendError::NoInstance) is kept apart from every other failure
 /// because it is not really an error: it is how the CLI learns there is no app
-/// to talk to, and falls back to serving the request itself.  Distinguishing it
+/// to talk to, and falls back to serving the request itself. Distinguishing it
 /// by matching on an error message would break the day someone rewords one.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum SendError {
@@ -191,7 +191,7 @@ pub(crate) enum SendError {
 ///
 /// The exchange runs on a worker thread because named pipes have no receive
 /// timeout (`set_recv_timeout` is an error on Windows), so the bound has to
-/// come from this side.  A request that times out leaves its thread parked on
+/// come from this side. A request that times out leaves its thread parked on
 /// the read until the app answers or dies — only reachable when the app is
 /// already wedged, and both clients are short-lived processes.
 pub(crate) fn send_request(
@@ -276,7 +276,7 @@ fn find_socket(explicit: Option<&Path>) -> std::io::Result<Stream> {
 }
 
 /// A unix socket outlives the process that bound it and has to be unlinked by
-/// hand.  A named pipe is a kernel object that disappears once its last handle
+/// hand. A named pipe is a kernel object that disappears once its last handle
 /// closes, so Windows has nothing to clean up — and the path is not a file that
 /// could be removed anyway.
 #[cfg(unix)]
@@ -289,7 +289,7 @@ pub(super) fn unlink_socket(_path: &Path) {}
 
 /// A busy pipe (every instance taken, before the listener has created the next
 /// one) blocks inside `connect` rather than failing, so the only failure a
-/// caller sees here is a socket with nothing behind it.  `send_request` bounds
+/// caller sees here is a socket with nothing behind it. `send_request` bounds
 /// the wait.
 pub(super) fn connect(path: &Path) -> std::io::Result<Stream> {
     let name = path.to_path_buf().to_fs_name::<GenericFilePath>()?;

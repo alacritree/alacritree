@@ -27,7 +27,7 @@ impl AlacritreeApp {
         origin: ActionOrigin,
     ) {
         // A palette row is dispatched with the panel still searching, and the
-        // cursor operations below act on a row the query may have hidden.  The
+        // cursor operations below act on a row the query may have hidden. The
         // keyboard path cannot reach here mid-query at all: a letter's text is
         // swallowed by the query before the binding table sees the key.
         if origin == ActionOrigin::Palette
@@ -50,7 +50,7 @@ impl AlacritreeApp {
             let id = self.sessions[idx].id;
             if let Some(editor) = self.sessions[idx].scratchpad.as_mut() {
                 // Custom `Chars` bindings can carry terminal control
-                // sequences (Shift+Tab is ESC [ Z, for example).  A
+                // sequences (Shift+Tab is ESC [ Z, for example). A
                 // document should only accept actual text here; native
                 // editing keys are handled by egui's TextEdit itself.
                 if let Ok(text) = std::str::from_utf8(&bytes)

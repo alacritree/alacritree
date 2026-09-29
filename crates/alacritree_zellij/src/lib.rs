@@ -1,10 +1,10 @@
 //! zellij as a multiplexer alacritree hosts panes from.
 //!
 //! zellij runs one server per session, and a side may hold several, so a
-//! pane is named by its session as well as its number.  A client attaches to
+//! pane is named by its session as well as its number. A client attaches to
 //! a whole session, never to one pane, and each client keeps its own focus,
 //! so every attach is a shared view that is pointed at its pane once, when
-//! it opens.  zellij detects no agents, so its panes carry no status.
+//! it opens. zellij detects no agents, so its panes carry no status.
 
 mod cli;
 mod listing;
@@ -37,7 +37,7 @@ impl From<ZellijError> for PaneError {
     }
 }
 
-/// A shared-view attach waiting on its focus call.  `job` is `None` until the
+/// A shared-view attach waiting on its focus call. `job` is `None` until the
 /// attach at the head of the queue starts it.
 struct PendingAttach {
     job: Option<jobs::Job<Result<Launch, PaneError>>>,
@@ -45,7 +45,7 @@ struct PendingAttach {
     request: AttachRequest,
 }
 
-/// How long a side that said it has no zellij goes unasked.  Asking a WSL
+/// How long a side that said it has no zellij goes unasked. Asking a WSL
 /// side can launch a `wsl.exe`, and a distro without zellij would otherwise
 /// pay for one every poll, forever.
 const ABSENT_RECHECK: Duration = Duration::from_secs(60);
@@ -62,7 +62,7 @@ struct PendingCreate {
 
 pub struct Zellij {
     config: ZellijConfig,
-    /// What each side answered in the last poll that landed.  A side that
+    /// What each side answered in the last poll that landed. A side that
     /// did not answer is absent rather than empty.
     sides: Vec<SideListing>,
     listing: Option<jobs::Job<Polled>>,
@@ -130,7 +130,7 @@ impl Zellij {
     }
 
     /// Keeps what answered, and notes the sides that said they have no
-    /// zellij.  A side that did not answer in time keeps its note as it was.
+    /// zellij. A side that did not answer in time keeps its note as it was.
     fn adopt(&mut self, polled: Polled, at: Instant) {
         self.sides.clear();
         for (side, listed) in polled {

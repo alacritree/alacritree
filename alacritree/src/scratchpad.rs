@@ -412,7 +412,7 @@ mod tests {
     }
 
     /// `insert_at_cursor` replaces the selection, so the text that survives
-    /// after the insertion starts at the *end* of the range.  Reading the
+    /// after the insertion starts at the *end* of the range. Reading the
     /// following character from `min.index` would report a character the
     /// insertion is about to delete.
     #[test]
@@ -439,7 +439,7 @@ mod tests {
         assert_eq!(editor.cursor_boundary(&ctx, 1), (Some('b'), Some('e')));
     }
 
-    /// `CCursor` counts characters, not bytes.  Indexing the buffer by byte
+    /// `CCursor` counts characters, not bytes. Indexing the buffer by byte
     /// would land mid-codepoint here.
     #[test]
     fn multibyte_neighbours_are_read_as_whole_characters() {

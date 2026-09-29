@@ -3,15 +3,15 @@
 //! `Project::discover` owns `Checkout::gone` and stays the only writer of
 //! it: the delete flow reads that flag to choose between `git worktree remove`
 //! and a prune, and `Project::apply` reads it to decide which rows survive a
-//! refresh.  This cache never touches it.  It answers one question — "should
+//! refresh. This cache never touches it. It answers one question — "should
 //! this row paint as gone?" — so a wrong answer costs a frame of styling and
-//! can never pick a destructive branch.  Every action stats the path itself at
+//! can never pick a destructive branch. Every action stats the path itself at
 //! the moment it runs.
 //!
-//! Cost is the whole design.  Probing is a syscall per path, and on a
+//! Cost is the whole design. Probing is a syscall per path, and on a
 //! `\\wsl.localhost\` UNC path that is a 9P round trip, so probes run on a
 //! worker, one batch at a time, only for rows the sidebar is drawing, and only
-//! once per interval.  `wants_probe` is what the paint path asks first: on the
+//! once per interval. `wants_probe` is what the paint path asks first: on the
 //! other ~89 frames of every 90 it is false and nothing here allocates.
 
 use std::collections::HashMap;
@@ -41,7 +41,7 @@ pub(crate) struct LivenessCache {
 
 impl LivenessCache {
     /// Whether `path` is gone, or `None` when no definite answer exists and
-    /// the row should keep discovery's word.  A definite answer overrides that
+    /// the row should keep discovery's word. A definite answer overrides that
     /// word in *both* directions: a checkout restored under a path discovery
     /// last saw as pruned has to lose the grey, or this fixes one stale
     /// direction and leaves its mirror image behind.
@@ -53,7 +53,7 @@ impl LivenessCache {
         }
     }
 
-    /// Whether the interval has elapsed.  The sidebar asks this *before* it
+    /// Whether the interval has elapsed. The sidebar asks this *before* it
     /// starts collecting the paths it draws, so a steady frame does no work
     /// and makes no allocation on this path at all.
     pub(crate) fn wants_probe(&self, now: Instant) -> bool {
@@ -62,7 +62,7 @@ impl LivenessCache {
 
     /// Take the batch to probe, forgetting every path the sidebar no longer
     /// draws — including all of them, when a filter or a collapsed project
-    /// leaves nothing eligible.  All visible paths go in together: they are
+    /// leaves nothing eligible. All visible paths go in together: they are
     /// checked on one worker, so splitting them by individual freshness would
     /// buy nothing.
     pub(crate) fn batch(&mut self, visible: &[PathBuf]) -> Vec<PathBuf> {
@@ -83,7 +83,7 @@ impl LivenessCache {
     }
 
     /// An `Unknown` result replaces the last answer rather than preserving
-    /// it.  Keeping it would leave the row claiming a checkout is gone while
+    /// it. Keeping it would leave the row claiming a checkout is gone while
     /// the backend's probe, which has no memory and refuses to call an
     /// unreadable path missing, lets that same path spawn a shell. Forgetting instead makes
     /// both say "cannot tell" and hands the row back to discovery's word.
@@ -105,7 +105,7 @@ impl LivenessCache {
     /// `None` when no batch has ever run and there is nothing to wake up for.
     /// Without that wake-up the sidebar would only re-probe when something
     /// else happened to draw a frame, and a worktree deleted from an otherwise
-    /// idle terminal would stay marked live indefinitely.  The `Option` is
+    /// idle terminal would stay marked live indefinitely. The `Option` is
     /// what keeps "no deadline" from collapsing into a zero wait, which
     /// `request_repaint_after` reads as "repaint now" — every frame, forever.
     pub(crate) fn wait(&self, now: Instant) -> Option<Duration> {
@@ -122,7 +122,7 @@ mod tests {
     }
 
     /// An unborn branch has a `HEAD` discovery reads as no branch at all, so
-    /// the two never agree.  Asking once is the most that can help.
+    /// the two never agree. Asking once is the most that can help.
     #[test]
     fn a_moved_head_asks_for_one_refresh() {
         let mut cache = LivenessCache::default();
@@ -172,7 +172,7 @@ mod tests {
         assert_eq!(cache.missing(&p("/a")), Some(true));
     }
 
-    /// A distro that stops answering turns every path it owns `Unknown`.  The
+    /// A distro that stops answering turns every path it owns `Unknown`. The
     /// row has to stop claiming those checkouts are gone, because `is_gone`
     /// has already stopped refusing to spawn shells in them.
     #[test]
@@ -191,7 +191,7 @@ mod tests {
     }
 
     /// A frame whose rows are all collapsed, filtered away or on WSL probes
-    /// nothing.  Leaving the interval open would keep `wait` at zero, and the
+    /// nothing. Leaving the interval open would keep `wait` at zero, and the
     /// caller's `request_repaint_after` would then ask for the next frame on
     /// every frame.
     #[test]

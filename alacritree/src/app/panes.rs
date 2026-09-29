@@ -1,5 +1,5 @@
 //! Sessions on panes a multiplexer owns: attaching to one, creating one, and
-//! keeping the multiplexer's focus in step with the session on screen.  What
+//! keeping the multiplexer's focus in step with the session on screen. What
 //! a multiplexer answers comes through [`MultiplexerSession`]; this file only
 //! decides what the app does with the answer.
 
@@ -16,7 +16,7 @@ impl AlacritreeApp {
     /// treats it specially; only the key marks it as this pane's row.
     /// Returns whether the attach succeeded so the caller can make `switch`
     /// first and undo it on failure: a refusal is only readable in the
-    /// workspace it happened in.  `unlisted` stands in for a pane the listing
+    /// workspace it happened in. `unlisted` stands in for a pane the listing
     /// does not carry.
     pub(super) fn attach_pane(
         &mut self,
@@ -73,7 +73,7 @@ impl AlacritreeApp {
         true
     }
 
-    /// Answer an attach once the session's PTY is live.  A client that
+    /// Answer an attach once the session's PTY is live. A client that
     /// attached to read the pane would otherwise be handed an id
     /// before anything behind it can answer.
     pub(super) fn park_attach_reply(
@@ -87,7 +87,7 @@ impl AlacritreeApp {
         }
     }
 
-    /// Open a session on every listed pane no session holds yet.  The listing
+    /// Open a session on every listed pane no session holds yet. The listing
     /// is the one the sidebar and the palette both draw, so this opens exactly
     /// the rows the user could have opened one at a time.
     ///
@@ -114,7 +114,7 @@ impl AlacritreeApp {
         }
     }
 
-    /// End every session attached to a multiplexer pane.  The panes keep
+    /// End every session attached to a multiplexer pane. The panes keep
     /// running and their rows come back unattached, so this destroys nothing.
     pub(super) fn detach_every_multiplexer_pane(&mut self, ctx: &Context) {
         if !self.multiplexers.any_enabled() {
@@ -172,7 +172,7 @@ impl AlacritreeApp {
     }
 
     /// Adopt the creates the multiplexers have answered, handing each pane to
-    /// the same attach a click takes.  The workspace is switched to first, so
+    /// the same attach a click takes. The workspace is switched to first, so
     /// the session and any refusal are both readable where they were asked
     /// for.
     pub(super) fn poll_pane_creates(&mut self, ctx: &Context) {
@@ -222,7 +222,7 @@ impl AlacritreeApp {
         }
     }
 
-    /// Adopt the shared-view attaches whose calls have landed.  Each session
+    /// Adopt the shared-view attaches whose calls have landed. Each session
     /// opens in the workspace its own click came from, which that click
     /// switched to before handing the gesture over.
     pub(super) fn poll_pane_attaches(&mut self, ctx: &Context) {
@@ -296,7 +296,7 @@ impl AlacritreeApp {
             workspace_after_failed_attach(&self.current_workspace, switched_to, previous);
     }
 
-    /// Open the session that runs an attach client.  A shared view starts on
+    /// Open the session that runs an attach client. A shared view starts on
     /// the pane the gesture just focused, so the multiplexer is already where
     /// the new session's row says it is and no second focus is owed.
     ///
@@ -462,7 +462,7 @@ impl AlacritreeApp {
     }
 
     /// Every listed pane no session holds, with the workspace it belongs
-    /// under.  The sidebar and the palette both read this, so a pane hidden
+    /// under. The sidebar and the palette both read this, so a pane hidden
     /// from one is hidden from the other by construction.
     pub(super) fn pane_listing(&self) -> Vec<ListedPane<'_>> {
         let claimed: Vec<PaneKey> =
@@ -482,7 +482,7 @@ impl AlacritreeApp {
             .map(|(ws, _)| ws)
     }
 
-    /// The pane `key` names, if its multiplexer still lists it.  A stale key
+    /// The pane `key` names, if its multiplexer still lists it. A stale key
     /// (the pane closed between poll and paint, or an Enter that outraced
     /// this frame's own listing) yields no row rather than a panic; the next
     /// poll drops it from the listing for good.
@@ -491,7 +491,7 @@ impl AlacritreeApp {
     }
 
     /// The pane this session is attached to, while its multiplexer still
-    /// lists it.  The multiplexer watches the pane from outside, so it is the
+    /// lists it. The multiplexer watches the pane from outside, so it is the
     /// authority on both what the pane is called and what it is doing.
     pub(super) fn session_pane(&self, session: &AppSession) -> Option<&Pane> {
         self.find_pane(session.pane_key.as_ref()?)
@@ -501,7 +501,7 @@ impl AlacritreeApp {
         self.session_pane(session).and_then(|pane| pane.status)
     }
 
-    /// Whether the multiplexer reports an agent in the pane `key` names.  A
+    /// Whether the multiplexer reports an agent in the pane `key` names. A
     /// pane the listing no longer carries answers true, as does a session
     /// that holds no pane: with nothing to read, the agent-registry answer is
     /// the one that keeps every caller on the path it took before the pane
@@ -561,7 +561,7 @@ impl AlacritreeApp {
         self.multiplexers.get(key.multiplexer).managed(&key.side, Some(pane))
     }
 
-    /// What supervises `session`, when anything does.  Derived per frame
+    /// What supervises `session`, when anything does. Derived per frame
     /// rather than stored, so a config read that lands later, or a
     /// multiplexer that stops listing the pane, reaches the row without a
     /// second source of truth to keep in step.
@@ -598,11 +598,11 @@ impl AlacritreeApp {
     }
 
     /// Attach to a pane the way its sidebar row does, holding the reply until
-    /// the session behind it can be read.  A refusal names what went wrong
+    /// the session behind it can be read. A refusal names what went wrong
     /// precisely enough to act on: a side that names no server, a pane no
     /// multiplexer is reporting, and an integration that is switched off are
     /// three different situations, and only the last is worth retrying after
-    /// a config change.  `multiplexer` narrows the search to the one named.
+    /// a config change. `multiplexer` narrows the search to the one named.
     pub(super) fn defer_attach_multiplexer_pane(
         &mut self,
         ctx: &Context,
@@ -638,7 +638,7 @@ impl AlacritreeApp {
         }
     }
 
-    /// Create a pane and open a session on it.  An omitted side is the one
+    /// Create a pane and open a session on it. An omitted side is the one
     /// the active session's own pane belongs to, since a user asking for
     /// another pane while looking at one means another like it; with no
     /// multiplexer-backed session in front of them there is no such answer,
@@ -692,8 +692,8 @@ impl AlacritreeApp {
 
     /// Where a create lands: the multiplexer and side the active session's
     /// own pane belongs to, and failing that the first multiplexer enabled,
-    /// on the one side a server is answering on.  `only` holds both to the
-    /// multiplexer a caller named.  `Err` names every side it could have
+    /// on the one side a server is answering on. `only` holds both to the
+    /// multiplexer a caller named. `Err` names every side it could have
     /// meant, so a caller can retry saying which.
     pub(super) fn create_target(
         &self,
@@ -751,7 +751,7 @@ impl Action for action::DetachAllMultiplexerPanes {
     }
 }
 
-/// Where the user lands when an attach fails after switching them.  The job
+/// Where the user lands when an attach fails after switching them. The job
 /// answers frames later, so a switch made in between is theirs and outranks
 /// the restore: `previous` is handed back only while `current` is still the
 /// workspace the attach moved them to.
@@ -763,9 +763,9 @@ pub(super) fn workspace_after_failed_attach(
     if current == switched_to { previous } else { current.clone() }
 }
 
-/// The workspaces a pane may be matched against.  A checkout that looks gone
+/// The workspaces a pane may be matched against. A checkout that looks gone
 /// offers none, which is what makes a pane working there unmatched rather
-/// than parked under a row that can only refuse it.  `missing` is the
+/// than parked under a row that can only refuse it. `missing` is the
 /// liveness cache's word for a path, `None` where it has none, so the row's
 /// grey and this list agree about the same directory.
 pub(super) fn pane_workspaces(
@@ -782,11 +782,11 @@ pub(super) fn pane_workspaces(
 
 /// What a multiplexer-managed row explains on hover, one fact per comma: the
 /// state, since that is what changes; who reports it; whether the attach is
-/// the multiplexer's whole view; and what it calls the pane.  The way out
+/// the multiplexer's whole view; and what it calls the pane. The way out
 /// follows in parentheses, since it is an instruction rather than another
 /// fact about the pane.
 ///
-/// The same sentence serves a listed pane and an attached one.  The chord has
+/// The same sentence serves a listed pane and an attached one. The chord has
 /// no other surface in alacritree, since it is the multiplexer's key and not
 /// one of ours, so it has to reach the row the user is sitting in.
 pub(super) fn managed_tooltip(managed: &Managed) -> String {
@@ -877,7 +877,7 @@ mod tests {
     }
 
     /// A checkout the liveness cache calls gone offers no workspace, so the
-    /// pane working in it matches nothing and lists under Home.  Matched to
+    /// pane working in it matches nothing and lists under Home. Matched to
     /// the removed worktree instead, its row's Enter could only refuse.
     #[test]
     fn a_gone_worktree_offers_no_workspace_to_a_pane() {

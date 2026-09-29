@@ -1,9 +1,9 @@
 //! Copies the PTY byte stream on its way through, so the OSC tap can see the
 //! sequences `vte`'s `ansi` layer drops.
 //!
-//! The copy is all this layer does.  The read thread can be holding the
+//! The copy is all this layer does. The read thread can be holding the
 //! terminal lock, so it hands the bytes to a thread of their own rather than
-//! waiting on anything.  Buffers cycle through a return channel rather than
+//! waiting on anything. Buffers cycle through a return channel rather than
 //! being allocated per read.
 
 use std::io::{self, Read};
@@ -58,7 +58,7 @@ impl TapHandle {
                 }
                 self.dropped = true;
             },
-            // The tap thread is gone.  Reads carry on without it.
+            // The tap thread is gone. Reads carry on without it.
             Err(TrySendError::Disconnected(_)) => self.dead = true,
         }
     }

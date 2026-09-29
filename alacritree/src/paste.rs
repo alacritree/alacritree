@@ -1,4 +1,4 @@
-//! Port of `alacritty/src/event.rs::paste` and `copy_selection`.  Alacritty
+//! Port of `alacritty/src/event.rs::paste` and `copy_selection`. Alacritty
 //! is a binary crate so we can't link to it directly; the logic itself is
 //! pure terminal protocol and trivial to mirror.
 
@@ -23,9 +23,9 @@ pub(crate) fn paste(session: &mut Session<impl Repaint>, text: &str, bracketed: 
 /// The bytes a paste puts on the PTY.
 ///
 /// ESC and ETX are stripped inside a bracketed paste so the text cannot forge
-/// the end marker.  Without bracketed paste the receiving application cannot
+/// the end marker. Without bracketed paste the receiving application cannot
 /// tell a paste from typing, so a newline has to become `\r` — which is also
-/// what Enter sends, meaning any newline reaching here submits a line.  That is
+/// what Enter sends, meaning any newline reaching here submits a line. That is
 /// why text built from filenames is filtered first
 /// (`file_drop::is_terminal_safe`).
 pub(crate) fn paste_bytes(text: &str, bracketed: bool, bracketed_active: bool) -> Vec<u8> {

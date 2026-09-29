@@ -2,9 +2,9 @@
 //! `[cursor] style.blinking`.
 //!
 //! alacritty runs a repeating timer that flips a flag and a one-shot that
-//! stops it.  egui has no scheduler and wants an answer per frame, so the
+//! stops it. egui has no scheduler and wants an answer per frame, so the
 //! phase is derived from how long the current run of blinking has lasted: an
-//! even half-cycle shows the cursor, an odd one hides it.  Typing restarts
+//! even half-cycle shows the cursor, an odd one hides it. Typing restarts
 //! that clock, which is what holds the cursor solid while you type.
 
 use std::time::{Duration, Instant};
@@ -22,7 +22,7 @@ pub(crate) struct Blink {
 }
 
 impl Blink {
-    /// Whether the blink hides the cursor this frame.  `blinking` is the
+    /// Whether the blink hides the cursor this frame. `blinking` is the
     /// resolved on/off, and passing `false` ends the run, so the cursor turns
     /// solid the moment focus or the program's request goes away.
     pub(crate) fn resolve(&mut self, config: &CursorBlink, blinking: bool, now: Instant) -> bool {

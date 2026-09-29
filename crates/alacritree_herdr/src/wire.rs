@@ -11,7 +11,7 @@ use alacritree_multiplexer::{Pane, PaneStatus};
 use super::Listing;
 
 impl Listing {
-    /// Panes from one reply.  An entry missing an identity — or, where the
+    /// Panes from one reply. An entry missing an identity — or, where the
     /// entry is an agent, a status — is dropped on its own; its siblings
     /// still parse.
     pub fn parse(self, stdout: &str) -> Vec<Pane> {
@@ -35,7 +35,7 @@ pub(super) fn parse_pane_info(value: serde_json::Value) -> Option<Pane> {
     serde_json::from_value::<RawPane>(value).ok()?.into_agent(Listing::Panes)
 }
 
-/// herdr's word for an agent's state.  An unrecognised string is `Unknown`, so
+/// herdr's word for an agent's state. An unrecognised string is `Unknown`, so
 /// a value herdr adds later renders as a plain row instead of dropping the
 /// agent.
 pub(super) fn parse_status(raw: &str) -> PaneStatus {
@@ -67,7 +67,7 @@ struct Envelope {
     result: Option<Listed>,
 }
 
-/// The one key the two listings differ in.  Both are absent-tolerant, so a
+/// The one key the two listings differ in. Both are absent-tolerant, so a
 /// reply is read under the listing that was asked for rather than under
 /// whichever key happens to be present.
 #[derive(Deserialize)]
@@ -78,7 +78,7 @@ struct Listed {
     panes: Vec<RawPane>,
 }
 
-/// Only the fields the sidebar renders.  Everything else herdr sends is
+/// Only the fields the sidebar renders. Everything else herdr sends is
 /// ignored, so an additive protocol change costs nothing.
 #[derive(Deserialize)]
 struct RawPane {
@@ -134,7 +134,7 @@ pub(super) struct RawSession {
     pub(super) running: bool,
 }
 
-/// What `tab create` answers.  Only the ids an attach needs are read; the
+/// What `tab create` answers. Only the ids an attach needs are read; the
 /// tab block and the pane's own metadata arrive on the next listing poll
 /// like every other pane's.
 #[derive(Deserialize)]
@@ -147,9 +147,9 @@ pub(super) struct CreatedTabResult {
     pub(super) root_pane: CreatedPaneIds,
 }
 
-/// The ids herdr names a new pane by.  None is optional: an empty pane id
+/// The ids herdr names a new pane by. None is optional: an empty pane id
 /// would be sent back to herdr as an attach target, so a reply that carries
-/// no pane is a parse failure rather than a pane with no name.  The tab id is
+/// no pane is a parse failure rather than a pane with no name. The tab id is
 /// the only handle a pane running a shell has, since `agent focus` resolves
 /// through a registry that holds nothing for it.
 #[derive(Deserialize)]
@@ -160,7 +160,7 @@ pub(super) struct CreatedPaneIds {
 }
 
 #[cfg(test)]
-/// Captured from a native Windows server.  The second pane runs a plain
+/// Captured from a native Windows server. The second pane runs a plain
 /// shell: herdr carries no `agent` key for it and calls its status
 /// `unknown`, which is the state word of an agent it cannot classify and
 /// not a claim that one is there.
@@ -175,7 +175,7 @@ pub(super) const PANES: &str = r#"{"id":"cli:pane:list","result":{"panes":[
      "scroll":{"offset_from_bottom":0},"workspace_id":"w1"}],"type":"pane_list"}}"#;
 
 #[cfg(test)]
-/// Captured from `herdr tab create --focus`.  The tab block and the rest of
+/// Captured from `herdr tab create --focus`. The tab block and the rest of
 /// the pane's fields are kept as herdr sent them, so a reader that starts
 /// depending on one has a real sample to read it out of.
 pub(super) const CREATED_TAB: &str = r#"{"id":"cli:tab:create","result":{"type":"tab_created","tab":{"tab_id":"w_1:2","workspace_id":"w_1","number":2,"label":"review","focused":true,"pane_count":1,"agent_status":"unknown"},"root_pane":{"pane_id":"w_1-3","terminal_id":"term_example","workspace_id":"w_1","tab_id":"w_1:2","focused":true,"cwd":"/tmp/review","agent_status":"unknown"}}}"#;
@@ -223,7 +223,7 @@ mod tests {
         assert_eq!(Listing::Agents.parse(stdout)[0].kind, None);
     }
 
-    /// Captured from a native Windows server.  `skip_serializing_if` drops
+    /// Captured from a native Windows server. `skip_serializing_if` drops
     /// `foreground_cwd`, `name`, `display_agent` and `agent_session` rather
     /// than emitting them as null.
     const WINDOWS: &str = r#"{"id":"cli:agent:list","result":{"agents":[

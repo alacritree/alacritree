@@ -21,12 +21,12 @@ use alacritree_multiplexer::{
 
 use crate::settings::HerdrConfig;
 
-/// A shared-view attach waiting on herdr.  The gesture answers with the argv
+/// A shared-view attach waiting on herdr. The gesture answers with the argv
 /// its client runs, so everything the session needs is in hand by the time it
 /// opens.
 pub struct PendingAttach {
     pub job: Option<jobs::Job<Result<Launch, PaneError>>>,
-    /// The pane to focus once the gesture runs.  A pane the listing has since
+    /// The pane to focus once the gesture runs. A pane the listing has since
     /// dropped is focused as this said, since nothing newer says otherwise.
     pub target: PaneTarget,
     pub key: PaneKey,
@@ -74,7 +74,7 @@ impl Herdr {
         self.cache(side).map(EndpointCache::settings).unwrap_or_default()
     }
 
-    /// Logs a failed gesture.  One that timed out says the call was slow to
+    /// Logs a failed gesture. One that timed out says the call was slow to
     /// reach herdr, which on a loaded WSL side is the `wsl.exe` launch rather
     /// than herdr, so a live stream is left alone and only a side already
     /// down skips the rest of its backoff.
@@ -102,7 +102,7 @@ impl Herdr {
         }
     }
 
-    /// Where herdr's focus goes for the pane a session is bound to.  The
+    /// Where herdr's focus goes for the pane a session is bound to. The
     /// displayed listing drops a pane with no agent in it unless panes are
     /// shown, so a bound shell pane is found through what the side's full
     /// listing last said about it.
@@ -425,7 +425,7 @@ impl MultiplexerSession for Herdr {
     }
 
     /// Local session switches focus herdr; a settled view follows later
-    /// focus changes made inside herdr.  Listings started before our focus
+    /// focus changes made inside herdr. Listings started before our focus
     /// landed cannot reverse the user's session selection.
     fn sync_view(&mut self, state: ViewState<'_>) -> ViewStep {
         let action = self.focused_view.next(ViewInputs {
@@ -642,7 +642,7 @@ mod tests {
     }
 
     /// A gesture that times out says the call was slow to reach herdr, which
-    /// on a loaded WSL side is the `wsl.exe` launch, not herdr.  A stream
+    /// on a loaded WSL side is the `wsl.exe` launch, not herdr. A stream
     /// herdr is still feeding stays up rather than being torn down and
     /// relaunched through the same stall.
     #[test]

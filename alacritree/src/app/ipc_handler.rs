@@ -1,4 +1,4 @@
-//! The app side of the IPC channel.  Requests run on the UI thread inside
+//! The app side of the IPC channel. Requests run on the UI thread inside
 //! `update` so every request sees and mutates app state the same way user
 //! input does; the connection thread blocks on `reply_tx` meanwhile.
 
@@ -28,7 +28,7 @@ impl AlacritreeApp {
         }
     }
 
-    /// One session as the IPC reply describes it.  `agent`, `busy` and
+    /// One session as the IPC reply describes it. `agent`, `busy` and
     /// `multiplexer` are nullable because a plain shell has no agent, a
     /// multiplexer-backed session has no foreground job of its own to probe,
     /// and a session owning its PTY belongs to no multiplexer.
@@ -310,7 +310,7 @@ impl AlacritreeApp {
     }
 }
 
-/// `SessionActivity` as the reply spells it.  A plain shell is null rather
+/// `SessionActivity` as the reply spells it. A plain shell is null rather
 /// than an object, so a consumer testing for presence needs no second field.
 ///
 /// `state` is the live reading, except that a finished turn nobody has looked

@@ -4,7 +4,7 @@ use super::*;
 
 pub(super) struct SidebarFocusState {
     /// `[ui] search_scope`: whether a live query stands down both panels'
-    /// toggle filters.  Toggled at runtime, never persisted.
+    /// toggle filters. Toggled at runtime, never persisted.
     pub(super) search_scope: SearchScope,
     /// What the reconciler itself last wrote. A different value on the next
     /// pass means the user navigated through a click, session cycling, the
@@ -25,7 +25,7 @@ impl AlacritreeApp {
     ///
     /// Borrows rather than clones, because the reconciler checks it on every
     /// frame and `tests/steady_state.rs` holds the unchanged path to no
-    /// allocation at all.  Session titles are left out unless a query is
+    /// allocation at all. Session titles are left out unless a query is
     /// live, so a shell repainting its prompt does not invalidate rows no
     /// title can change.
     fn sidebar_inputs(
@@ -131,7 +131,7 @@ impl AlacritreeApp {
         });
     }
 
-    /// Move the terminal to a removal landing.  A workspace target adopts its
+    /// Move the terminal to a removal landing. A workspace target adopts its
     /// active session, or its first live one when that entry went stale.
     fn apply_follow_target(&mut self, ctx: &Context, target: sidebar_focus::FollowTarget) {
         match target {
@@ -311,7 +311,7 @@ impl Action for action::ToggleSearchScope {
     }
 }
 
-/// The cache generation the reconciler observes.  Held at `0` unless a PR
+/// The cache generation the reconciler observes. Held at `0` unless a PR
 /// filter is active, so a banked result only invalidates a row set that
 /// actually depends on PR state.
 pub(super) fn pr_generation_for(generation: u64, any_pr_toggle_active: bool) -> u64 {
@@ -326,7 +326,7 @@ pub(super) struct SidebarFocusWrite {
     pub(super) active: Option<SessionId>,
 }
 
-/// Whether focus moved behind the reconciler's back.  The active session is
+/// Whether focus moved behind the reconciler's back. The active session is
 /// part of the comparison because the tab and session cycling actions can
 /// switch sessions without leaving the workspace, changing nothing else.
 /// Comparing the resulting state rather than matching on action names covers
@@ -346,7 +346,7 @@ pub(super) fn sidebar_focus_overtaken(
 }
 
 /// A close-fallback verdict the reconciler owes the terminal, and the worktree
-/// whose rows must already read as gone.  The verdict is carried rather than
+/// whose rows must already read as gone. The verdict is carried rather than
 /// recomputed because only `close_fallback` knows the difference between
 /// staying put, hopping to the project's main checkout, and going home.
 #[derive(Debug)]
@@ -354,7 +354,7 @@ pub(super) struct DeferredClose {
     pub(super) verdict: CloseFallback,
     /// Set when an asynchronous worktree deletion is in flight: `projects`
     /// still lists it, so without this the reconciler would see an intact row
-    /// and could spawn a shell inside the directory being removed.  It pairs
+    /// and could spawn a shell inside the directory being removed. It pairs
     /// with any verdict, including a ring landing in another project.
     pub(super) removed_worktree: Option<PathBuf>,
 }
@@ -457,7 +457,7 @@ mod tests {
         use crate::sidebar_nav::{self, SidebarRow};
 
         let projects = vec![sidebar_nav::tests::project("/a", true, &["/a/wt1"])];
-        // One live session in the worktree.  The real rule needs two before it
+        // One live session in the worktree. The real rule needs two before it
         // lists any, so this one is live but unprojected.
         let live = vec![(Some(PathBuf::from("/a/wt1")), 7)];
         let listed = {
@@ -526,7 +526,7 @@ mod tests {
     /// The rows below a worktree being deleted must stay navigable.
     ///
     /// The projection is built before the deletion is known, so it still
-    /// lists the doomed worktree.  The builder consumes that projection in
+    /// lists the doomed worktree. The builder consumes that projection in
     /// lockstep, so skipping the worktree without stepping the index leaves
     /// it parked on a row nothing will ever match again — every later node
     /// reads as unprojected, and the cursor repair treats an unprojected row

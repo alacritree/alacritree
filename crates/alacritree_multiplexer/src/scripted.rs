@@ -4,7 +4,7 @@
 //! satisfying [`MultiplexerSession`] could not become one, and app tests
 //! reached past the seam into herdr's wire format instead.
 //!
-//! Nothing here runs a subprocess or watches a clock.  The listing is whatever
+//! Nothing here runs a subprocess or watches a clock. The listing is whatever
 //! `set_panes` was handed, and each queued attach or create takes the next
 //! answer the test pushed.
 
@@ -40,7 +40,7 @@ pub struct QueuedCreate {
 pub struct Scripted {
     enabled: bool,
     /// Whether opening a row attaches to the one pane or shares the whole
-    /// view.  Both multiplexers in production answer this differently, so the
+    /// view. Both multiplexers in production answer this differently, so the
     /// app is tested against each.
     direct: bool,
     /// Panes matching no workspace are listed under Home.
@@ -53,7 +53,7 @@ pub struct Scripted {
     dropped: Vec<(Side, Pane)>,
     /// When a side last reported a terminal gone, keyed as `retained` is.
     gone: HashMap<(String, String), Instant>,
-    /// The side a create naming none lands on.  `None` refuses, naming why.
+    /// The side a create naming none lands on. `None` refuses, naming why.
     default_side: Option<Side>,
     attach_queue: Vec<QueuedAttach>,
     attach_answers: Vec<Result<Launch, PaneError>>,
@@ -78,7 +78,7 @@ impl Scripted {
     }
 
     /// A pane carrying only an identity, for the tests that care about nothing
-    /// else.  `with_*` fills in what a particular test does care about.
+    /// else. `with_*` fills in what a particular test does care about.
     pub fn pane(terminal_id: &str) -> Pane {
         Pane {
             terminal_id: terminal_id.to_string(),
@@ -120,7 +120,7 @@ impl Scripted {
         self
     }
 
-    /// Replace what `side` is listing.  Every pane the side was carrying and
+    /// Replace what `side` is listing. Every pane the side was carrying and
     /// this listing does not is remembered as dropped, so `retained` keeps
     /// describing a pane a session still holds.
     pub fn set_panes(&mut self, side: &Side, panes: Vec<Pane>) -> &mut Self {
@@ -143,7 +143,7 @@ impl Scripted {
         self
     }
 
-    /// What the next queued attach resolves to.  Answers are taken in the
+    /// What the next queued attach resolves to. Answers are taken in the
     /// order they were pushed.
     pub fn answer_attach(&mut self, launch: Result<Launch, PaneError>) -> &mut Self {
         self.attach_answers.push(launch);
@@ -172,7 +172,7 @@ impl Scripted {
     }
 }
 
-/// Spelling a pane for a test.  Every field a multiplexer reports is public,
+/// Spelling a pane for a test. Every field a multiplexer reports is public,
 /// so these only exist to keep a pane one expression at the call site.
 impl Pane {
     pub fn with_agent(mut self, kind: &str, status: PaneStatus) -> Self {
@@ -322,7 +322,7 @@ impl MultiplexerSession for Scripted {
     }
 
     /// One at a time, in the order they were queued, each taking the next
-    /// scripted answer.  A queue with no answer left waiting is still
+    /// scripted answer. A queue with no answer left waiting is still
     /// pending, which is how a test holds an attach open.
     fn poll_attach(&mut self) -> (Option<AttachAnswer>, bool) {
         if self.attach_queue.is_empty() {
@@ -349,7 +349,7 @@ impl MultiplexerSession for Scripted {
         Some(CreateAnswer { side, request, pane })
     }
 
-    /// Hands back whatever `propose_follow` last wrote, once.  Nothing here
+    /// Hands back whatever `propose_follow` last wrote, once. Nothing here
     /// watches a clock, so a test decides when a move happened.
     fn sync_view(&mut self, _state: ViewState<'_>) -> ViewStep {
         let follow = self.follow.take();

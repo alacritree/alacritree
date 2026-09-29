@@ -35,11 +35,11 @@ const FONT_LICENSE: &str = include_str!("../../assets/FONT-LICENSE.txt");
 
 /// One `-o` fragment, which is a whole TOML document rather than a bare
 /// `key=value`, so a dotted key does the nesting: `ui.upstream_status=true` parses
-/// to `{ui = {upstream_status = true}}`.  Mirrors alacritty's `ParsedOptions`.
+/// to `{ui = {upstream_status = true}}`. Mirrors alacritty's `ParsedOptions`.
 ///
 /// Alacritty warns and skips a fragment it cannot parse, because the same
 /// values also arrive at runtime over IPC, where refusing would kill a live
-/// window.  These only arrive at launch, so refusing is safe here, and a
+/// window. These only arrive at launch, so refusing is safe here, and a
 /// measurement run that silently dropped the setting it was varying is worse
 /// than one that never started.
 fn parse_override(fragment: &str) -> Result<toml::Value, toml::de::Error> {
@@ -98,20 +98,20 @@ enum Command {
         command: ProjectCommand,
     },
 
-    /// Terminal sessions.  Needs a running alacritree.
+    /// Terminal sessions. Needs a running alacritree.
     Session {
         #[command(subcommand)]
         command: SessionCommand,
     },
 
-    /// Panes of the terminal multiplexer alacritree has detected.  Needs a
+    /// Panes of the terminal multiplexer alacritree has detected. Needs a
     /// running alacritree.
     Multiplexer {
         #[command(subcommand)]
         command: MultiplexerCommand,
     },
 
-    /// The focused workspace.  Needs a running alacritree.
+    /// The focused workspace. Needs a running alacritree.
     Workspace {
         #[command(subcommand)]
         command: WorkspaceCommand,
@@ -130,7 +130,7 @@ enum Command {
     },
 
     /// Run a named key-binding action in the running window, as if its key
-    /// had been pressed.  Needs a running alacritree.
+    /// had been pressed. Needs a running alacritree.
     Action {
         /// Action name as accepted in `[[keyboard.bindings]]`, e.g. FocusLeft.
         name: String,
@@ -156,7 +156,7 @@ enum Command {
         harness: String,
     },
 
-    /// Crashed and indeterminate sessions, newest first.  Clean exits and
+    /// Crashed and indeterminate sessions, newest first. Clean exits and
     /// still-running sessions are hidden unless `--all` is given.
     Crashes {
         /// Also show clean exits and still-running sessions.
@@ -181,7 +181,7 @@ enum Command {
     /// Write a shell completion script to stdout.
     Completions { shell: Shell },
 
-    /// Print the JSON Schema for the config files to stdout.  Editors that
+    /// Print the JSON Schema for the config files to stdout. Editors that
     /// speak the TOML language server use it for completion, hover docs and
     /// validation; see `docs/alacritree.md`.
     Schema {
@@ -190,7 +190,7 @@ enum Command {
     },
 
     /// Take the crash recorder lock and panic, to prove the hook does not
-    /// deadlock against itself.  Debug builds only.
+    /// deadlock against itself. Debug builds only.
     #[cfg(debug_assertions)]
     #[command(hide = true)]
     ProvokeLockPanic,
@@ -202,11 +202,11 @@ enum ProjectCommand {
     List,
     /// Add a project to the sidebar.
     Add { path: PathBuf },
-    /// Remove a project from the sidebar.  Touches no files.
+    /// Remove a project from the sidebar. Touches no files.
     Remove { root: PathBuf },
     /// Re-scan a project's worktrees and default branch.
     Refresh {
-        /// A path inside the project or any of its worktrees.  Defaults to the
+        /// A path inside the project or any of its worktrees. Defaults to the
         /// current directory.
         #[arg(conflicts_with = "all")]
         path: Option<PathBuf>,
@@ -259,7 +259,7 @@ enum SessionCommand {
         #[arg(long, value_name = "N", default_value_t = 0)]
         scrollback: usize,
     },
-    /// Re-home a session under another worktree in the sidebar.  The running
+    /// Re-home a session under another worktree in the sidebar. The running
     /// process is untouched; inside an alacritree session, your own id is in
     /// $ALACRITREE_SESSION_ID.
     Move {
@@ -277,7 +277,7 @@ enum MultiplexerCommand {
     Attach {
         /// `native`, or `wsl:<distro>`, as `multiplexer list` reports it.
         side: String,
-        /// Terminal id from `multiplexer list`.  Not the pane id, which
+        /// Terminal id from `multiplexer list`. Not the pane id, which
         /// changes when a pane moves between workspaces.
         terminal_id: String,
         /// The multiplexer holding the pane, as `multiplexer list` names it.
@@ -291,11 +291,11 @@ enum MultiplexerCommand {
     },
     /// Open a new pane in the multiplexer and a session on it.
     Create {
-        /// The multiplexer to open it in.  Omit to use the active session's,
+        /// The multiplexer to open it in. Omit to use the active session's,
         /// or else the first one enabled.
         #[arg(long)]
         multiplexer: Option<String>,
-        /// `native`, or `wsl:<distro>`.  Omit to use the side the active
+        /// `native`, or `wsl:<distro>`. Omit to use the side the active
         /// session's pane belongs to.
         #[arg(long)]
         side: Option<String>,
@@ -311,16 +311,16 @@ enum MultiplexerCommand {
 
 #[derive(Debug, Subcommand)]
 enum WorkspaceCommand {
-    /// Focus a workspace.  Omit the path for the home workspace.
+    /// Focus a workspace. Omit the path for the home workspace.
     Select { path: Option<PathBuf> },
 }
 
 #[derive(Debug, Subcommand)]
 enum SchemaCommand {
     /// Point a config at the published schema, creating a starter one when it
-    /// does not exist.  A file that already names a schema is left alone.
+    /// does not exist. A file that already names a schema is left alone.
     Init {
-        /// The config to point at the schema.  Defaults to the `alacritree.toml`
+        /// The config to point at the schema. Defaults to the `alacritree.toml`
         /// already in use, or the one the search path would pick up next.
         path: Option<PathBuf>,
     },
@@ -547,7 +547,7 @@ fn dispatch(
         Err(SendError::NoInstance) => {
             // Serving the request ourselves means resolving `[general]
             // state_dir` the way the window does, or we answer from a file
-            // nothing is writing.  Resolved here rather than in `run` because
+            // nothing is writing. Resolved here rather than in `run` because
             // a request a running instance answers never needs the config.
             let resolved = crate::config::load(config.dir, config.overrides).0;
             alacritree_common::tools::configure(resolved.integrations.tool_paths());
@@ -662,7 +662,7 @@ mod tests {
     }
 
     /// clap's own structural check: conflicting flags, bad defaults, a `global`
-    /// on a positional, and so on.  Cheap, and catches things at test time that
+    /// on a positional, and so on. Cheap, and catches things at test time that
     /// otherwise panic in a user's shell.
     #[test]
     fn the_command_tree_is_well_formed() {

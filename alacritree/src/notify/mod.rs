@@ -2,13 +2,13 @@
 //! back to the UI thread when one is clicked.
 //!
 //! Every platform notifier here is synchronous, and the freedesktop one blocks
-//! until the toast is dismissed, so posting runs on a throwaway thread.  That
+//! until the toast is dismissed, so posting runs on a throwaway thread. That
 //! thread holds no handle on the app, which is why a click travels back
 //! through a static channel instead of a callback: it only ever carries a
 //! session id, and the UI drains the channel on its next frame.
 //!
 //! The backend is per-platform: freedesktop on Unix, WinRT on Windows, the
-//! UserNotifications framework on macOS.  Only macOS needs a module of its
+//! UserNotifications framework on macOS. Only macOS needs a module of its
 //! own, because there a click arrives through a long-lived delegate rather
 //! than through the worker thread that posted the notification.
 
@@ -21,9 +21,9 @@ use std::sync::{Mutex, OnceLock};
 use crate::repaint::Repaint;
 use crate::session::{Session, SessionId};
 
-/// Channel from notification-worker threads back to the app.  Set once by
+/// Channel from notification-worker threads back to the app. Set once by
 /// `channel`; each worker reads it to deliver the session the user clicked
-/// on.  Static because the worker has no other handle to the app and there's
+/// on. Static because the worker has no other handle to the app and there's
 /// only ever one app instance per process.
 static NOTIFY_TX: OnceLock<Mutex<Sender<SessionId>>> = OnceLock::new();
 
@@ -32,14 +32,14 @@ static NOTIFY_TX: OnceLock<Mutex<Sender<SessionId>>> = OnceLock::new();
 pub(crate) fn channel() -> Receiver<SessionId> {
     let (notify_tx, notify_rx) = mpsc::channel();
     // `set` may fail only if a previous instance already initialized the
-    // static (e.g. tests).  In that case the old sender points at a dead
+    // static (e.g. tests). In that case the old sender points at a dead
     // app, so overwriting via `Mutex` would be ideal — but since we only
     // ever spawn one app per process, ignoring the error is fine.
     let _ = NOTIFY_TX.set(Mutex::new(notify_tx));
     notify_rx
 }
 
-/// Drain every queued notification click, keeping only the newest.  Clicks
+/// Drain every queued notification click, keeping only the newest. Clicks
 /// can pile up while the window is unfocused; the user most likely meant
 /// the latest one.
 pub(crate) fn latest_click(rx: &Receiver<SessionId>) -> Option<SessionId> {
@@ -59,8 +59,8 @@ thread_local! {
 }
 
 /// Spawn a throwaway thread so the platform notifier's synchronous calls
-/// don't stall the paint loop.  The thread posts the session's id back
-/// through `NOTIFY_TX` when the user clicks the notification.  `body` is an
+/// don't stall the paint loop. The thread posts the session's id back
+/// through `NOTIFY_TX` when the user clicks the notification. `body` is an
 /// application's own notification text; without one the toast says where
 /// the session is waiting.
 pub(crate) fn attention(
@@ -137,7 +137,7 @@ fn worker(body: String, id: SessionId, repaint: impl Repaint) {
 fn worker(body: String, id: SessionId, repaint: impl Repaint) {
     use tauri_winrt_notification::Toast;
     // notify-rust doesn't surface WinRT activation, so drive its own backend
-    // crate directly.  `show` returns immediately; the WinRT runtime holds
+    // crate directly. `show` returns immediately; the WinRT runtime holds
     // the activation handler, so this worker thread can exit right away.
     let result = Toast::new(Toast::POWERSHELL_APP_ID)
         .title("alacritree")

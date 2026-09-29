@@ -1,7 +1,7 @@
 //! Duplicating the log stream to a file.
 //!
 //! `env_logger` writes to exactly one target, so mirroring to a file means
-//! wrapping that target.  The sink is filled after `init()` because the
+//! wrapping that target. The sink is filled after `init()` because the
 //! preference that enables it is not known until config has loaded, and
 //! env_logger cannot be retargeted once built.
 
@@ -22,7 +22,7 @@ pub struct Tee {
     primary: Box<dyn Write + Send>,
 }
 
-/// A tee plus the handle that fills its sink later.  `Target::Pipe` takes
+/// A tee plus the handle that fills its sink later. `Target::Pipe` takes
 /// `Box<dyn Write + Send>` and moves it, so the caller can only reach the sink
 /// afterwards through a share it kept.
 pub fn tee() -> (Tee, Arc<Mutex<Option<File>>>) {
@@ -89,7 +89,7 @@ pub fn open_session_log(dir: &Path) -> Option<File> {
     None
 }
 
-/// This process's log at a path the caller named.  Truncates rather than
+/// This process's log at a path the caller named. Truncates rather than
 /// refusing a file that exists, so re-running a measurement overwrites its own
 /// output instead of failing on the second attempt.
 ///
@@ -103,7 +103,7 @@ pub fn open_log_at(path: &Path) -> Option<File> {
     File::create(path).ok()
 }
 
-/// Liveness first, age second.  An idle window can leave a week-old mtime while
+/// Liveness first, age second. An idle window can leave a week-old mtime while
 /// still running, and Windows honors a delete against an open handle — the
 /// process would keep writing into a file no path reaches.
 pub fn prune_session_logs(dir: &Path) {
@@ -199,7 +199,7 @@ mod tests {
         assert_eq!(std::fs::metadata(path).unwrap().permissions().mode() & 0o777, 0o600);
     }
 
-    /// If stderr accepts only a prefix, env_logger retries the suffix.  Writing
+    /// If stderr accepts only a prefix, env_logger retries the suffix. Writing
     /// the whole buffer while returning the short count duplicates it.
     #[test]
     fn a_short_write_mirrors_only_the_accepted_prefix() {
@@ -240,7 +240,7 @@ mod tests {
     }
 
     /// A window can idle for a week without logging, leaving a stale mtime while
-    /// the process is alive.  Deleting it would leave that process writing into
+    /// the process is alive. Deleting it would leave that process writing into
     /// an unlinked file no path reaches.
     #[test]
     fn a_live_producers_stale_log_is_spared() {

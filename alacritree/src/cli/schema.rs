@@ -2,7 +2,7 @@
 //! command that points a config at it.
 //!
 //! The document itself comes from [`crate::config::json_schema`], reflected off
-//! the `Raw*` structs serde reads.  What lives here is everything about
+//! the `Raw*` structs serde reads. What lives here is everything about
 //! *publishing* it: the id it is served under, the header an editor looks for,
 //! and the wording that only makes sense to someone reading the file.
 //!
@@ -13,10 +13,10 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-/// The published id.  The release workflow attaches this file to every GitHub
+/// The published id. The release workflow attaches this file to every GitHub
 /// Release, so `releases/latest/download` always resolves to the newest
 /// released schema — and, unlike a URL naming one tag, never needs editing when
-/// a release ships.  Someone wanting to validate against the version they run
+/// a release ships. Someone wanting to validate against the version they run
 /// substitutes their tag: `releases/download/v0.9.0/alacritree-config.json`.
 /// Both beat pointing at `master`, which would validate every config against
 /// unreleased keys.
@@ -67,7 +67,7 @@ fn publish(mut schema: serde_json::Value, id: &str, title: &str, description: &s
 
 /// Strip the `null`s schemars emits for every `Option`.
 ///
-/// TOML has no null.  A key is present with a value or it is absent, so an
+/// TOML has no null. A key is present with a value or it is absent, so an
 /// `anyOf` branch of `{"type": "null"}`, a `"null"` in a type union, and a
 /// `"default": null` all describe something no config file can hold — and the
 /// last of the three is worse than noise, since an editor shows it as the key's
@@ -118,7 +118,7 @@ fn directive() -> String {
 }
 
 /// A starter with every setting commented out, so nothing is active until its
-/// owner has read it.  alacritree runs on its defaults with no config at all,
+/// owner has read it. alacritree runs on its defaults with no config at all,
 /// and a starter that changed the sidebar colours on contact would be a worse
 /// introduction than an empty file.
 const STARTER: &str = r##"
@@ -155,7 +155,7 @@ impl InitError {
 }
 
 /// Point `path` at the published schema, creating it from [`STARTER`] when it
-/// does not exist.  Idempotent: a file that already carries a directive is left
+/// does not exist. Idempotent: a file that already carries a directive is left
 /// exactly as it is, so this is safe to run against a config under review.
 pub(super) fn init(path: &Path) -> Result<(), InitError> {
     let existing = match std::fs::read_to_string(path) {
@@ -210,7 +210,7 @@ mod tests {
     #[test]
     fn a_partial_config_is_not_an_error() {
         // Each file is a layer, and either may carry a subset — a config that
-        // only sets `[ui] sidebar_accent` is the common case.  Editors validate
+        // only sets `[ui] sidebar_accent` is the common case. Editors validate
         // the file in front of them, never the merged result, so a required key
         // anywhere at the top level would mark correct files as wrong.
         assert!(parsed().get("required").is_none());
@@ -263,7 +263,7 @@ mod tests {
     #[test]
     fn a_defaulted_key_publishes_its_value_and_not_null() {
         // TOML cannot write null, so a `"default": null` offers a value no
-        // config file can hold.  A key that resolves to a fixed value
+        // config file can hold. A key that resolves to a fixed value
         // publishes that value instead.
         let schema = parsed();
         let pr_status = &schema["$defs"]["RawGh"]["properties"]["pr_status"];
@@ -303,7 +303,7 @@ mod tests {
         assert_eq!(schema["$defs"]["Color"]["pattern"], "^(0[xX]|#)?[0-9a-fA-F]{6}$");
     }
 
-    /// The suggestions and the parser are two hand-maintained lists.  A name
+    /// The suggestions and the parser are two hand-maintained lists. A name
     /// completed from the schema that the parser then calls unknown is worse
     /// than no suggestion at all.
     #[test]

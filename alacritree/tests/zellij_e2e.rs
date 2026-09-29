@@ -1,7 +1,7 @@
 //! The zellij CLI calls alacritree makes, against a throwaway session.
 //!
 //! Opt-in, since they need a zellij binary: natively, or inside a running
-//! WSL distro.  A machine with neither passes without checking anything.
+//! WSL distro. A machine with neither passes without checking anything.
 //! Run them with `cargo nextest run -p alacritree --test zellij_e2e
 //! --run-ignored ignored-only`.
 
@@ -27,7 +27,7 @@ fn run(side: &Side, program: &str, args: &[&str]) -> Output {
         .expect("the zellij side runs")
 }
 
-/// A side with zellij on it, and the program that reaches it there.  A
+/// A side with zellij on it, and the program that reaches it there. A
 /// distro's own login shell finds a zellij the `sh` that alacritree's WSL
 /// calls use may not, so the path it finds is used as written.
 fn zellij_side() -> Option<(Side, String)> {

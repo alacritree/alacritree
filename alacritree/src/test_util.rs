@@ -23,7 +23,7 @@ pub(crate) fn herdr_pane_key(side: Side, terminal_id: &str) -> PaneKey {
     alacritree_herdr::pane_key(side, terminal_id.to_string())
 }
 
-/// How a row describes a pane on `side`.  `shared_view` is what a multiplexer
+/// How a row describes a pane on `side`. `shared_view` is what a multiplexer
 /// answers when opening the row shows someone else's pane rather than handing
 /// over the pane itself.
 pub(crate) fn managed(pane: &Pane, side: &Side, shared_view: bool) -> Managed {
@@ -61,7 +61,7 @@ const SCRATCH_PREFIX: &str = "alacritree-test-scratch-";
 /// A fixture written under a fixed name is shared with every other test binary
 /// running at the same time, and one this process has memory-mapped cannot be
 /// rewritten by them at all: Windows fails that write with
-/// `ERROR_USER_MAPPED_FILE`.  Nothing deletes these on the way out, so the
+/// `ERROR_USER_MAPPED_FILE`. Nothing deletes these on the way out, so the
 /// first caller sweeps the ones whose process has gone.
 pub(crate) fn scratch_dir() -> &'static Path {
     static DIR: OnceLock<PathBuf> = OnceLock::new();

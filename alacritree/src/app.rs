@@ -115,7 +115,7 @@ struct Theme {
     text_dim: Color32,
     text_muted: Color32,
     accent: Color32,
-    /// "Needs attention" highlight.  Distinct from `accent` ("active
+    /// "Needs attention" highlight. Distinct from `accent` ("active
     /// workspace") so the two signals don't read as the same thing.
     attention: Color32,
     /// PR badge colors, mapped to GitHub's conventions from the ANSI palette.
@@ -141,7 +141,7 @@ struct Theme {
     /// chrome secondary to the grid.
     font_normal: f32,
     /// Multiplier applied to hard-coded UI sizes (icons, paddings, modal
-    /// widths) so the chrome scales with `font.size`.  Anchored to the
+    /// widths) so the chrome scales with `font.size`. Anchored to the
     /// historical 11.25-logical-pixel baseline so unmodified config keeps the
     /// existing layout proportions.
     ui_scale: f32,
@@ -179,7 +179,7 @@ struct GitColors {
     conflicted: Color32,
 }
 
-/// One colour per agent state that has one of its own.  Working paints in the
+/// One colour per agent state that has one of its own. Working paints in the
 /// accent and a ping in the attention colour, both of which the rest of the
 /// sidebar already uses.
 #[derive(Debug, Clone, Copy)]
@@ -414,7 +414,7 @@ fn blend_toward(c: Color32, target: Color32, amount: f32) -> Color32 {
 }
 
 /// How long after the user's last event the worktree liveness tick keeps
-/// asking for frames.  Long enough that a `git worktree remove` typed at a
+/// asking for frames. Long enough that a `git worktree remove` typed at a
 /// prompt finishes and greys its row; short enough that a window left open
 /// goes back to producing no frames at all.
 const PROBE_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
@@ -451,14 +451,14 @@ pub struct AlacritreeApp {
     /// Whether the sidebar `[ui.tasks] sidebar` picks draws the tasks.
     show_tasks_sidebar: bool,
     focus: PaneFocus,
-    /// Runtime copies of `[ui.session_display]`.  The config is only the
+    /// Runtime copies of `[ui.session_display]`. The config is only the
     /// startup default; toggles flip these and are never persisted.
     session_rows_always: bool,
     session_tabs_always: bool,
-    /// Runtime copy of `[ui.session_reorder] drag`.  Like the display toggles
+    /// Runtime copy of `[ui.session_reorder] drag`. Like the display toggles
     /// above, the config is only the startup default and nothing is persisted.
     session_drag: bool,
-    /// Runtime copy of `[ui] sessions_filter_counts_detached`.  Like the
+    /// Runtime copy of `[ui] sessions_filter_counts_detached`. Like the
     /// display toggles above, the config is only the startup default and
     /// nothing is persisted.
     sessions_filter_counts_detached: bool,
@@ -468,14 +468,14 @@ pub struct AlacritreeApp {
     sidebar_auto_shown: bool,
     /// The workspace and session the projects panel last scrolled to, so a
     /// change is detected by comparison rather than by every writer of those
-    /// two fields remembering to raise a flag.  Written only once a scroll
+    /// two fields remembering to raise a flag. Written only once a scroll
     /// actually fires, so a change whose row renders nowhere is retried.
     last_followed: (WorkspaceKey, Option<SessionId>),
     git_panel: git_panel::GitPanel,
     tasks_panel: Option<tasks_panel::TasksPanel>,
     sidebar_focus_state: focus::SidebarFocusState,
     /// `[ui] search_depth`: whether a projects-panel query also matches
-    /// session titles and multiplexer pane names.  Not runtime-toggled.
+    /// session titles and multiplexer pane names. Not runtime-toggled.
     search_depth: SearchDepth,
     /// The Ctrl+K command palette (query, selection, matcher). Transient:
     /// never persisted.
@@ -515,12 +515,12 @@ pub struct AlacritreeApp {
     color_glyphs: crate::color_glyph::ColorGlyphCache,
     glyph_cache: crate::glyph_cache::GlyphCache,
     /// The `[font.normal]` face's own decoration metrics, parsed once when the
-    /// fonts were installed.  Nothing re-reads the file per frame.
+    /// fonts were installed. Nothing re-reads the file per frame.
     face_metrics: crate::fonts::FaceMetrics,
     /// Scratch buffers the painter copies the visible grid into, so the
     /// terminal lock is released before any shape is built.
     grid_snapshot: crate::terminal_view::GridSnapshot,
-    /// Buffers and GL objects the terminal grid is drawn with.  The GL side is
+    /// Buffers and GL objects the terminal grid is drawn with. The GL side is
     /// built on the first paint, the first time a GL context is reachable.
     gpu_grid: crate::grid_gl::GpuGrid,
     /// Present only when frame timing was asked for; `None` is the normal run.
@@ -529,12 +529,12 @@ pub struct AlacritreeApp {
     /// How much of the frame in progress went to painting the terminal grid,
     /// as opposed to the sidebars and everything else sharing it.
     grid_paint: std::time::Duration,
-    /// Geometry of the terminal pane as `terminal_view` last painted it.  A
+    /// Geometry of the terminal pane as `terminal_view` last painted it. A
     /// session spawned into an empty workspace is born at this size rather
     /// than at a constant, so a shell fast enough to print before the first
     /// paint prints into the grid it will keep.
     last_pane_geometry: Option<(TermSize, (f32, f32))>,
-    /// In-flight background re-discoveries, keyed by project root.  Neither
+    /// In-flight background re-discoveries, keyed by project root. Neither
     /// backend may block paint: wsl.exe takes seconds while the distro VM
     /// boots, and native discovery takes tens of milliseconds on a project
     /// with many worktrees. Results are adopted in `poll_project_refreshes`.
@@ -543,7 +543,7 @@ pub struct AlacritreeApp {
     /// that refreshes a project to act on the new worktree list would
     /// otherwise race its own request.
     project_refreshes: InFlight<PathBuf, Discovered>,
-    /// PTYs opened on a worker, adopted in `poll_pending_spawns`.  A client
+    /// PTYs opened on a worker, adopted in `poll_pending_spawns`. A client
     /// that creates a session to write to it is answered once the PTY is
     /// live, or it would race its own shell.
     pending_spawns: InFlight<SessionId, std::io::Result<Attachment>>,
@@ -553,13 +553,13 @@ pub struct AlacritreeApp {
     /// Row styling only, never `Checkout::gone`, which the delete flow
     /// reads to choose between removing a worktree and pruning it.
     liveness: worktree_liveness::LivenessCache,
-    /// The probe job in flight, if any.  One at a time: a path slower than
+    /// The probe job in flight, if any. One at a time: a path slower than
     /// the interval stretches freshness rather than queueing more work.
     liveness_probe: Option<jobs::Job<Vec<(PathBuf, alacritree_vcs::Probe)>>>,
-    /// When the user last gave the app an event.  Timed wake-ups are armed
+    /// When the user last gave the app an event. Timed wake-ups are armed
     /// only just after one, so an app left open overnight goes fully quiet.
     last_input: Instant,
-    /// When input the user aimed at this window last arrived.  Distinct from
+    /// When input the user aimed at this window last arrived. Distinct from
     /// `last_input`, which also advances on bare pointer motion, and which
     /// the liveness probe reads as its grace period.
     last_direct_input: Option<Instant>,
@@ -693,7 +693,7 @@ impl AlacritreeApp {
         // Anchor every text style to the terminal font: titles (unmodified
         // labels) use `Body`/`Heading` at 100% of the grid's text size, and
         // every other UI label (`.small()`, buttons) drops to 80% via
-        // `font_normal`.  Spacing knobs scale with the normal-text size so
+        // `font_normal`. Spacing knobs scale with the normal-text size so
         // paddings/widths track changes to `font.size`.
         let mut style = (*ctx.style()).clone();
         let scale = theme.ui_scale;
@@ -714,7 +714,7 @@ impl AlacritreeApp {
         s.icon_spacing *= scale;
         s.text_edit_width *= scale;
         // egui's debug build paints "Unaligned" labels next to widgets whose
-        // edges land on fractional physical pixels.  Our chrome scaling
+        // edges land on fractional physical pixels. Our chrome scaling
         // produces non-integer sizes by design (matching `font.size`), so the
         // warning is noise rather than signal, so silence it everywhere.
         // `Style::debug` itself is `#[cfg(debug_assertions)]` in egui, so the
@@ -863,7 +863,7 @@ impl AlacritreeApp {
         });
     }
 
-    /// Set or clear a project's display label and persist it.  Returns the
+    /// Set or clear a project's display label and persist it. Returns the
     /// project's index so IPC can reply with its JSON.
     fn rename_project(&mut self, root: &Path, label: Option<String>) -> Result<usize, NotAProject> {
         let idx = self
@@ -934,7 +934,7 @@ impl AlacritreeApp {
             // A panicked probe adopts nothing, and an interval that never
             // restarts leaves `wants_probe` true: the next frame starts
             // another batch, and the pool wakes a frame at every job end, so
-            // a probe that fails every time would run at frame rate.  An
+            // a probe that fails every time would run at frame rate. An
             // empty round restarts the interval the same way.
             Some((None, true)) => {
                 self.liveness_probe = None;
@@ -1000,7 +1000,7 @@ impl AlacritreeApp {
     }
 
     /// Re-discover every project holding a checkout whose `HEAD` has left the
-    /// branch discovery recorded.  That branch keys the PR badge and the row
+    /// branch discovery recorded. That branch keys the PR badge and the row
     /// label, and discovery otherwise runs only when something asks for it.
     fn refresh_moved_branches(
         &mut self,
@@ -1067,9 +1067,9 @@ impl AlacritreeApp {
     }
 
     /// Push a session record and get its PTY opened: inline when the gate is
-    /// off, on the job pool when it is on.  The record exists before this
+    /// off, on the job pool when it is on. The record exists before this
     /// returns either way, so a caller can activate the tab without waiting
-    /// for a shell.  Callers decide whether it becomes the active session.
+    /// for a shell. Callers decide whether it becomes the active session.
     fn open_session(
         &mut self,
         session: AppSession,
@@ -1109,7 +1109,7 @@ impl AlacritreeApp {
         Ok(id)
     }
 
-    /// Adopt every PTY that finished opening.  A session whose record is gone
+    /// Adopt every PTY that finished opening. A session whose record is gone
     /// was closed while it was opening: dropping the attachment shuts its
     /// shell down rather than resurrecting the tab.
     fn poll_pending_spawns(&mut self, ctx: &Context) {
@@ -1185,12 +1185,12 @@ impl AlacritreeApp {
     /// The geometry to open a PTY at, so it is born at the size it will keep.
     /// Under the gate this matters: a session that opened at 80x24 and was
     /// resized on attach makes a fast child print its first output into a grid
-    /// that is about to be reflowed under it.  Three tiers, most exact first:
+    /// that is about to be reflowed under it. Three tiers, most exact first:
     /// the active session's own numbers when one exists; the terminal pane's
     /// last painted size when it doesn't, which covers a respawn after
     /// `close_session` removes the active entry before the replacement spawns;
     /// 80x24 when neither is available, which only the constructor reaches,
-    /// since no frame has painted yet to leave a better number behind.  Never
+    /// since no frame has painted yet to leave a better number behind. Never
     /// `self.sessions.last()`, an arbitrary session possibly in another
     /// workspace at a different pane size.
     fn next_spawn_geometry(&self) -> (TermSize, (f32, f32)) {
@@ -1542,7 +1542,7 @@ impl AlacritreeApp {
     }
 
     /// Remove `ids`, all of them from `workspace`, and settle where the view
-    /// goes.  Every close of a session that got a record comes through here,
+    /// goes. Every close of a session that got a record comes through here,
     /// so each gets the same cleanup and lands by the same rules.
     fn close_sessions(
         &mut self,
@@ -1753,7 +1753,7 @@ impl AlacritreeApp {
     /// lists, which is the safe default for a caller we cannot place.
     ///
     /// The same path can be listed by two projects, so any row that calls it a
-    /// linked worktree decides.  Taking the first match instead would let
+    /// linked worktree decides. Taking the first match instead would let
     /// sidebar order pick the weaker test, and the husk of a linked checkout
     /// would read as alive.
     fn worktree_gone(&self, path: &Path) -> bool {
@@ -1795,7 +1795,7 @@ impl AlacritreeApp {
     ///
     /// A session attached to a harness pane is not among them: its place in
     /// the sidebar is the pane's place in the harness, which alacritree does
-    /// not own and cannot write back.  Moving one inside `self.sessions`
+    /// not own and cannot write back. Moving one inside `self.sessions`
     /// would change nothing on screen and quietly change the tab order, so
     /// every reorder path reads its subject and its landing slots from here.
     fn workspace_reorder_indices(&self, ws: &WorkspaceKey) -> Vec<usize> {
@@ -1809,7 +1809,7 @@ impl AlacritreeApp {
 
     /// `ws`'s sessions in the order the sidebar and the tab strip draw them:
     /// alacritree's own first, then the harness-backed ones in the harness's
-    /// order.  Every ring the user steps through is built from here, so a
+    /// order. Every ring the user steps through is built from here, so a
     /// press walks the list on screen rather than the order the sessions
     /// happened to open in. The two part company as soon as a harness pane
     /// is attached out of the harness's own order.
@@ -1829,7 +1829,7 @@ impl AlacritreeApp {
     }
 
     /// The workspaces a reorder may use: those the app is willing to switch
-    /// to, minus any whose delete is already running.  A session landing on a
+    /// to, minus any whose delete is already running. A session landing on a
     /// spinner row is a session that delete is about to reap.
     fn reorderable_workspaces(&self) -> Vec<WorkspaceKey> {
         self.workspace_order()
@@ -1842,7 +1842,7 @@ impl AlacritreeApp {
     }
 
     /// The workspace a session sits in, and the workspaces a reorder may carry
-    /// it through.  A scratchpad or diff pane belongs to its workspace, so its
+    /// it through. A scratchpad or diff pane belongs to its workspace, so its
     /// range is that workspace alone whatever the scope says. The keyboard and
     /// the mouse both read the rule from here so neither can offer a landing
     /// the move would refuse.
@@ -1876,7 +1876,7 @@ impl AlacritreeApp {
     }
 
     /// Apply a decided move: change the workspace first when the target is a
-    /// different one, then walk the session to its position there.  Reports the
+    /// different one, then walk the session to its position there. Reports the
     /// workspace the session actually ended up in, or `None` when the move was
     /// refused and the session stayed where it was.
     fn apply_session_move(&mut self, id: SessionId, target: StepTarget) -> Option<WorkspaceKey> {
@@ -2124,7 +2124,7 @@ impl AlacritreeApp {
     /// Put a project in the sidebar without stalling the frame: discovery
     /// opens the repository, lists worktrees, opens each one, and detects the
     /// default branch, none of which is free on a loaded machine (WSL roots
-    /// also pay `wsl.exe`'s startup cost on top).  Every root goes in as a
+    /// also pay `wsl.exe`'s startup cost on top). Every root goes in as a
     /// placeholder and discovers on a worker.
     fn add_project_off_thread(&mut self, ctx: &Context, path: PathBuf) {
         if self.projects.iter().any(|p| p.root == path) {
@@ -2136,7 +2136,7 @@ impl AlacritreeApp {
         self.persist_project(&path);
     }
 
-    /// Send this frame's dropped files wherever they landed.  All of the
+    /// Send this frame's dropped files wherever they landed. All of the
     /// deciding happens in `file_drop`; this only reaches the sinks.
     fn handle_dropped_files(&mut self, ctx: &Context, regions: &file_drop::Regions) {
         let paths: Vec<PathBuf> =
@@ -2211,7 +2211,7 @@ impl AlacritreeApp {
 
     /// Move a project so it sits before display index `insert_before`, keyed by
     /// root so a drag that started before a background refresh still targets the
-    /// right project.  `insert_before` counts positions in the pre-move list.
+    /// right project. `insert_before` counts positions in the pre-move list.
     fn move_project(&mut self, from_root: &Path, insert_before: usize) {
         let Some(from) = self.projects.iter().position(|p| p.root == *from_root) else {
             return;
@@ -2224,7 +2224,7 @@ impl AlacritreeApp {
         self.persist_project_order();
     }
 
-    /// Rewrite the persisted project order to match the in-memory list.  Roots
+    /// Rewrite the persisted project order to match the in-memory list. Roots
     /// only on disk (added by another window) keep their relative order at the
     /// end, so reordering here never drops a project this window can't see.
     fn persist_project_order(&self) {
@@ -2262,7 +2262,7 @@ impl AlacritreeApp {
         // repair it immediately rather than waiting for the first key press.
         self.fresh_sidebar_model().seat_cursor(Some(seed));
         // Seeding rewrites the cursor from terminal state, which the overtaken
-        // check would otherwise read as the user navigating.  The anchor
+        // check would otherwise read as the user navigating. The anchor
         // outlives a trip through the terminal by design.
         self.mark_sidebar_focus_write();
     }
@@ -2330,7 +2330,7 @@ impl AlacritreeApp {
 
     /// Match key events against the binding table (user bindings + defaults)
     /// before the terminal sees raw events, so a binding wins over plain
-    /// text input.  Matched events are consumed unless every matched action
+    /// text input. Matched events are consumed unless every matched action
     /// is `ReceiveChar` (alacritty's pass-through marker).
     fn handle_shortcuts(&mut self, ctx: &Context) {
         let active = self.active_session_index().map(|idx| SessionFocus {
@@ -2368,7 +2368,7 @@ impl AlacritreeApp {
     }
 
     /// Arrow/Enter/Escape navigation while the projects sidebar owns
-    /// keyboard focus.  Consumes only unmodified keys, so modifier-bound
+    /// keyboard focus. Consumes only unmodified keys, so modifier-bound
     /// app shortcuts still match in `handle_shortcuts` afterwards.
     fn handle_sidebar_nav(&mut self, ctx: &Context) {
         let filter = &mut self.sidebar.filter;
@@ -2416,7 +2416,7 @@ impl AlacritreeApp {
         use panel_filter::Outcome;
         match outcome {
             // The reconciler repairs the cursor later in this same update, from
-            // a snapshot that still knows which row the filter hid.  Repairing
+            // a snapshot that still knows which row the filter hid. Repairing
             // here would reset it before anything could observe that.
             Outcome::FilterChanged => {},
             Outcome::Consumed => {},
@@ -2503,7 +2503,7 @@ impl AlacritreeApp {
     }
 
     /// The target is resolved before the clipboard so a paste with nowhere to
-    /// go opens nothing.  Only the regular clipboard carries files and images:
+    /// go opens nothing. Only the regular clipboard carries files and images:
     /// PRIMARY is a text selection, so its probes are skipped outright.
     fn paste_from_clipboard(&mut self, ctx: &Context, target: Target) {
         let Some(idx) = self.active_session_index() else {
@@ -2632,7 +2632,7 @@ impl AlacritreeApp {
         let theme = self.theme;
         let indices = self.current_session_indices();
         // The strip exists to switch between sessions, so it only earns its
-        // space once there's a choice to make (or the user forces it on).  With
+        // space once there's a choice to make (or the user forces it on). With
         // a single session this hides the trailing "+" new-session tab too,
         // rather than leaving a lone hint above the terminal.
         if indices.len() < 2 && !self.session_tabs_always {
@@ -2674,7 +2674,7 @@ impl AlacritreeApp {
         self.current_workspace.clone()
     }
 
-    /// The home directory a workspace path should collapse to.  A WSL path's
+    /// The home directory a workspace path should collapse to. A WSL path's
     /// home lives inside the distro and is only known through discovery, so a
     /// project that has not finished discovering yet simply gets no `~`.
     fn workspace_home(&self, path: &Path) -> Option<String> {
@@ -2703,7 +2703,7 @@ fn modal_frame(theme: &Theme) -> Frame {
 ///
 /// The keys leave the queue whether or not the modal may act on them: they
 /// were aimed at a screen that is no longer in front of the user, and letting
-/// one fall through would type it into a shell they can no longer see.  The
+/// one fall through would type it into a shell they can no longer see. The
 /// gate decides only whether the modal answers them.
 fn consume_modal_keys(ctx: &Context, gate: &ModalGate, modal: ModalKind) -> (bool, bool) {
     let accepts = gate.accepts(modal);
@@ -2734,7 +2734,7 @@ enum SidebarNavStep {
 /// Panel title plus its filter chrome, shared by both sidebars: the heading,
 /// then an `[s]`-style chip for each of `chips`, then a bordered
 /// `<icon> query▌` input box while searching (`search_icon` comes from
-/// `[ui] search_icon`).  Renders only the title when the filter is idle.
+/// `[ui] search_icon`). Renders only the title when the filter is idle.
 fn panel_header_filter_ui(
     ui: &mut egui::Ui,
     title: &str,
@@ -2785,7 +2785,7 @@ fn panel_header_filter_ui(
 /// Which events are key presses whose text the search box will swallow.
 ///
 /// egui-winit pushes `Event::Key` and then `Event::Text` adjacently for one
-/// printable press, so adjacency identifies the pair.  The result is positional
+/// printable press, so adjacency identifies the pair. The result is positional
 /// rather than a set of triggers: key repeat and the `logical_key.or(physical_key)`
 /// fallback both let two presses in one frame share a `(key, modifiers)`, and
 /// only the occurrence carrying text may be treated as query input.
@@ -2843,7 +2843,7 @@ fn drain_search_or_nav(
         steps.push(SidebarNavStep::Filter(outcome));
         return false;
     }
-    // Browsing consumes the whole nav-key set.  In search only Space and Delete
+    // Browsing consumes the whole nav-key set. In search only Space and Delete
     // stay consumed as no-ops: Space preserves the fake-click guard on the
     // terminal view, and Delete is a text-editing key the append-only query has
     // nothing to do with, so it must not fall through to the cursored row.
@@ -2921,7 +2921,7 @@ impl AlacritreeApp {
                 }
             }));
         // A boost covers every depth, so a focused tab running
-        // `cargo build -j16` raises all sixteen compilers.  The GUI left at
+        // `cargo build -j16` raises all sixteen compilers. The GUI left at
         // normal would then lose to the tree it is drawing.
         crate::focus_priority::set_self_boosted(anything_raised);
 
@@ -2992,7 +2992,7 @@ impl AlacritreeApp {
                         pending.rang || pending.notified || (pending.finished && !is_agent);
                     // Only toast on the transition into a latch: BEL and the
                     // title settling in the same idle cycle are one "Claude is
-                    // done" event, not two.  An explicit notification has its
+                    // done" event, not two. An explicit notification has its
                     // own text, so it toasts every time.
                     let body = session.last_notification.clone().filter(|_| pending.notified);
                     if (!was_latched || body.is_some()) && self.config.ui.notifications {
@@ -3037,9 +3037,9 @@ impl AlacritreeApp {
         project.checkouts.iter().any(|wt| self.workspace_needs_attention(&Some(wt.path.clone())))
     }
 
-    /// What a collapsed workspace row draws.  A session that is blocked, done
+    /// What a collapsed workspace row draws. A session that is blocked, done
     /// or pinged wins wherever it sits, loudest first, since the collapsed row
-    /// is the only place it can surface.  Otherwise the live reading follows
+    /// is the only place it can surface. Otherwise the live reading follows
     /// [`Self::workspace_activity`].
     fn workspace_status(&self, ws: &WorkspaceKey) -> RowStatus<'static> {
         let loudest = self
@@ -3091,7 +3091,7 @@ impl AlacritreeApp {
     ///
     /// Position comes from the multiplexer rather than from alacritree because
     /// it is the only party that has an opinion surviving all three moments: attach,
-    /// detach, and a restart, which leaves every pane unattached again.  An
+    /// detach, and a restart, which leaves every pane unattached again. An
     /// order built from when a session was attached agrees with itself until
     /// the first restart and then contradicts everything the user saw.
     ///
@@ -3145,7 +3145,7 @@ impl AlacritreeApp {
         listed
     }
 
-    /// The rows `ws` paints, in `listed`'s order.  An entry whose session or
+    /// The rows `ws` paints, in `listed`'s order. An entry whose session or
     /// agent has gone since the listing was built yields no row rather than a
     /// panic; the next rebuild drops it for good.
     fn workspace_rows(
@@ -3200,7 +3200,7 @@ impl AlacritreeApp {
 
 /// Input the user aimed at this window: keystrokes, text, IME composition,
 /// clipboard actions, scrolling, zooming, pointer clicks, touches and window
-/// focus.  Bare pointer motion is the one deliberate exclusion, or a mouse
+/// focus. Bare pointer motion is the one deliberate exclusion, or a mouse
 /// resting over the window would hold a follow off forever; a finger cannot
 /// rest without touching, so a touch is always an action.
 fn is_direct_input(event: &egui::Event) -> bool {
@@ -3294,7 +3294,7 @@ impl AlacritreeApp {
         if !modal_open && self.ime.preedit().is_none() {
             // While the command palette is open it owns every key: neither the
             // sidebar filters nor the app bindings run, so typing into it never
-            // leaks an action.  The palette consumes its own keys (Ctrl+K to
+            // leaks an action. The palette consumes its own keys (Ctrl+K to
             // close included) when it paints below.
             if !self.palette.is_open() {
                 match self.focus {
@@ -3524,7 +3524,7 @@ impl AlacritreeApp {
         self.phases.mark("reap");
 
         // After paint, so it outlasts the hover cursors the widgets set while
-        // they drew.  egui clears the icon every frame, so this reasserts it
+        // they drew. egui clears the icon every frame, so this reasserts it
         // for as long as the pointer stays hidden.
         if self.mouse_hide.hidden() {
             ctx.set_cursor_icon(egui::CursorIcon::None);
@@ -3547,12 +3547,12 @@ impl eframe::App for AlacritreeApp {
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         // This clear is the only thing painting a cell the grid leaves alone,
         // so it has to carry the terminal's own background rather than the
-        // configured one.  eframe reads it before `update`, so a colour OSC 11
+        // configured one. eframe reads it before `update`, so a colour OSC 11
         // moved this frame lands next frame; terminal output requests a repaint
         // of its own, so the stale frame is replaced rather than left up.
         let bg = self.grid_snapshot.default_bg();
         // Deliberately not premultiplied, where alacritty's `renderer::clear`
-        // writes `(rgb * alpha, alpha)`.  `egui_glow::clear` hands these to
+        // writes `(rgb * alpha, alpha)`. `egui_glow::clear` hands these to
         // `glClearColor` untouched and the compositor reads the framebuffer as
         // premultiplied, so a translucent window carries its background at full
         // strength; scaling it here would darken every `[window] opacity`
@@ -3573,10 +3573,10 @@ impl eframe::App for AlacritreeApp {
     }
 }
 
-/// Logical-pixel (normal, heading) sizes for UI text.  `[ui.font] size`
+/// Logical-pixel (normal, heading) sizes for UI text. `[ui.font] size`
 /// overrides the normal size directly (same pt→px conversion as
 /// `FontConfig::logical_size`); the heading keeps its existing ratio to normal
-/// text.  Unset, both fall back to the `[font]`-derived values unchanged.
+/// text. Unset, both fall back to the `[font]`-derived values unchanged.
 fn ui_text_px(font: &FontConfig, ui_font: &UiFont) -> (f32, f32) {
     match ui_font.size {
         Some(pt) => {
@@ -3588,7 +3588,7 @@ fn ui_text_px(font: &FontConfig, ui_font: &UiFont) -> (f32, f32) {
     }
 }
 
-/// Which pane owns keyboard input.  The terminal re-requests egui focus
+/// Which pane owns keyboard input. The terminal re-requests egui focus
 /// every frame while it owns this; anything else holding focus (modals
 /// aside) must win here first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3614,9 +3614,9 @@ enum FocusMove {
     Nothing,
 }
 
-/// Panel-focus decision for FocusLeft/FocusRight.  Panels sit in a fixed
+/// Panel-focus decision for FocusLeft/FocusRight. Panels sit in a fixed
 /// `ProjectsSidebar ↔ Terminal ↔ GitSidebar` row; movement toward a hidden
-/// panel is dropped (focus never opens a panel).  From the terminal, a
+/// panel is dropped (focus never opens a panel). From the terminal, a
 /// keyboard-originated move is forwarded to a running split-managing TUI
 /// (`tui_running`, see [`Session::nav_tui_running`]): the TUI walks its own
 /// splits and hands focus back with `alacritree action Focus…` once it has
@@ -3647,7 +3647,7 @@ fn focus_move(
 }
 
 /// What the binding pass knows about the frame when it decides whether a
-/// matched action may consume a key press.  Each field names a scope some
+/// matched action may consume a key press. Each field names a scope some
 /// action is gated on; outside it the action stands aside.
 #[derive(Clone, Copy, Default)]
 struct BindingScope {
@@ -3668,7 +3668,7 @@ struct SessionFocus {
     exited: bool,
 }
 
-/// The scope a key press is judged in.  Kept apart from the frame it is read
+/// The scope a key press is judged in. Kept apart from the frame it is read
 /// from so the mapping can be pinned on its own: `exited_session_focused` is
 /// what lets a bare `Enter` be a chord at all, and the filter chain below
 /// cannot tell a correct mapping from an inverted one.
@@ -3784,7 +3784,7 @@ struct SessionBoost {
     pending: bool,
 }
 
-/// Whether this session is a reason for the GUI to stay boosted.  A session
+/// Whether this session is a reason for the GUI to stay boosted. A session
 /// still opening its PTY has no job to raise yet but will have one within a
 /// frame or two, and counting it is what stops a spawn dropping the GUI to
 /// normal priority for the whole open and raising it again on attach.
@@ -3793,7 +3793,7 @@ fn holds_self_boost(session: SessionBoost) -> bool {
 }
 
 /// Whether a frame's sessions, taken together, are a reason for the GUI to
-/// stay boosted.  Folded rather than `any`, because the caller computes each
+/// stay boosted. Folded rather than `any`, because the caller computes each
 /// `SessionBoost` by asking a session to raise or drop its own boost: every
 /// session has to be reached, whatever the sessions before it answered.
 fn frame_holds_self_boost(boosts: impl Iterator<Item = SessionBoost>) -> bool {
@@ -3806,7 +3806,7 @@ fn wsl_shell(distro: &str, workdir: &Path) -> ShellCommand {
 }
 
 /// Shimmed when the resident helper is on; the plain wsl.exe login-shell
-/// launch (and an unknown probe) otherwise.  The distro comes back either
+/// launch (and an unknown probe) otherwise. The distro comes back either
 /// way, since a cwd report needs it to be translated.
 fn wsl_session_shell(
     distro: &str,
@@ -3828,8 +3828,8 @@ fn wsl_session_shell(
 /// The launch for any user-supplied wsl.exe argv (profile or
 /// `[terminal.shell]`): `Some` only when the argv is fully understood and a
 /// distro name is known, so a wrapped default-distro launch resolves it via
-/// enumeration.  The probe shim wraps the argv only when the helper is on;
-/// the distro comes back either way.  Anything exotic runs unmodified and
+/// enumeration. The probe shim wraps the argv only when the helper is on;
+/// the distro comes back either way. Anything exotic runs unmodified and
 /// probes as unknown.
 fn wsl_argv_launch(
     program: &str,
@@ -3851,9 +3851,9 @@ fn wsl_argv_launch(
 }
 
 /// The probe shim for a multiplexer attach, which launches a command rather
-/// than a login shell.  A WSL attach runs the multiplexer inside the distro,
+/// than a login shell. A WSL attach runs the multiplexer inside the distro,
 /// where the Windows descendant walk cannot see it, so it needs the helper's
-/// foreground probe to answer for it.  A native attach already stands in that
+/// foreground probe to answer for it. A native attach already stands in that
 /// walk, and an argv this module cannot wrap probes as unknown: both get
 /// `None` and spawn the argv unchanged.
 pub(crate) fn multiplexer_attach_probe(
@@ -3903,7 +3903,7 @@ fn profile_shell(profile: &crate::config::Profile) -> ShellCommand {
     ShellCommand::new(profile.program.clone(), profile.args.clone())
 }
 
-/// The modal frame's horizontal inner margin.  Any width budgeted against the
+/// The modal frame's horizontal inner margin. Any width budgeted against the
 /// window has to leave room for it, so it lives apart from the frame itself.
 fn modal_pad_x(scale: f32) -> f32 {
     (16.0 * scale).round()
@@ -3925,7 +3925,7 @@ fn move_target(len: usize, from: usize, insert_before: usize) -> Option<usize> {
 }
 
 /// Position a session dropped before display slot `insert_before` should walk
-/// to.  Inside its own workspace the session is removed before it is inserted,
+/// to. Inside its own workspace the session is removed before it is inserted,
 /// so `move_target` compensates for the slots that shift down; coming from
 /// another workspace it is inserted into a list it is not in yet, where the
 /// display slot already is the position.
@@ -3943,7 +3943,7 @@ fn drop_position(
 ///
 /// `indices` are the absolute positions one workspace occupies inside the
 /// session vector, which are not contiguous: swapping only across them keeps
-/// every other workspace's sessions at the index they were at.  Swapping is
+/// every other workspace's sessions at the index they were at. Swapping is
 /// also what avoids a `Clone` bound on `Session`, which owns a PTY.
 fn walk_swaps(indices: &[usize], j: usize, position: usize) -> Vec<(usize, usize)> {
     let mut swaps = Vec::new();
@@ -3966,7 +3966,7 @@ fn walk_swaps(indices: &[usize], j: usize, position: usize) -> Vec<(usize, usize
 /// The session a reorder key acts on.
 ///
 /// A cursored session wins, then the workspace the cursor is resting on lends
-/// its active session, and otherwise the session on screen moves.  The middle
+/// its active session, and otherwise the session on screen moves. The middle
 /// case is what makes a held key work across a workspace boundary: a session
 /// arriving alone in a workspace paints no row of its own, so the cursor
 /// climbs to that workspace's row, and the next press must still find it.
@@ -4007,7 +4007,7 @@ fn reorder_subject(
 ///
 /// Pane rows are never held back by it: a pane alacritree does not own has
 /// no other surface to appear on, and hiding it would hide the workspace's
-/// only row.  They do count toward the threshold, so a lone shell session
+/// only row. They do count toward the threshold, so a lone shell session
 /// beside one is listed rather than folded into the workspace row, which
 /// would leave a hole in a list its neighbours are already in.
 ///
@@ -4058,7 +4058,7 @@ enum MoveError {
     Diff,
 }
 
-/// Why a session record is going away.  The distinction exists because
+/// Why a session record is going away. The distinction exists because
 /// neither half of a close, the respawn policy or the navigation, may apply
 /// to a session that never got a PTY.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -4070,7 +4070,7 @@ enum CloseReason {
     WorktreeDeleted,
 }
 
-/// The verdict a close acts on.  A failed open stays put whatever the
+/// The verdict a close acts on. A failed open stays put whatever the
 /// workspace's state says: every destination `close_fallback` can name is one
 /// `ensure_active_session` will spawn into, and that open fails the same way.
 /// Staying leaves the pane on the "no session" placeholder, which is what the
@@ -4083,9 +4083,9 @@ fn close_navigation(reason: CloseReason, verdict: CloseFallback) -> CloseFallbac
 }
 
 /// Which session a workspace switches to when the one at `removed_idx` is
-/// closed.  `sessions` is the list *after* removal; `removed_idx` indexes the
+/// closed. `sessions` is the list *after* removal; `removed_idx` indexes the
 /// list *before* it, so the first surviving sibling at or past it is the
-/// closed session's successor.  Pure over (workspace, id) pairs for the same
+/// closed session's successor. Pure over (workspace, id) pairs for the same
 /// reason as `close_fallback`.
 ///
 /// `Preserve` hands the workspace its first session whichever one closed.
@@ -4143,23 +4143,23 @@ fn close_fallback(
 /// workspace's sessions in spawn order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RingEntry {
-    /// The owning project's root, from `project_of`.  None for home.
+    /// The owning project's root, from `project_of`. None for home.
     project: Option<PathBuf>,
     workspace: WorkspaceKey,
     id: SessionId,
 }
 
-/// The session a removal lands on under the `ring_*` policies.  `ring` is the
+/// The session a removal lands on under the `ring_*` policies. `ring` is the
 /// flat session ring captured before the removal and `removed` is what left
 /// it: one session for a close, a worktree's whole list for a delete.
 /// Successor first, the earliest survivor past the last removed entry, else
 /// the latest survivor before the first.
 ///
 /// `prefer` is the removed workspace's owning project under `ring_project`,
-/// and None under `ring_global` and for home.  When set, the search runs over
+/// and None under `ring_global` and for home. When set, the search runs over
 /// that project's entries before running over the whole ring.
 ///
-/// A path two projects both list appears in the ring twice.  Both entries
+/// A path two projects both list appears in the ring twice. Both entries
 /// carry the same `project_of` tag and name the same session, so a duplicate
 /// changes no answer; indices are taken by first occurrence, the way
 /// `session_ring_target` takes them.
@@ -4189,7 +4189,7 @@ fn ring_landing(
     prefer.and_then(|root| search(Some(root))).or_else(|| search(None))
 }
 
-/// Whether the reconciler owns post-removal navigation.  Under `"follow"` the
+/// Whether the reconciler owns post-removal navigation. Under `"follow"` the
 /// landing row decides where the terminal goes, so acting here first would
 /// show one workspace for a frame and another the next.
 fn defers_close_navigation(mode: SidebarFocus) -> bool {
@@ -4240,8 +4240,8 @@ fn project_main_for(projects: &[Project], ws: &Path) -> Option<PathBuf> {
 }
 
 /// The root of the project owning `row`: a worktree resolves by its path, a
-/// session through its workspace.  `None` for Home or a row outside every
-/// known project.  Lets `ToggleProjectExpanded` act on the whole subtree, not
+/// session through its workspace. `None` for Home or a row outside every
+/// known project. Lets `ToggleProjectExpanded` act on the whole subtree, not
 /// just the header.
 fn row_project_root(
     projects: &[Project],
@@ -4285,12 +4285,12 @@ fn session_ring_target(
     Some(ring[next].clone())
 }
 
-/// The activity a session's row paints.  A session attached to a
+/// The activity a session's row paints. A session attached to a
 /// multiplexer's pane takes the multiplexer's word, because it watches the
 /// pane from outside and sees an approval dialog no title heuristic can reach.
 ///
 /// `unknown` is the multiplexer declining to say, so the session's own
-/// reading stands.  The gate closes either way: an attached pane holds an
+/// reading stands. The gate closes either way: an attached pane holds an
 /// agent whether or not the process probe recognized one.
 fn pane_backed_activity(own: SessionActivity, status: Option<PaneStatus>) -> SessionActivity {
     let Some(status) = status else { return own };
@@ -4310,7 +4310,7 @@ fn worktree_is_switchable(wt: &Checkout, missing: Option<bool>, has_sessions: bo
     !worktree_looks_gone(wt, missing) || has_sessions
 }
 
-/// Whether ending a session asks first.  A harness-managed one is a detach
+/// Whether ending a session asks first. A harness-managed one is a detach
 /// rather than a kill, so it answers to its own switch: the attach client is
 /// always running, which would make the busy question a close asks fire every
 /// time and warn about nothing.
@@ -4319,7 +4319,7 @@ fn close_needs_prompt(ui: &UiTheme, managed: bool, busy: bool) -> bool {
 }
 
 /// The known worktree that owns `path`: the longest worktree path that
-/// `path` equals or descends from.  Longest wins so a worktree nested under
+/// `path` equals or descends from. Longest wins so a worktree nested under
 /// another checkout resolves to the inner one.
 fn owning_worktree(worktrees: &[PathBuf], path: &Path) -> Option<PathBuf> {
     worktrees
@@ -4707,7 +4707,7 @@ mod tests {
     }
 
     /// `test_app` with its one session in a workspace nobody is looking at,
-    /// the only place an attention trigger can latch.  Desktop notifications
+    /// the only place an attention trigger can latch. Desktop notifications
     /// are off so a latch does not reach the OS.
     fn app_with_a_background_session(title: &str) -> AlacritreeApp {
         let mut app = test_app();
@@ -4724,7 +4724,7 @@ mod tests {
 
     /// An agent's spinner stopping while nobody is looking is a finished
     /// turn: the row shows done, not a ping, and the attention filter keeps
-    /// its workspace.  A bell on top pings underneath, and looking at the
+    /// its workspace. A bell on top pings underneath, and looking at the
     /// session clears both.
     #[test]
     fn a_background_agent_that_finishes_shows_done_until_viewed() {
@@ -4934,7 +4934,7 @@ mod tests {
             assert_eq!(app.last_notification(), Some("build failed"));
         }
 
-        /// The notification's text belongs to the notification.  A bell after
+        /// The notification's text belongs to the notification. A bell after
         /// the user has looked says where the session is waiting instead.
         #[test]
         fn a_bell_after_viewing_a_notification_uses_the_generic_body() {
@@ -4979,7 +4979,7 @@ mod tests {
     }
 
     /// An app with the scripted multiplexer on and nothing else, for the pane
-    /// lifecycle.  Its workspace is one nothing has opened, so a pane that
+    /// lifecycle. Its workspace is one nothing has opened, so a pane that
     /// should land somewhere has to say where.
     fn lifecycle_app() -> AlacritreeApp {
         let config = Config::default();
@@ -5052,7 +5052,7 @@ mod tests {
         app.multiplexers.herdr_mut_for_test().adopt_listing_for_test(&side, json, at);
     }
 
-    /// A pane's row as the sidebar builds it.  `shared_view` is what a
+    /// A pane's row as the sidebar builds it. `shared_view` is what a
     /// multiplexer answers when opening the row shows someone else's pane
     /// rather than handing over the pane itself.
     fn pane_row(pane: &Pane, side: Side, shared_view: bool) -> PaneRowData {
@@ -5142,7 +5142,7 @@ mod tests {
     }
 
     /// A checkout switched outside the app, from a terminal or another tool,
-    /// reaches the row's branch without a manual refresh.  The PR badge is
+    /// reaches the row's branch without a manual refresh. The PR badge is
     /// keyed to that branch, so a stale one keeps painting the old branch's PR.
     #[test]
     fn a_branch_switched_outside_the_app_reaches_the_sidebar() {
@@ -5753,7 +5753,7 @@ mod tests {
     }
 
     /// A create herdr answered, for the tests that follow the pane into its
-    /// attach.  A WSL side is one where a pane holding an agent would be
+    /// attach. A WSL side is one where a pane holding an agent would be
     /// handed over directly under the default mode.
     fn created_pane_fixture(
         workspace: WorkspaceKey,
@@ -6225,7 +6225,7 @@ mod tests {
     }
 
     /// One poll that could not spawn is not evidence that the agents went
-    /// away, and the poll behind it usually answers.  Dropping the listing on
+    /// away, and the poll behind it usually answers. Dropping the listing on
     /// the first failure takes every status on the side down at once, which on
     /// a loaded machine is what the user gets instead of an agent's state.
     #[test]
@@ -6252,7 +6252,7 @@ mod tests {
         assert!(item.hover.as_deref().unwrap().contains("Status: working"));
     }
 
-    /// A stale retained pane still names herdr in the middle column.  The
+    /// A stale retained pane still names herdr in the middle column. The
     /// override that drops its status for staleness carries the "herdr" lead
     /// itself rather than relying on `pane_palette_content` to have already
     /// supplied one.
@@ -6524,7 +6524,7 @@ mod tests {
 
     /// The batch was asked for the whole set rather than for one pane, so it
     /// files each session under its own pane's workspace without carrying the
-    /// user along.  Each attach names its own workspace as the one to
+    /// user along. Each attach names its own workspace as the one to
     /// restore, since a refusal handing back the workspace the batch started
     /// in would move a user who has navigated since.
     #[test]
@@ -6681,7 +6681,7 @@ mod tests {
     }
 
     /// A session's client was settled when it attached, so the tooltip that
-    /// calls it a shared view reads that record.  The listing says only what
+    /// calls it a shared view reads that record. The listing says only what
     /// opening the pane now would give, and a created pane reads as an
     /// agent's until the multiplexer lists it.
     #[test]
@@ -7317,7 +7317,7 @@ mod tests {
         }
     }
 
-    /// One frame of the dialogs, fed `events`.  The dialog under test has
+    /// One frame of the dialogs, fed `events`. The dialog under test has
     /// to be on screen for a frame before a key can reach it, the same as it
     /// would for a user.
     fn dialog_frame(app: &mut AlacritreeApp, ctx: &Context, events: Vec<egui::Event>) {
@@ -7786,7 +7786,7 @@ mod tests {
     }
 
     /// The tree from the spec: home holds nothing, p1 owns w1 and w2, p2 owns
-    /// w3.  Ring order is sidebar order, so p1's sessions precede p2's.
+    /// w3. Ring order is sidebar order, so p1's sessions precede p2's.
     fn spec_ring() -> Vec<RingEntry> {
         vec![
             entry(Some("/p1"), "/p1/w1", 1),
@@ -8084,7 +8084,7 @@ mod tests {
     }
 
     /// On Linux and WSL an attach is full passthrough, so the pane the user
-    /// ends up looking at is herdr's.  The row says so by naming it the way
+    /// ends up looking at is herdr's. The row says so by naming it the way
     /// herdr's own listed row does, rather than by whatever the attach
     /// process titled its PTY.
     #[test]
@@ -8879,7 +8879,7 @@ mod tests {
     }
 
     /// A context with the three chrome variant families bound, as
-    /// `fonts::install_terminal_fonts` leaves it in the app.  egui panics on a
+    /// `fonts::install_terminal_fonts` leaves it in the app. egui panics on a
     /// family it was never given, so any test that paints a bold/italic icon
     /// needs them registered first.
     fn ctx_with_ui_variant_faces() -> egui::Context {
@@ -9363,7 +9363,7 @@ mod tests {
     }
 
     /// The reported directory and the last notification ride on the name's
-    /// tooltip, under the same mode as the name itself.  A managed row's own
+    /// tooltip, under the same mode as the name itself. A managed row's own
     /// tooltip still wins.
     #[test]
     fn a_session_rows_tooltip_carries_its_cwd_and_notification() {
@@ -9913,7 +9913,7 @@ mod tests {
     }
 
     /// Herdr rows are navigable rows, so the arena has to carry them in the
-    /// order the projection lists them.  Missing them parks the lockstep index
+    /// order the projection lists them. Missing them parks the lockstep index
     /// on the first agent row, which marks every row below it unprojected and
     /// leaves the cursor with no node to sit on.
     #[test]
@@ -10472,7 +10472,7 @@ mod tests {
     }
 
     /// A herdr pane with no agent in it reports no state, so a plain shell in
-    /// one carries no mark at all.  The palette reads `managed.status`
+    /// one carries no mark at all. The palette reads `managed.status`
     /// directly while the sidebar goes through `session_status_mark`, so the
     /// two only agree while both answer "none" here.
     #[test]
@@ -10485,7 +10485,7 @@ mod tests {
     }
 
     /// A pane herdr reports no agent in can still be running one alacritree's
-    /// own title heuristic recognises.  The multiplexer has no status to
+    /// own title heuristic recognises. The multiplexer has no status to
     /// report, so the mark falls through to alacritree's own reading.
     #[test]
     fn an_agentless_pane_falls_through_to_the_local_agent_reading() {
@@ -10524,7 +10524,7 @@ mod tests {
         assert_eq!(pane_backed_activity(working, Some(PaneStatus::Unknown)), working);
     }
 
-    /// A herdr pane running a plain shell.  herdr names no agent in it, so
+    /// A herdr pane running a plain shell. herdr names no agent in it, so
     /// the only thing it can be called is the title it set itself.
     fn shell_pane() -> Pane {
         Pane { status: None, ..titled(None, Some("~/G/g/alacritree")) }
@@ -10606,7 +10606,7 @@ mod tests {
     }
 
     /// A user's close navigates: away from an emptied workspace, or into a
-    /// replacement shell.  A failed open must do neither.  Wherever it
+    /// replacement shell. A failed open must do neither. Wherever it
     /// navigates to, `ensure_active_session` spawns into it, and that open
     /// fails the same way.
     #[test]

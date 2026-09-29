@@ -103,7 +103,7 @@ impl<T: ClosedSetValue> JsonSchema for ClosedSet<T> {
     }
 }
 
-/// A sidebar icon's glyph and how to paint it.  Parses from a bare string,
+/// A sidebar icon's glyph and how to paint it. Parses from a bare string,
 /// accepted as glyph-only, or a table that also styles color, weight, slant,
 /// and size.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
@@ -145,10 +145,10 @@ pub enum RawIconStyle {
     Glyph(String),
     /// The glyph with styling.
     Table {
-        /// The character to draw.  Unset keeps the built-in glyph and applies
+        /// The character to draw. Unset keeps the built-in glyph and applies
         /// only the styling.
         glyph: Option<String>,
-        /// Glyph color.  Unset inherits the row's foreground.
+        /// Glyph color. Unset inherits the row's foreground.
         color: Option<RgbStr>,
         /// Draw the glyph bold.
         #[serde(default)]
@@ -156,7 +156,7 @@ pub enum RawIconStyle {
         /// Draw the glyph italic.
         #[serde(default)]
         italic: bool,
-        /// Point size, clamped to a minimum of `1.0`.  Unset uses the sidebar
+        /// Point size, clamped to a minimum of `1.0`. Unset uses the sidebar
         /// font size.
         size: Option<f32>,
     },

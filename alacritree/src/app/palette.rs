@@ -9,7 +9,7 @@ use crate::multiplexer::Multiplexer;
 
 impl AlacritreeApp {
     /// The Ctrl+K command palette: one fuzzy-searchable, executable list of
-    /// every keyboard action, open session, and switchable workspace.  A real
+    /// every keyboard action, open session, and switchable workspace. A real
     /// modal — while it is up, terminal input and bindings are suppressed (see
     /// `update`) and the palette owns its own keys.
     pub(super) fn show_command_palette(&mut self, ctx: &Context) {
@@ -18,7 +18,7 @@ impl AlacritreeApp {
 
         // Drain the nav/confirm/cancel keys before the TextEdit runs so it
         // never steals Enter (run), Esc (clear then close), the arrows, or the
-        // bound cursor jumps.  Ctrl+K shuts the palette with the same key that
+        // bound cursor jumps. Ctrl+K shuts the palette with the same key that
         // opened it.
         let (cancel, confirm) = consume_modal_keys(ctx, &self.modals.gate, ModalKind::Palette);
         let (up, down) = ctx.input_mut(|i| {
@@ -152,7 +152,7 @@ impl AlacritreeApp {
 
     /// Everything the palette can act on this frame: every runnable keyboard
     /// action, then each configured shell profile, then each open session,
-    /// then each switchable workspace.  Rebuilt each frame — cheap beside
+    /// then each switchable workspace. Rebuilt each frame — cheap beside
     /// ranking, and always current as sessions and worktrees come and go.
     pub(super) fn palette_items(&self) -> Vec<PaletteItem> {
         let mut items = command_palette::action_items(
@@ -340,8 +340,8 @@ impl AlacritreeApp {
 
     /// The status mark each palette row should paint, resolved the same way
     /// the sidebar resolves one for the same session or unattached pane, so
-    /// the two can never disagree.  Kept apart from `palette_items`
-    /// so building a row's text and picking its mark stay separate.  `None`
+    /// the two can never disagree. Kept apart from `palette_items`
+    /// so building a row's text and picking its mark stay separate. `None`
     /// while `[ui.session_display] palette_marks` is off, and for any row
     /// that is neither a session nor a multiplexer's pane.
     ///
@@ -393,7 +393,7 @@ impl AlacritreeApp {
         (self.workspace_label(ws), secondary)
     }
 
-    /// Carry out a chosen palette row.  Actions dispatch exactly as their
+    /// Carry out a chosen palette row. Actions dispatch exactly as their
     /// binding would; session/workspace rows switch to the target and hand
     /// focus back to the terminal so the user can type straight away; a project
     /// row opens the same new-worktree prompt the sidebar's `+` button does.
@@ -442,7 +442,7 @@ impl AlacritreeApp {
 }
 
 /// Take this frame's palette cursor jumps off the event queue, honoring
-/// rebinds.  The palette owns these keys only while it is up, which is why they
+/// rebinds. The palette owns these keys only while it is up, which is why they
 /// are read here rather than dispatched like an ordinary action — and why they
 /// can share the sidebar's unmodified Home/End/PageUp/PageDown.
 fn consume_palette_keys(ctx: &Context, shortcuts: &crate::shortcut::Shortcuts) -> Vec<NamedAction> {
@@ -470,7 +470,7 @@ fn consume_palette_keys(ctx: &Context, shortcuts: &crate::shortcut::Shortcuts) -
     })
 }
 
-/// A palette column's text, laid out to `max_w`.  Whatever still does not fit
+/// A palette column's text, laid out to `max_w`. Whatever still does not fit
 /// is ellipsized, which the caller reads back off the galley's `elided` flag to
 /// offer the full text on hover.
 fn column_galley(
@@ -496,7 +496,7 @@ fn column_galley(
     ctx.fonts(|f| f.layout_job(job))
 }
 
-/// Prose laid out to `max_w`.  Wrapping at spaces reads best, but a word wider
+/// Prose laid out to `max_w`. Wrapping at spaces reads best, but a word wider
 /// than the column overruns it instead of breaking, so a galley that came back
 /// too wide is laid out again mid-word.
 fn prose_galley(
@@ -548,7 +548,7 @@ pub(super) fn paint_palette_header(ui: &mut egui::Ui, theme: &Theme, cols: &Pale
     painter.hline(rect.x_range(), rect.bottom(), Stroke::new(1.0_f32, theme.sidebar_border));
 }
 
-/// A section heading in the palette list.  Not selectable — the cursor steps
+/// A section heading in the palette list. Not selectable — the cursor steps
 /// over rows only.
 pub(super) fn paint_palette_section(
     ui: &mut egui::Ui,
@@ -740,7 +740,7 @@ fn palette_hint(shortcuts: &crate::shortcut::Shortcuts) -> String {
     parts.join(" · ")
 }
 
-/// What a palette column does with text too wide for it.  epaint overruns the
+/// What a palette column does with text too wide for it. epaint overruns the
 /// column rather than splitting a word unless told it may break anywhere, so
 /// the choice follows the content: prose can rely on its spaces, a lone
 /// identifier or key chord cannot.
@@ -773,7 +773,7 @@ fn elided_hover(columns: &[(bool, &str)]) -> Option<String> {
     (!full.is_empty()).then(|| full.join("\n"))
 }
 
-/// How wide the palette's content may be.  A window too narrow for the
+/// How wide the palette's content may be. A window too narrow for the
 /// comfortable width sizes the palette against the window instead, so the modal
 /// keeps a margin either side rather than running past both edges.
 fn palette_content_width(scale: f32, screen_w: f32) -> f32 {
@@ -798,16 +798,16 @@ const PALETTE_DESC_MIN: f32 = 160.0;
 /// Clear space between a row's status mark and the description after it.
 const PALETTE_MARK_GAP: f32 = 6.0;
 
-/// Geometry for the palette's `description | action | keys` grid.  Every row and
+/// Geometry for the palette's `description | action | keys` grid. Every row and
 /// the header lay out against the same widths, so the columns line up down the
-/// list instead of each row packing its own way.  A grid with room for the fixed
+/// list instead of each row packing its own way. A grid with room for the fixed
 /// widths gets them; a tighter one shrinks all three by the same factor and
 /// wraps their text, rather than letting the last column run off the edge.
 pub(super) struct PaletteColumns {
     width: f32,
     pad: f32,
     /// The leading status-mark gutter: the mark's own footprint plus the space
-    /// after it.  Every row claims it, marked or not, so the descriptions line
+    /// after it. Every row claims it, marked or not, so the descriptions line
     /// up whether or not a row has a mark to show.
     mark: f32,
     desc: f32,
@@ -845,14 +845,14 @@ impl PaletteColumns {
         }
     }
 
-    /// How the action and keys columns lay out.  Their text is one unbroken
+    /// How the action and keys columns lay out. Their text is one unbroken
     /// token, so a narrow grid has to split it mid-word; a comfortable one
     /// keeps every row one line tall and ellipsizes the overflow.
     fn token_wrap(&self) -> ColumnWrap {
         if self.narrow { ColumnWrap::Anywhere { max_rows: usize::MAX } } else { ColumnWrap::Clip }
     }
 
-    /// Where a row's status mark sits.  Clear of the selected row's accent
+    /// Where a row's status mark sits. Clear of the selected row's accent
     /// bar, which is painted hard against the row's left edge.
     fn mark_x(&self, left: f32) -> f32 {
         left + self.pad
@@ -879,7 +879,7 @@ pub(super) struct PaletteSessionContent {
 }
 
 /// The middle column's words, most general first: where the row comes from,
-/// what runs in it, what that is doing.  The kind is spelled out whether or
+/// what runs in it, what that is doing. The kind is spelled out whether or
 /// not the title repeats it, so every row in one state reads identically.
 fn session_middle(
     lead: Option<&str>,
@@ -898,7 +898,7 @@ fn session_middle(
 
 /// The second line names the workspace, blanked only on an exact string
 /// match — a title that merely reads like a directory into the workspace is
-/// not matched against it.  Only a titleless row gives the first line up to
+/// not matched against it. Only a titleless row gives the first line up to
 /// the workspace, and then the second has nothing left to say.
 fn native_palette_content(
     title: String,
@@ -1006,7 +1006,7 @@ fn session_fallback_kind(kind: &SessionKind) -> &'static str {
     }
 }
 
-/// Whether a shell row can say what it is doing.  Only a plain shell has a
+/// Whether a shell row can say what it is doing. Only a plain shell has a
 /// foreground job to read; a diff or scratchpad row has no process behind it
 /// and would be inventing a state.
 fn shell_state_for(kind: &SessionKind, busy: bool) -> Option<&'static str> {
@@ -1021,7 +1021,7 @@ mod tests {
     use super::*;
     use crate::test_util::{listed_agent, pane_key, titled_agent as titled};
 
-    /// The mark has a gutter of its own ahead of the description.  A gutter
+    /// The mark has a gutter of its own ahead of the description. A gutter
     /// only as wide as the glyph leaves the label butted against the mark.
     #[test]
     fn the_palette_mark_gutter_clears_the_description() {
@@ -1404,7 +1404,7 @@ mod tests {
     }
 
     /// A shell row reports whether a job holds the terminal, which is the one
-    /// thing about a shell worth reading off a list.  A kind with no
+    /// thing about a shell worth reading off a list. A kind with no
     /// foreground job of its own reports nothing rather than a state it
     /// cannot observe.
     #[test]

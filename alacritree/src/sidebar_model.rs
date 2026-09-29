@@ -22,7 +22,7 @@ use crate::workspace::WorkspaceKey;
 /// `ObservedInputs::capture` and `ObservedInputs::matches` answer for the same
 /// frame only when they are fed the same inputs, so both are reached through
 /// one value of this type rather than through two argument lists that could
-/// drift apart.  `sessions` is cloned for each pass, which is why it has to be
+/// drift apart. `sessions` is cloned for each pass, which is why it has to be
 /// a cheap, `Clone` iterator rather than a collected list: the unchanged path
 /// runs every frame and must not allocate.
 #[derive(Clone)]
@@ -42,7 +42,7 @@ impl<'a, S: Iterator<Item = SessionInput<'a>> + Clone> SidebarInputs<'a, S> {
     }
 }
 
-/// The cached rows no longer describe the inputs.  Carries the fingerprint the
+/// The cached rows no longer describe the inputs. Carries the fingerprint the
 /// rebuilt rows will answer for.
 #[must_use = "rebuild the rows and hand this to `fill_rows`"]
 pub struct StaleRows(ObservedInputs);
@@ -68,7 +68,7 @@ pub struct SidebarModel {
     /// The deepest row a filter hid, restored when it becomes visible again.
     anchor: Option<SidebarRow>,
     rows: Vec<SidebarRow>,
-    /// The listing `rows` was built from.  The snapshot walk reads this one
+    /// The listing `rows` was built from. The snapshot walk reads this one
     /// rather than a fresh listing, which could disagree with `rows`.
     listed: ListedRows,
     /// The inputs `rows` answers for, `None` until the first fill.
@@ -147,7 +147,7 @@ impl SidebarModel {
     ///
     /// A worktree removed, a project collapsed by mouse, or a filter toggle
     /// narrowing the rows out from under it all leave a cursor pointing at a
-    /// row that is gone.  That cursor lands on the first row and this answers
+    /// row that is gone. That cursor lands on the first row and this answers
     /// `None`, so the caller stops and the next press acts from there;
     /// unfiltered rows always lead with Home.
     pub fn cursor_within(&mut self) -> Option<SidebarRow> {
@@ -193,7 +193,7 @@ impl SidebarModel {
     ///
     /// `live` is every running session, whatever the listing says, and
     /// `skip_worktree` is a worktree whose deletion is committed but whose git
-    /// operation has not finished.  See `build_snapshot` for both.
+    /// operation has not finished. See `build_snapshot` for both.
     pub fn reconcile(
         &mut self,
         projects: &[Project],
@@ -222,7 +222,7 @@ impl SidebarModel {
 /// Step the lockstep index over the rows a skipped worktree owns.
 ///
 /// The projection is built before the deletion is known, so it still lists
-/// the worktree with everything under it.  Leaving the index parked on a row
+/// the worktree with everything under it. Leaving the index parked on a row
 /// no node will match again would mark every later node unprojected, and the
 /// cursor repair reads an unprojected row as one that has gone away.
 fn skip_projected_rows(
@@ -243,13 +243,13 @@ fn skip_projected_rows(
     }
 }
 
-/// Assemble the model arena and the projection.  `rows` is the projection,
+/// Assemble the model arena and the projection. `rows` is the projection,
 /// exactly what the cursor steps over, and `live` is the model: every running
-/// session, whatever the listing threshold or the filter says.  Building
+/// session, whatever the listing threshold or the filter says. Building
 /// membership from `listed` instead would make the last session in a workspace
 /// read as deleted the moment its sibling closed.
 ///
-/// `listed` is the listing the projection was built from.  A herdr row exists
+/// `listed` is the listing the projection was built from. A herdr row exists
 /// only while its agent is listed, so there is no wider model to take it from,
 /// and reading a second listing here could disagree with `rows`.
 ///
@@ -259,7 +259,7 @@ fn skip_projected_rows(
 ///
 /// Nodes are pushed in exactly the order `sidebar_nav::visible_rows` emits,
 /// with unprojected nodes interleaved, so one forward index into `rows`
-/// classifies every node.  Asking `rows.contains` per node instead would be
+/// classifies every node. Asking `rows.contains` per node instead would be
 /// quadratic in path comparisons on a path that runs whenever the user types.
 pub(crate) fn build_snapshot(
     projects: &[Project],
@@ -294,7 +294,7 @@ pub(crate) fn build_snapshot(
         // A workspace lists every shell session it has or none of them, and a
         // session attached to a herdr pane is always listed, so a session
         // reaching the second arm here belongs to a workspace that listed
-        // nothing at all.  It is running, so the model keeps it; it is drawn
+        // nothing at all. It is running, so the model keeps it; it is drawn
         // nowhere, so the projection does not.
         for (i, (w, id)) in live.iter().enumerate() {
             if w != ws {
@@ -330,7 +330,7 @@ pub(crate) fn build_snapshot(
     }
 
     // Sessions whose workspace has no row left, a removed project or a
-    // worktree already treated as gone.  They are running, so they belong in
+    // worktree already treated as gone. They are running, so they belong in
     // the model; they have no place in the tree, so they are nobody's sibling.
     for (i, (_, id)) in live.iter().enumerate() {
         if !placed[i] {

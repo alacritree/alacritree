@@ -2,10 +2,10 @@
 //!
 //! notify-rust's `NSUserNotification` backend is defunct on modern macOS:
 //! delivery from an unbundled process silently fails (the API still reports
-//! success) and clicks are never surfaced.  The modern framework fixes both
+//! success) and clicks are never surfaced. The modern framework fixes both
 //! and shows the system permission prompt on first use — but it throws
 //! `NSInternalInconsistencyException` when the process has no bundle, so
-//! everything here is gated on `NSBundle` reporting an identifier.  Running
+//! everything here is gated on `NSBundle` reporting an identifier. Running
 //! the bare `target/release` binary therefore disables notifications; the
 //! binary must live inside `Alacritree.app` (see `extra/osx`), though it can
 //! still be launched from a terminal via `Alacritree.app/Contents/MacOS`.
@@ -98,7 +98,7 @@ fn handle_response(response: &UNNotificationResponse) {
     }
 }
 
-/// Install the click delegate and request notification permission.  Must run
+/// Install the click delegate and request notification permission. Must run
 /// on the main thread before the first notification; safe to call when
 /// unbundled (delivery is disabled with a warning instead of the framework's
 /// exception).
@@ -129,7 +129,7 @@ pub(crate) fn init(ctx: egui::Context) {
     let _ = STATE.set(Some(ctx));
 }
 
-/// Post one attention toast.  Thread-safe; a no-op until `init` ran with a
+/// Post one attention toast. Thread-safe; a no-op until `init` ran with a
 /// bundle identifier present.
 pub(super) fn notify(body: &str, id: SessionId) {
     if !matches!(STATE.get(), Some(Some(_))) {

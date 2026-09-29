@@ -15,7 +15,7 @@ pub struct Project {
     pub root: PathBuf,
     /// Derived from the root's directory name; never stored.
     pub name: String,
-    /// User-set display label, shown instead of `name` when present.  Like
+    /// User-set display label, shown instead of `name` when present. Like
     /// `expanded` and `shell_override`, this is user state: discovery never
     /// sets it, and refreshes must not lose it.
     pub label: Option<String>,
@@ -26,13 +26,13 @@ pub struct Project {
     pub expanded: bool,
     pub shell_override: Option<alacritree_common::wsl::ShellChoice>,
     /// The distro's own `$HOME` for a WSL project, so a path can collapse to
-    /// `~` without guessing the prefix from the path itself.  `None` for a
+    /// `~` without guessing the prefix from the path itself. `None` for a
     /// native project, whose home comes from `home::home_dir()`.
     pub home: Option<String>,
 }
 
 /// A discovery result and whether it can be trusted to replace an existing
-/// worktree list.  A backend that could not be reached returns a placeholder
+/// worktree list. A backend that could not be reached returns a placeholder
 /// standing in for an unknown tree, which must never overwrite what the
 /// caller already knows.
 #[derive(Debug)]
@@ -124,12 +124,12 @@ impl Project {
         self.label.as_deref().unwrap_or(&self.name)
     }
 
-    /// Adopt a discovery result.  A non-authoritative result leaves the
+    /// Adopt a discovery result. A non-authoritative result leaves the
     /// discovered fields alone: an unreachable backend must not read as
-    /// deletion.  `expanded`, `shell_override`, and `label` are user state and
-    /// are never touched either way.  One list, so a field cannot be adopted by
+    /// deletion. `expanded`, `shell_override`, and `label` are user state and
+    /// are never touched either way. One list, so a field cannot be adopted by
     /// the synchronous refresh and dropped by the background one.
-    /// `occupied` names the worktrees that still host a live session.  Git
+    /// `occupied` names the worktrees that still host a live session. Git
     /// forgets a worktree the moment it is pruned, but its shells keep
     /// running, and a row is the only way to reach them — so a dropped
     /// worktree with sessions is kept as prunable rather than removed.
@@ -256,7 +256,7 @@ mod tests {
     }
 
     /// `git worktree prune` drops the worktree from discovery while its shells
-    /// keep running.  Dropping the row too would leave them with nowhere to be
+    /// keep running. Dropping the row too would leave them with nowhere to be
     /// reached from.
     #[test]
     fn apply_keeps_a_dropped_worktree_that_still_holds_sessions() {
@@ -439,7 +439,7 @@ mod tests {
         assert_eq!(normalize_label(None), None);
     }
 
-    /// Discovery is adopted through one method by both refresh paths.  Two paths
+    /// Discovery is adopted through one method by both refresh paths. Two paths
     /// each listing fields by hand is what lets a newly discovered field land in
     /// one and be dropped by the other — and the folder-picker path, which starts
     /// from a placeholder, is the one that matters most.

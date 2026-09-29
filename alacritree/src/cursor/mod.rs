@@ -1,6 +1,6 @@
 //! One session's cursor: whether it is drawn, in what shape, and where.
 //!
-//! The painter asks twice per frame.  Shape and visibility come first, because
+//! The painter asks twice per frame. Shape and visibility come first, because
 //! they decide whether the grid capture records a cursor at all; the cell to
 //! draw it in comes after, because the glide needs the cell that capture just
 //! found.
@@ -14,14 +14,14 @@ use alacritty_terminal::vte::ansi::CursorShape;
 
 use crate::config::CursorConfig;
 
-/// Fractional column and row in the viewport.  Whole numbers are cell corners,
+/// Fractional column and row in the viewport. Whole numbers are cell corners,
 /// which is where the cursor sits whenever it is not moving.
 pub(crate) type CellPos = (f32, f32);
 
 /// What the terminal and the window say about the cursor, read off one frame.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Inputs {
-    /// DECTCEM.  A full-screen app hides the cursor while it repaints and
+    /// DECTCEM. A full-screen app hides the cursor while it repaints and
     /// leaves it parked wherever its last write landed.
     pub shown: bool,
     /// The shape the running program asked for over DECSCUSR.
@@ -87,7 +87,7 @@ impl Cursor {
         self.blink.typed(now);
     }
 
-    /// How long until this cursor needs another frame.  Nothing else wakes
+    /// How long until this cursor needs another frame. Nothing else wakes
     /// egui while it moves or blinks on its own, and `None` means it is at
     /// rest and nothing is owed.
     pub(crate) fn repaint_in(&self) -> Option<Duration> {

@@ -2,7 +2,7 @@
 //! has been applied.
 //!
 //! A client that asks for work to act on its outcome would race its own
-//! request if it were answered the moment the job started.  Every parked
+//! request if it were answered the moment the job started. Every parked
 //! reply is answered once, and a reply dropped unanswered, as a panicked job
 //! leaves it, is answered with an error.
 
@@ -26,7 +26,7 @@ struct Running<T> {
     waiters: Waiters,
 }
 
-/// A job that ended, with whoever was parked on it.  The entry is gone from
+/// A job that ended, with whoever was parked on it. The entry is gone from
 /// the map by the time this exists, so the waiters it carries are the only
 /// handle left on them.
 pub struct Finished<K, T> {
@@ -36,7 +36,7 @@ pub struct Finished<K, T> {
     pub waiters: Waiters,
 }
 
-/// Replies parked on one job.  Dropping them unanswered still answers each
+/// Replies parked on one job. Dropping them unanswered still answers each
 /// one, so no client waits on a reply that never comes.
 #[derive(Default)]
 pub struct Waiters(Vec<Sender<IpcResult>>);
@@ -76,7 +76,7 @@ impl<K: Eq + Hash + Clone, T> InFlight<K, T> {
         true
     }
 
-    /// Park `reply_tx` until the job running for `key` has finished.  Hands
+    /// Park `reply_tx` until the job running for `key` has finished. Hands
     /// the channel back when nothing is running for it, leaving the caller to
     /// answer it however it sees fit.
     pub fn watch(
@@ -93,11 +93,11 @@ impl<K: Eq + Hash + Clone, T> InFlight<K, T> {
         }
     }
 
-    /// Take every job that has ended.  Runs every frame, so it allocates only
+    /// Take every job that has ended. Runs every frame, so it allocates only
     /// when something did end.
     pub fn take_finished(&mut self) -> Vec<Finished<K, T>> {
         // `poll` before `failed`: a panic latches only on the `poll` that
-        // drains it off the channel.  Deciding and removing are two passes
+        // drains it off the channel. Deciding and removing are two passes
         // because the first one only borrows the map.
         let mut ended = Vec::new();
         for (key, running) in &self.running {

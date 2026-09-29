@@ -7,14 +7,14 @@ use alacritree_vcs::Checkout;
 use super::*;
 
 pub(super) struct Sidebar {
-    /// Reveals the project rows' drag grips.  A transient mode, not persisted:
+    /// Reveals the project rows' drag grips. A transient mode, not persisted:
     /// reordering is a rare, deliberate act, and a grip on every row the rest
     /// of the time is noise.
     pub(super) reorder_mode: bool,
     /// Fuzzy-search query and `s`/`a` toggle state for the projects panel.
     /// Transient: never persisted, never touches the `expanded` flag.
     pub(super) filter: PanelFilter,
-    /// The rows and the cursor over them.  Read rows through
+    /// The rows and the cursor over them. Read rows through
     /// `fresh_sidebar_model`, which rebuilds them first when they are stale.
     pub(super) model: SidebarModel,
 }
@@ -27,7 +27,7 @@ impl Sidebar {
 
 impl AlacritreeApp {
     /// Tint whichever region a drop would land on while files are hovering, so
-    /// three targets do not become a guessing game.  Silent off Windows: no
+    /// three targets do not become a guessing game. Silent off Windows: no
     /// cursor position is available there, so the tint would be a lie.
     pub(super) fn paint_drop_hover(&self, ctx: &Context, regions: &file_drop::Regions) {
         let cfg = &self.config.ui.drop;
@@ -39,7 +39,7 @@ impl AlacritreeApp {
         };
         // winit's `DragOver` handler emits no event, so moving the cursor
         // mid-drag wakes nothing and the polled position would stay frozen at
-        // wherever the drag entered.  This is the only place the feature drives
+        // wherever the drag entered. This is the only place the feature drives
         // the loop, and it stops when the drag leaves or drops.
         ctx.request_repaint();
         let active_is_scratchpad =
@@ -64,7 +64,7 @@ impl AlacritreeApp {
     }
 
     /// Rows the sidebar cursor steps over: the fuzzy/toggle-filtered set while
-    /// a filter is active, the full visible set otherwise.  Only
+    /// a filter is active, the full visible set otherwise. Only
     /// `refresh_sidebar_rows` calls this; everything else reads the cache.
     pub(super) fn build_project_rows(
         &mut self,
@@ -149,7 +149,7 @@ impl AlacritreeApp {
 
         // Child names are resolved before the matcher borrows the filter: the
         // names come off `&self` helpers and the matcher wants `&mut
-        // self.sidebar.filter`, so the two cannot be live at once.  Skipped
+        // self.sidebar.filter`, so the two cannot be live at once. Skipped
         // outright by `search_reaches_children` with an empty query, where
         // `matches` answers true for everything and every workspace holding
         // any child would surface, and with `[ui] search_depth` at its
@@ -317,7 +317,7 @@ impl AlacritreeApp {
         if self.config.ui.sidebar_click_focus {
             // A click that picks a workspace or session means "go work
             // there", so it focuses the terminal; other panel clicks focus
-            // the sidebar for filter typing.  Row activations fire on the
+            // the sidebar for filter typing. Row activations fire on the
             // release frame, after the press already focused the sidebar,
             // which is why this can't fold into the press test below.
             if workspace_activated {
@@ -336,7 +336,7 @@ impl AlacritreeApp {
     fn project_sidebar_view(&mut self, ctx: &Context) -> SidebarView {
         // Only rows that actually paint are worth a liveness probe, and which
         // ones those are is not known until the tree, its filters and its
-        // collapsed projects have all had their say.  Deciding *before* the
+        // collapsed projects have all had their say. Deciding *before* the
         // walk that this frame is not a probe frame is what keeps the other
         // ~89 frames of every 90 from collecting anything at all.
         let probing = self.config.ui.worktree_liveness
@@ -360,7 +360,7 @@ impl AlacritreeApp {
         let filtering = self.sidebar.filter.is_filtering();
         let active_now = self.sessions.active(&self.current_workspace);
         // egui keeps one scroll target per frame and the last writer wins, so the
-        // two reasons to scroll are resolved here rather than by paint order.  An
+        // two reasons to scroll are resolved here rather than by paint order. An
         // explicit cursor move outranks following the terminal.
         let wants_follow = sidebar_nav::wants_follow(
             self.config.ui.sidebar_follow_active,
@@ -412,7 +412,7 @@ impl AlacritreeApp {
         let home_rows = self.workspace_rows(&None, &listed);
         // A rendered session list carries its own per-session status; repeating
         // it on the parent row reads as noise, the same
-        // rule the project row applies when expanded.  Aggregates therefore
+        // rule the project row applies when expanded. Aggregates therefore
         // apply only while the list is hidden (fewer than two sessions).
         let home_lists_sessions = WorkspaceRowData::any_session(&home_rows);
         let home_status = if home_lists_sessions {
@@ -535,7 +535,7 @@ impl AlacritreeApp {
     }
 
     /// Applies what the paint pass recorded other than activations: project
-    /// edits, session drops, and the dialogs a row opens.  A pointer release
+    /// edits, session drops, and the dialogs a row opens. A pointer release
     /// clicks one widget, so at most one of these fires per frame and their
     /// order is free.
     fn apply_sidebar_edits(&mut self, ctx: &Context, requests: &mut SidebarRequests) {
@@ -624,11 +624,11 @@ impl AlacritreeApp {
         }
         if let Some(ws) = requests.spawn_shell.take() {
             // Spawning activates the workspace and the new session, matching
-            // Ctrl+T and worktree-creation's open-on-done.  An `Err` here
+            // Ctrl+T and worktree-creation's open-on-done. An `Err` here
             // arrived before the session record did, from a checkout git has
             // forgotten or a PTY opened inline, and hands the workspace
             // back rather than stranding the user on one with no shell, the
-            // same reasoning as `activate_worktree`.  A PTY opened on a
+            // same reasoning as `activate_worktree`. A PTY opened on a
             // worker fails after the record exists, so the switch stands and
             // `poll_pending_spawns` leaves the pane on the "no session"
             // placeholder: every workspace it could hand back to is one
@@ -687,7 +687,7 @@ struct SidebarView {
     worktree_profiles: Vec<(String, String)>,
 }
 
-/// A view paired with the app's icon set.  The icons stay a borrow of their
+/// A view paired with the app's icon set. The icons stay a borrow of their
 /// own field, so the panel closure can still borrow `projects` mutably.
 #[derive(Clone, Copy)]
 struct SidebarPaint<'a> {
@@ -759,8 +759,8 @@ impl SidebarView {
 }
 
 /// Membership for the active filter, resolved once so paint can skip
-/// non-surviving rows.  While filtering, matched projects render their
-/// matched worktrees regardless of `expanded`.  That is display-only, and
+/// non-surviving rows. While filtering, matched projects render their
+/// matched worktrees regardless of `expanded`. That is display-only, and
 /// the flag is never written.
 #[derive(Default)]
 struct FilterMembership {
@@ -884,7 +884,7 @@ fn projects_header_buttons(
 }
 
 /// Offers `row_rect` as a landing for the session being dragged, and records
-/// the drop on release.  `slot` carries a session row's display index and id;
+/// the drop on release. `slot` carries a session row's display index and id;
 /// `None` is a workspace row.
 fn session_drop_target(
     ui: &egui::Ui,
@@ -909,7 +909,7 @@ fn session_drop_target(
             }
         },
         // A workspace row: its sessions start under it, so a
-        // drop here means the front of that workspace.  This is
+        // drop here means the front of that workspace. This is
         // the only way to reach a workspace listing no session
         // rows, either an empty one or a single-session one below
         // the display threshold.
@@ -1030,7 +1030,7 @@ fn paint_project_header(
     let theme = &paint.view.theme;
     let proj_attention = paint.view.projects.get(idx).is_some_and(|p| p.attention);
     // Bubble attention up to the project row only when the
-    // project is collapsed.  Once expanded, the actual
+    // project is collapsed. Once expanded, the actual
     // worktree rows already show the dot, and doubling it
     // on the parent reads as noise.
     let show_proj_dot = proj_attention && !project.expanded;
@@ -1074,7 +1074,7 @@ fn paint_project_header(
         ui.scroll_to_rect(header_rect, theme.scroll_align);
     }
 
-    // Drop target for a reorder drag.  Detected against the
+    // Drop target for a reorder drag. Detected against the
     // raw payload rather than a `dnd_drop_zone` widget so no
     // extra hover-sensing rect steals the row buttons' own
     // hover highlight.
@@ -1099,7 +1099,7 @@ fn paint_project_header(
     }
 }
 
-/// The project row's grip, expand arrow and name.  Reports whether the arrow
+/// The project row's grip, expand arrow and name. Reports whether the arrow
 /// was clicked, with the name's response for the context menu.
 fn project_row_title(
     ui: &mut egui::Ui,
@@ -1486,7 +1486,7 @@ pub(super) struct WorktreeAction {
 
 /// Sidebar placeholder for a worktree whose creation the user minimized: a
 /// spinner stands in until `poll_pending_creates` refreshes the project and the
-/// real worktree row takes its place.  Indentation and the leading glyph match
+/// real worktree row takes its place. Indentation and the leading glyph match
 /// `worktree_row` so it lines up with its future sibling.
 pub(super) fn creating_row(ui: &mut egui::Ui, branch: &str, icons: &Icons<Color32>, theme: &Theme) {
     let s = theme.ui_scale;
@@ -1533,7 +1533,7 @@ fn pr_badge<'a>(
     }
 }
 
-/// Badge style, color, and tooltip for an upstream state.  The tooltip names
+/// Badge style, color, and tooltip for an upstream state. The tooltip names
 /// the upstream ref because the glyph cannot.
 pub(super) fn upstream_badge<'a>(
     icons: &'a Icons<Color32>,
@@ -1577,7 +1577,7 @@ pub(super) struct WorktreeRowView<'a> {
     pub(super) wt: &'a Checkout,
     // What the liveness probe has seen since discovery ran, if anything.
     // `Some` overrides `wt.gone` in both directions; `None` leaves it
-    // standing.  Kept out of the flag itself because that also picks between
+    // standing. Kept out of the flag itself because that also picks between
     // `git worktree remove` and a prune, and a probe must never decide that.
     pub(super) missing: Option<bool>,
     pub(super) display_name: &'a str,
@@ -1766,14 +1766,14 @@ pub(super) fn worktree_row(ui: &mut egui::Ui, row: &WorktreeRowView) -> Worktree
     let bg_idx = ui.painter().add(egui::Shape::Noop);
     let panel_x = ui.max_rect().x_range();
 
-    // Discovery's word, corrected by whatever the probe has seen since.  The
+    // Discovery's word, corrected by whatever the probe has seen since. The
     // main worktree is never offered for pruning, so it never greys either.
     let prunable = worktree_looks_gone(row.wt, row.missing);
     let (resp, mut clicks) = worktree_row_frame(ui, row, prunable);
 
     // Frame allocates its space at end-of-show, so its retroactive `interact`
     // registers *after* the inner button in egui's z-order — meaning clicks on
-    // the × land on this row response, not the button.  Recover by routing
+    // the × land on this row response, not the button. Recover by routing
     // clicks whose position falls inside the button rect to delete.
     clicks.route_shadowed_click(resp.clicked(), resp.interact_pointer_pos());
 
@@ -1848,7 +1848,7 @@ enum ProgressTone {
     Paused,
 }
 
-/// How much of `width` a progress bar covers.  Indeterminate progress has no
+/// How much of `width` a progress bar covers. Indeterminate progress has no
 /// fraction to show, so it fills the row.
 fn progress_bar_fill(progress: OscProgress, width: f32) -> f32 {
     let fraction = match progress {
@@ -1987,7 +1987,7 @@ pub(super) fn session_row(
 
     // Frame allocates its space at end-of-show, so its retroactive `interact`
     // registers *after* the inner button in egui's z-order — meaning clicks on
-    // the × land on this row response, not the button.  Recover by routing
+    // the × land on this row response, not the button. Recover by routing
     // clicks whose position falls inside the button rect to close.
     if resp.clicked() && !close_clicked {
         if let (Some(rect), Some(pos)) = (close_rect, resp.interact_pointer_pos()) {
@@ -2037,7 +2037,7 @@ pub(super) fn session_row(
     }
 }
 
-/// A row's name as two spans: the context, then the identity.  Nothing
+/// A row's name as two spans: the context, then the identity. Nothing
 /// separates them but weight — a punctuation mark here would spell out a
 /// relationship the colours already show, and the status word one used to
 /// join only repeated the mark two slots to its left.
@@ -2080,7 +2080,7 @@ fn paint_managed_mark(
     theme: &Theme,
     color: Color32,
 ) -> egui::Rect {
-    // 10.0 is what the status marks beside it use.  Both multiplexer glyphs
+    // 10.0 is what the status marks beside it use. Both multiplexer glyphs
     // are fitted to a capital M's box when the baked face is built, so the
     // same size puts them on one optical line with `◇` and `●`.
     let (icon, default) = icons.pane(managed.multiplexer);
@@ -2088,9 +2088,9 @@ fn paint_managed_mark(
     ui.label(RichText::new(glyph).color(glyph_color).font(font)).rect
 }
 
-/// A multiplexer's pane nothing is attached to.  Drawn in `theme.text_dim`
+/// A multiplexer's pane nothing is attached to. Drawn in `theme.text_dim`
 /// because it is listed but not live, the same weight `worktree_gone` gives a
-/// row whose checkout has been removed.  An attached pane has an ordinary
+/// row whose checkout has been removed. An attached pane has an ordinary
 /// session row instead, so no pane is ever drawn twice.
 ///
 /// Not draggable and carries no drop-target rect: such a pane has no position
@@ -2338,7 +2338,7 @@ pub(super) fn project_toggles_pass(
 
 /// Whether a workspace counts as occupied for the sessions toggle: it holds a
 /// live session or, when `counts_detached` is set, a listed multiplexer pane
-/// nothing is attached to.  `session_workspaces` is the workspace of every
+/// nothing is attached to. `session_workspaces` is the workspace of every
 /// live session; a folded lone shell (absent from `listed` below the row
 /// threshold, but still in `session_workspaces`) passes either way.
 pub(super) fn sessions_filter_passes(
@@ -2354,7 +2354,7 @@ pub(super) fn sessions_filter_passes(
             }))
 }
 
-/// The chips the projects header shows for its active toggles.  Counting
+/// The chips the projects header shows for its active toggles. Counting
 /// detached panes is app state rather than a toggle, and it changes nothing
 /// until the sessions filter is on, so its chip rides right after `[s]`.
 pub(super) fn project_filter_chips(filter: &PanelFilter, counts_detached: bool) -> Vec<String> {
@@ -2368,7 +2368,7 @@ pub(super) fn project_filter_chips(filter: &PanelFilter, counts_detached: bool) 
     chips
 }
 
-/// The toggle identities the projects panel accepts.  The PR identities exist
+/// The toggle identities the projects panel accepts. The PR identities exist
 /// only when polling does, or every PR state would read as unknown and the
 /// filters could only ever empty the panel.
 pub(super) fn project_filter_toggles(pr_status: bool) -> &'static [char] {
@@ -2376,7 +2376,7 @@ pub(super) fn project_filter_toggles(pr_status: bool) -> &'static [char] {
 }
 
 /// The projects-panel toggle a named action flips, or `None` for an action that
-/// is not one of its filters.  `PanelFilter::toggle` ignores an identity it does
+/// is not one of its filters. `PanelFilter::toggle` ignores an identity it does
 /// not allow and dispatch falls through on an unmatched action, so nothing at
 /// the call site can catch a wrong pairing — assert it here instead.
 pub(super) fn project_filter_identity(action: NamedAction) -> Option<char> {
@@ -2415,14 +2415,14 @@ pub(super) fn worktree_pr_passes(
 }
 
 /// Whether `build_project_rows` resolves session and pane names for
-/// `child_matches` this frame.  `[ui] search_depth` at its "workspaces"
+/// `child_matches` this frame. `[ui] search_depth` at its "workspaces"
 /// default answers false unconditionally, so no child name is ever computed
 /// and a query costs what matching workspace names alone costs.
 pub(super) fn search_reaches_children(depth: SearchDepth, query_is_empty: bool) -> bool {
     depth == SearchDepth::Sessions && !query_is_empty
 }
 
-/// Whether the projects panel is filtering on PR state this frame.  A toggle
+/// Whether the projects panel is filtering on PR state this frame. A toggle
 /// the scope has stood down narrows nothing, so it must not pull the cache
 /// generation into the reconciler or reach `gh` for a collapsed project.
 pub(super) fn any_pr_toggle_active(filter: &PanelFilter, scope: SearchScope) -> bool {
@@ -2430,20 +2430,20 @@ pub(super) fn any_pr_toggle_active(filter: &PanelFilter, scope: SearchScope) -> 
         && ['o', 'd', 'm', 'c'].into_iter().any(|key| filter.is_toggled(key))
 }
 
-/// Whether this worktree's PR state is polled this frame.  Collapsed projects
+/// Whether this worktree's PR state is polled this frame. Collapsed projects
 /// normally cost no `gh` processes, but a PR filter has to see every row or it
 /// would hide worktrees for want of a lookup it declined to start.
 pub(super) fn should_poll_pr(pr_enabled: bool, expanded: bool, any_pr_toggle: bool) -> bool {
     pr_enabled && (expanded || any_pr_toggle)
 }
 
-/// Drag-and-drop payload for reordering the project list.  Carries the dragged
+/// Drag-and-drop payload for reordering the project list. Carries the dragged
 /// project's root rather than its index so a background refresh that shifts the
 /// list mid-drag can't drop onto the wrong project.
 #[derive(Clone)]
 pub(super) struct DraggedProject(pub(super) PathBuf);
 
-/// Drag-and-drop payload for reordering sessions.  Carries the id rather than
+/// Drag-and-drop payload for reordering sessions. Carries the id rather than
 /// a position so a spawn, close or reorder mid-drag can't retarget the drop.
 #[derive(Clone)]
 pub(super) struct DraggedSession(pub(super) SessionId);
@@ -2478,7 +2478,7 @@ pub(super) enum WorkspaceRowData {
 }
 
 impl WorkspaceRowData {
-    /// Whether any of `rows` is a session of alacritree's own.  The workspace
+    /// Whether any of `rows` is a session of alacritree's own. The workspace
     /// row shows aggregate attention and activity only while none is: with a
     /// list on screen, repeating its summary above it reads as noise.
     pub(super) fn any_session(rows: &[Self]) -> bool {
@@ -2502,7 +2502,7 @@ impl PaneRowData {
 }
 
 /// A row's name in two parts, ranked by weight rather than punctuation: the
-/// identity, and the category standing in front of it as context.  `context`
+/// identity, and the category standing in front of it as context. `context`
 /// is absent when the identity is already the category, so a row never spells
 /// one thing twice.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2516,7 +2516,7 @@ impl RowName {
         Self { text, context: None }
     }
 
-    /// What a text filter matches this row on.  Both parts, because the row
+    /// What a text filter matches this row on. Both parts, because the row
     /// shows both, and the context only when the row spells it out: a query
     /// naming a category an identity already carries must not match twice.
     pub(super) fn search_text(self) -> String {
@@ -2528,8 +2528,8 @@ impl RowName {
 }
 
 /// The name a multiplexer reports for a pane, and `None` when it reports
-/// none.  The kind rides along as context unless it says the same thing as
-/// the title.  What a titleless pane falls back to differs by row, so each
+/// none. The kind rides along as context unless it says the same thing as
+/// the title. What a titleless pane falls back to differs by row, so each
 /// caller says so itself rather than passing its answer through here.
 pub(super) fn pane_row_name(agent: &Pane) -> Option<RowName> {
     let title = agent.title.clone()?;
@@ -2539,8 +2539,8 @@ pub(super) fn pane_row_name(agent: &Pane) -> Option<RowName> {
 
 /// The sidebar row, the palette row and the text filter must all resolve an
 /// agent's name the same way, or the filter stops matching what the other two
-/// paint.  Falls back from the pane's title, to the agent's kind, to the last
-/// six characters of its terminal id.  A listed row has nothing better than
+/// paint. Falls back from the pane's title, to the agent's kind, to the last
+/// six characters of its terminal id. A listed row has nothing better than
 /// the terminal id's tail behind the kind, so the kind takes the name rather
 /// than standing in front of six characters nobody reads.
 pub(super) fn pane_display_name(agent: &Pane) -> RowName {
@@ -2556,10 +2556,10 @@ pub(super) fn pane_display_name(agent: &Pane) -> RowName {
 /// Agent titles commonly lead with their own decorative mark. Once the row
 /// paints a semantic agent/loader status, retaining that mark beside it would
 /// reintroduce the vendor-specific icon set this status model replaces.
-/// What an attached session's row is called.  On Linux and WSL an attach is
+/// What an attached session's row is called. On Linux and WSL an attach is
 /// full passthrough, so the pane on screen is the multiplexer's and the row
-/// names it the way the listed row would.  Attaching must not rename the row
-/// under the user.  A pane that reports no title keeps the title its own PTY
+/// names it the way the listed row would. Attaching must not rename the row
+/// under the user. A pane that reports no title keeps the title its own PTY
 /// set, with the kind in front of it.
 pub(super) fn session_row_name(
     pty_title: &str,
@@ -2602,7 +2602,7 @@ pub(super) struct PaneRowAction {
     pub(super) attach: bool,
 }
 
-/// What the × on a session row does.  Ending a harness-managed session ends
+/// What the × on a session row does. Ending a harness-managed session ends
 /// the attach client and nothing else — the pane keeps running under the
 /// harness, and the row it came from comes back — so calling that a close
 /// promises a destruction that does not happen.
@@ -2631,7 +2631,7 @@ fn draw_drop_indicator(
     before
 }
 
-/// A grip that a project row can be dragged by to reorder it.  Drag-sensing
+/// A grip that a project row can be dragged by to reorder it. Drag-sensing
 /// only, so a plain click still falls through to the row's other controls.
 fn drag_handle(ui: &mut egui::Ui, theme: &Theme) -> egui::Response {
     let s = theme.ui_scale;
@@ -2850,7 +2850,7 @@ mod tests {
 
     /// Dispatch cannot catch a wrong pairing: `toggle` drops an identity the
     /// panel does not allow, and an action with no arm falls through to the
-    /// scroll handler.  Swapping two identities here is otherwise invisible.
+    /// scroll handler. Swapping two identities here is otherwise invisible.
     #[test]
     fn the_projects_filter_actions_map_to_their_identities() {
         for (action, identity) in [

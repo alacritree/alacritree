@@ -25,7 +25,7 @@ const URL_REGEX: &str = "(ipfs:|ipns:|magnet:|mailto:|gemini://|gopher://|https:
 
 thread_local! {
     // RegexSearch holds lazily-populated DFAs and needs `&mut` to query, but
-    // recompiling the pattern every frame is wasteful.  egui runs the UI on
+    // recompiling the pattern every frame is wasteful. egui runs the UI on
     // one thread, so a TLS RefCell is enough.
     static URL_SEARCH: RefCell<RegexSearch> =
         RefCell::new(RegexSearch::new(URL_REGEX).expect("URL_REGEX must compile"));
@@ -97,7 +97,7 @@ fn url_match_at(
 }
 
 /// Strip trailing punctuation and unbalanced brackets that the regex greedily
-/// includes.  Same heuristic alacritty's `HintPostProcessor` uses so a URL
+/// includes. Same heuristic alacritty's `HintPostProcessor` uses so a URL
 /// embedded in prose (`see (https://example.com).`) opens at the right bound.
 fn post_process(
     term: &Term<EventProxy<impl Repaint>>,
@@ -161,7 +161,7 @@ fn post_process(
 
 /// Hand the URI to the OS handler — `xdg-open` on Linux/BSDs, `open` on
 /// macOS, `cmd /c start` on Windows — matching alacritty's default URL hint
-/// action.  Submitted rather than spawned inline: `CreateProcess` is not free
+/// action. Submitted rather than spawned inline: `CreateProcess` is not free
 /// on a loaded machine, and this runs from the grid's click handler.
 #[must_use = "dropping the handle cancels the open"]
 pub(crate) fn open(uri: &str) -> jobs::Job<()> {

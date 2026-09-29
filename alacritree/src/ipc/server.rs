@@ -1,7 +1,7 @@
 //! The listener side of the socket.
 //!
 //! Threading: the listener accepts on its own thread and spawns one thread
-//! per connection.  Requests that touch app state are forwarded to the UI
+//! per connection. Requests that touch app state are forwarded to the UI
 //! thread as [`AppCall`]s, drained once per frame. The accompanying
 //! [`Repaint::wake`] is what wakes an idle UI loop, same contract as
 //! `EventProxy`. Requests that would stall a frame (git status walks,
@@ -42,7 +42,7 @@ const APP_REPLY_TIMEOUT: Duration = Duration::from_secs(10);
 /// different timeout changes nothing here.
 ///
 /// It sits under the 300s the CLI and the MCP bridge allow so that an overrun
-/// is reported by the side that knows why it overran.  A client's timer starts
+/// is reported by the side that knows why it overran. A client's timer starts
 /// when it sends; this one starts after the request has been received, parsed
 /// and validated, so on an equal budget the client always gives up first and
 /// this message is never seen.
@@ -244,7 +244,7 @@ fn call_app(request: AppRequest, app_tx: &Sender<AppCall>, repaint: &impl Repain
 }
 
 /// Runs the same background flow as the sidebar's "+" button, blocking
-/// this connection until git finishes.  `default_branch: None` makes the
+/// this connection until git finishes. `default_branch: None` makes the
 /// worker resolve the base from `origin/HEAD` itself.
 fn create_worktree(
     project_root: PathBuf,
@@ -260,7 +260,7 @@ fn create_worktree(
     let (rx, job) = wt::spawn_create(req, config.hooks.clone(), repaint.clone());
     let outcome = drain_create(&rx, IPC_CREATE_BUDGET);
     // Dropping on every path, including the deadline, is what ends the fetch
-    // and returns the worker.  Holding it would leave the pool one worker
+    // and returns the worker. Holding it would leave the pool one worker
     // smaller with nothing on screen or in the reply saying so.
     drop(job);
     match outcome {
@@ -288,7 +288,7 @@ enum CreateError {
 
 /// Collect a create's progress until it finishes or the budget runs out.
 ///
-/// The deadline is computed once.  A per-message timeout would reset on every
+/// The deadline is computed once. A per-message timeout would reset on every
 /// step, so a job that keeps reporting would hold its worker past any budget.
 fn drain_create(
     rx: &Receiver<Progress>,
@@ -487,7 +487,7 @@ mod tests {
         assert_eq!(reply["error"], "version control is disabled");
     }
 
-    /// The deadline is absolute.  A per-message timeout resets on every progress
+    /// The deadline is absolute. A per-message timeout resets on every progress
     /// step, so a job that keeps reporting outlives the budget indefinitely: the
     /// same parked worker, reached more slowly.
     #[test]
@@ -516,7 +516,7 @@ mod tests {
             "a create that never finished ended as {outcome:?}"
         );
         // The two behaviours are seconds apart: a per-message timeout runs the
-        // whole dribble, an absolute deadline stops at the budget.  Splitting
+        // whole dribble, an absolute deadline stops at the budget. Splitting
         // that gap separates them without measuring `recv_timeout`'s precision.
         let dribble = step * steps;
         assert!(

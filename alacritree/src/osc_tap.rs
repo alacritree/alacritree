@@ -9,7 +9,7 @@ use std::sync::OnceLock;
 use crate::config::VtConfig;
 use crate::repaint::Repaint;
 
-/// What the shell on the other end of the PTY spells a path like.  A WSL
+/// What the shell on the other end of the PTY spells a path like. A WSL
 /// session on Windows is `Unix`: the payload is a Linux path, and the
 /// translation to a Windows one happens later, against the session's distro.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,7 +30,7 @@ pub(crate) enum Progress {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum OscEvent {
-    /// `None` clears the reported directory.  The path is still the shell's
+    /// `None` clears the reported directory. The path is still the shell's
     /// own spelling: WSL translation needs the session's distro.
     Cwd(Option<String>),
     Notify(String),
@@ -44,7 +44,7 @@ pub(crate) struct TapPolicy {
     pub(crate) shell: ShellPlatform,
 }
 
-/// This machine's name, resolved once.  An empty string when the lookup
+/// This machine's name, resolved once. An empty string when the lookup
 /// fails, which leaves only an empty host and `localhost` counting as local.
 pub(crate) fn local_hostname() -> &'static str {
     static HOSTNAME: OnceLock<String> = OnceLock::new();
@@ -160,7 +160,7 @@ fn rejoin(params: &[&[u8]], from: usize) -> Option<String> {
     Some(joined)
 }
 
-/// ConEmu documents the 9;9 payload as a quoted string.  Windows Terminal
+/// ConEmu documents the 9;9 payload as a quoted string. Windows Terminal
 /// strips the quotes when both are present and parses the bare string when
 /// they are not, and says in a comment that ConEmu does the same.
 fn unquote(raw: &str) -> &str {
@@ -168,7 +168,7 @@ fn unquote(raw: &str) -> &str {
 }
 
 /// The host check filters shells that honestly name a remote host, which is
-/// the common accident.  It stops nobody writing bytes with intent, who
+/// the common accident. It stops nobody writing bytes with intent, who
 /// simply writes `localhost`, so nothing downstream may lean on it.
 fn file_url_path(url: &str, hostname: &str) -> Option<String> {
     let rest = url.strip_prefix("file://")?;
@@ -218,7 +218,7 @@ fn is_drive_rooted(path: &str) -> bool {
     )
 }
 
-/// The guard the rest of the design rests on.  A path beginning `\\` or `//`
+/// The guard the rest of the design rests on. A path beginning `\\` or `//`
 /// is UNC on Windows: touching it with `is_dir` opens an SMB connection to a
 /// host the payload named, and the payload need not come from a remote shell
 /// at all, since `cat` of a downloaded file reaches the PTY the same way.
@@ -234,7 +234,7 @@ fn rooted(path: &str, shell: ShellPlatform) -> Option<String> {
     ok.then(|| path.to_string())
 }
 
-/// The xterm pointer names alacritree has a cursor for.  An unknown name
+/// The xterm pointer names alacritree has a cursor for. An unknown name
 /// leaves the current shape alone: not understanding a request is not a
 /// request to reset.
 fn cursor_icon(name: &str) -> Option<egui::CursorIcon> {
@@ -252,11 +252,11 @@ fn cursor_icon(name: &str) -> Option<egui::CursorIcon> {
     })
 }
 
-/// How long a sequence the tap classifies may grow before it is dropped.  A
+/// How long a sequence the tap classifies may grow before it is dropped. A
 /// directory or a notification never comes near it.
 pub(crate) const MAX_OSC_LEN: usize = 64 * 1024;
 
-/// The OSC numbers `classify` reads.  Any other sequence is skipped rather
+/// The OSC numbers `classify` reads. Any other sequence is skipped rather
 /// than buffered, however long its payload.
 fn classified(number: &[u8]) -> bool {
     matches!(number, b"7" | b"9" | b"22" | b"777")
@@ -347,7 +347,7 @@ impl<R: Repaint> Sink<R> {
     }
 
     /// Searches for `ESC ]` as a pair, so every other escape sequence is
-    /// passed over without stopping.  vte would also open an OSC for an ESC
+    /// passed over without stopping. vte would also open an OSC for an ESC
     /// followed by C0 controls and then `]`, which the pair search misses.
     fn ground<'a>(&mut self, bytes: &'a [u8]) -> &'a [u8] {
         if let Some(at) = self.introducer.find(bytes) {
@@ -436,7 +436,7 @@ impl<R: Repaint> Sink<R> {
     }
 
     /// A state the session already holds changes nothing on screen, so it is
-    /// not worth a repaint.  A notification is an occurrence, never a repeat.
+    /// not worth a repaint. A notification is an occurrence, never a repeat.
     fn is_repeat(&mut self, event: &OscEvent) -> bool {
         let last = match event {
             OscEvent::Notify(_) => return false,

@@ -23,11 +23,11 @@ fn emphasis_family(e: &TextEmphasis<Color32>, base: &egui::FontFamily) -> egui::
 /// `egui::Label` offers an elided name as a tooltip by itself, but only to a
 /// widget the hit test marks hovered — and a row that senses its click
 /// retroactively, once its labels are already laid out, takes that mark away
-/// from them.  Laying the galley out here keeps both decisions with the row:
+/// from them. Laying the galley out here keeps both decisions with the row:
 /// which response carries the tooltip, and whether `[ui] sidebar_tooltips`
 /// wants one at all.
 ///
-/// `fallback_color` paints whatever spans the text left uncolored.  Selection
+/// `fallback_color` paints whatever spans the text left uncolored. Selection
 /// stays off whatever the surrounding style says: a selectable label unions
 /// drag into `sense` and takes the click its row is waiting for.
 pub(super) fn truncating_label(
@@ -104,7 +104,7 @@ pub(super) fn name_tooltip(
 /// `Zed` needs two differently-formatted spans, and one `LayoutJob` is the
 /// only way to get them without an `item_spacing` gap between two labels, a
 /// second response competing for the row's click, and a filename that can
-/// overflow the width `row_with_trailing` is managing.  Putting the filename
+/// overflow the width `row_with_trailing` is managing. Putting the filename
 /// first only *prioritizes* it: epaint truncates the tail of one linear glyph
 /// stream, so a row narrower than the filename still elides it.
 pub(super) fn path_text(
@@ -193,7 +193,7 @@ pub(super) fn braille_loader(ui: &mut egui::Ui, size: f32, color: Color32) -> eg
 }
 
 /// The glyph a state draws when `[ui.icons]` leaves it unset, its colour, and
-/// whether it paints bold.  `None` is the braille loader.
+/// whether it paints bold. `None` is the braille loader.
 ///
 /// Colour comes from the state, not from the row: an idle agent reads the
 /// same on a selected row as on a quiet one, and a native session reads the
@@ -233,17 +233,17 @@ fn state_icon(state: ShownState, icons: &Icons<Color32>) -> &IconStyle<Color32> 
 
 const MARK_PX: f32 = 10.0;
 
-/// How much of the circle's height a symbol's ink spans.  A cross or tick
+/// How much of the circle's height a symbol's ink spans. A cross or tick
 /// reaching into the corners of the circle's box reads larger than the
 /// circle, so it stops short of it.
 const SYMBOL_FILL: f32 = 0.9;
 
-/// Size the symbols are measured at.  Ink boxes snap to whole pixels, so a
+/// Size the symbols are measured at. Ink boxes snap to whole pixels, so a
 /// large size keeps that rounding out of the ratio.
 const MEASURE_PX: f32 = 64.0;
 
 /// A state's mark as it paints: the glyph (`None` for the loader), its font
-/// and its colour.  A glyph set in `[ui.icons]` wins over both indicator sets,
+/// and its colour. A glyph set in `[ui.icons]` wins over both indicator sets,
 /// and on the working state it replaces the loader.
 fn resolve_mark<'a>(
     state: ShownState,
@@ -259,7 +259,7 @@ fn resolve_mark<'a>(
 }
 
 /// Whether a state paints one of the symbols set's own shapes at its default
-/// size, the only marks sized against the circle.  A glyph or size set in
+/// size, the only marks sized against the circle. A glyph or size set in
 /// `[ui.icons]` is taken as written.
 fn sized_to_the_circle(state: ShownState, icons: &Icons<Color32>, theme: &Theme) -> bool {
     let style = state_icon(state, icons);
@@ -270,7 +270,7 @@ fn sized_to_the_circle(state: ShownState, icons: &Icons<Color32>, theme: &Theme)
 }
 
 /// The size at which `glyph`'s ink spans `SYMBOL_FILL` of the filled circle's
-/// height at `font`'s size.  Measured from the laid-out ink rather than the
+/// height at `font`'s size. Measured from the laid-out ink rather than the
 /// baked face, since the UI font ahead of it in the chain may draw the glyph.
 fn size_to_the_circle(ui: &egui::Ui, glyph: &str, font: &egui::FontId, theme: &Theme) -> f32 {
     let ink = |text: &str, family: egui::FontFamily| {
@@ -348,8 +348,8 @@ pub(super) fn paint_row_status_icon(
 pub(super) const ICON_CLUSTER_SPACING: f32 = 2.0;
 
 /// Resolve an icon's paint-time glyph, font, and color from its config and
-/// the site's built-in defaults.  `default_glyph` covers the case where a
-/// table styles a key without setting `glyph`.  `default_px` and `slot_px`
+/// the site's built-in defaults. `default_glyph` covers the case where a
+/// table styles a key without setting `glyph`. `default_px` and `slot_px`
 /// are deliberately separate: an action button paints its glyph at `12.0 *
 /// ui_scale` inside a `16.0 * ui_scale` slot, and conflating the two would
 /// resize every unconfigured icon.
@@ -458,9 +458,9 @@ where
     .rect
 }
 
-/// A sidebar's vertical scroll area.  egui clamps a scroll to the content, so
+/// A sidebar's vertical scroll area. egui clamps a scroll to the content, so
 /// under a centering `scroll_align` the content gets room past each end, or
-/// the rows near either end could never reach the middle.  The area first
+/// the rows near either end could never reach the middle. The area first
 /// opens scrolled past the top room, at its first row.
 pub(super) fn sidebar_scroll_area(
     ui: &mut egui::Ui,
@@ -493,7 +493,7 @@ pub(super) fn sidebar_scroll_area(
 ///
 /// `Solid` reserves a gutter right of the content instead of egui's floating
 /// overlay, whose hover expansion covers the icons at the right end of the
-/// rows.  Scoped to the panel so terminal-side scroll areas keep the default.
+/// rows. Scoped to the panel so terminal-side scroll areas keep the default.
 pub(super) fn apply_scrollbar_style(ui: &mut egui::Ui, scrollbar: ScrollbarStyle) {
     if scrollbar == ScrollbarStyle::Solid {
         ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
@@ -538,7 +538,7 @@ fn loader_glyph(frame: usize) -> &'static str {
     CODEX_LOADER_FRAMES[frame % CODEX_LOADER_FRAMES.len()]
 }
 
-/// What the status slot says on hover.  A named agent is named, so a
+/// What the status slot says on hover. A named agent is named, so a
 /// workspace running several can be told apart without opening any of them.
 pub(super) fn agent_hint(state: ShownState, name: Option<&str>) -> String {
     let name = name.unwrap_or("agent");
@@ -552,7 +552,7 @@ pub(super) fn agent_hint(state: ShownState, name: Option<&str>) -> String {
     }
 }
 
-/// What a row knows about its own state.  Grouped rather than passed loose
+/// What a row knows about its own state. Grouped rather than passed loose
 /// because the four answer one question between them, and the slot draws
 /// whichever ranks highest.
 #[derive(Clone, Copy)]
@@ -574,12 +574,12 @@ impl RowStatus<'_> {
 }
 
 /// A session's status mark and the words it explains on hover, independent
-/// of where it paints.  The sidebar's fixed slot and the palette's row both
+/// of where it paints. The sidebar's fixed slot and the palette's row both
 /// ask here for the identical session, so the two can never disagree.
 ///
 /// A multiplexer that reports `done` has latched it on its own side, so it
-/// counts the same as alacritree's own latch.  The hover names the
-/// multiplexer when the mark is the state it reported.  `None` covers a
+/// counts the same as alacritree's own latch. The hover names the
+/// multiplexer when the mark is the state it reported. `None` covers a
 /// plain shell with nothing latched.
 pub(super) fn session_status_mark(status: &RowStatus<'_>) -> Option<(ShownState, String)> {
     let pane_status = status.managed.and_then(|managed| managed.status);

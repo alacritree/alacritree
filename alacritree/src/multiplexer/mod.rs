@@ -1,5 +1,5 @@
 //! The multiplexers this build hosts panes from, dispatched by `match` rather
-//! than a vtable.  What a multiplexer is asked lives in
+//! than a vtable. What a multiplexer is asked lives in
 //! `alacritree_multiplexer`; this module only decides which ones exist and
 //! routes a request to the one that owns a pane.
 
@@ -47,7 +47,7 @@ impl Multiplexer {
     }
 
     /// The glyph a row draws when the config leaves this multiplexer's icon
-    /// blank.  Every `BakedGlyph` is declared through `baked_glyphs!`, so the
+    /// blank. Every `BakedGlyph` is declared through `baked_glyphs!`, so the
     /// baked font subset covers it.
     pub(crate) fn default_icon(&self) -> BakedGlyph {
         match self {
@@ -95,7 +95,7 @@ impl Multiplexers {
         self.0.len()
     }
 
-    /// The kind held at `at`.  A frame that has to reach `&mut self` inside
+    /// The kind held at `at`. A frame that has to reach `&mut self` inside
     /// its own loop walks positions rather than kinds, since the kind list is
     /// not the set that was built.
     pub(crate) fn kind_at(&self, at: usize) -> MultiplexerKind {
@@ -121,7 +121,7 @@ impl Multiplexers {
     }
 
     /// The multiplexer a request named, or `None` when it named none and any
-    /// may answer.  A name that is no multiplexer, one that is switched off,
+    /// may answer. A name that is no multiplexer, one that is switched off,
     /// and every one being off are all refusals.
     pub(crate) fn requested(
         &self,
@@ -195,7 +195,7 @@ impl Multiplexers {
     }
 
     /// Drop every real multiplexer, leaving the scripted one alone in the
-    /// set.  A test about what the app does with a multiplexer then answers
+    /// set. A test about what the app does with a multiplexer then answers
     /// only for that, rather than also for which real one ships enabled.
     #[cfg(test)]
     pub(crate) fn only_scripted(&mut self) -> &mut Scripted {
@@ -203,7 +203,7 @@ impl Multiplexers {
         self.scripted_mut()
     }
 
-    /// The scripted multiplexer, built on first use.  `new` cannot make one,
+    /// The scripted multiplexer, built on first use. `new` cannot make one,
     /// since it builds only the real kinds.
     #[cfg(test)]
     pub(crate) fn scripted_mut(&mut self) -> &mut Scripted {

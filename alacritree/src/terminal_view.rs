@@ -27,7 +27,7 @@ use crate::repaint::Repaint;
 use crate::session::{EventProxy, Session, SessionId, SessionKind, TermSize};
 use crate::{decoration_sprites, mouse, paste};
 
-/// The pointer over the grid.  A hovered link wins, since it says a click
+/// The pointer over the grid. A hovered link wins, since it says a click
 /// does something; otherwise the application's OSC 22 choice, when allowed.
 fn grid_cursor(
     requested: Option<CursorIcon>,
@@ -73,7 +73,7 @@ pub(crate) fn show(
         .and_then(|row| row.glyphs.first())
         .map_or(cell_h_pt, |glyph| glyph.font_ascent);
     // Floor cell size to whole device pixels — matches alacritty's
-    // `compute_cell_size`.  Without this, fractional cell widths combined
+    // `compute_cell_size`. Without this, fractional cell widths combined
     // with egui's AA fringe leave visible seams between adjacent cells.
     // `font.offset` is added in pixel space so the round-trip through ppp is
     // identical to alacritty (which adds offset to the integer cell metrics).
@@ -150,7 +150,7 @@ pub(crate) fn show(
     dispatch_input(ui, &response, session, ime, allow_focus, peek.mode);
     // Built-in renderer expects the *unadjusted* pixel cell size so it can
     // re-apply `font.offset` itself — passing `cell_w * ppp` (which already
-    // includes the offset) would double-add it.  Descent is zero here: the
+    // includes the offset) would double-add it. Descent is zero here: the
     // alacritty renderer's `top - descent` math collapses when descent is
     // zero, and `paint_builtin_glyph` positions images using that simplified
     // form.
@@ -249,7 +249,7 @@ pub(crate) fn show(
 /// Runs ahead of the paint so a keystroke reaches the PTY without queueing
 /// behind a full-screen grid walk, and so the selection clear and snap-to-
 /// prompt that typing triggers are visible in the frame the user typed in
-/// rather than the next one.  The preedit is likewise resolved before the grid
+/// rather than the next one. The preedit is likewise resolved before the grid
 /// is built, so a composition starting or ending this frame is painted this
 /// frame.
 fn dispatch_input(
@@ -274,7 +274,7 @@ fn dispatch_input(
                 },
                 // While composing, candidate-window navigation
                 // (Space/Enter/arrows/Backspace/Escape) arrives as ordinary
-                // key events; none of it may reach the PTY.  Mirrors
+                // key events; none of it may reach the PTY. Mirrors
                 // alacritty's early return in `key_input`. That early return
                 // also runs before alacritty dispatches keyboard-triggered
                 // clipboard paste, so a keyboard paste shortcut is likewise
@@ -326,10 +326,10 @@ fn dispatch_input(
 }
 
 /// Whether the grid owns the pointer at `pos`: inside `rect` with no floating
-/// layer (modal, window, context menu) above it.  `layer_id_at` resolves only
+/// layer (modal, window, context menu) above it. `layer_id_at` resolves only
 /// floating `Area` layers, so `None` means the position reaches the background
 /// panels hosting the grid — and while a modal is open egui resolves *every*
-/// position to the modal's layer.  Raw pointer reads bypass egui's
+/// position to the modal's layer. Raw pointer reads bypass egui's
 /// response-level layer blocking, so each one must apply this check itself.
 fn pointer_owns_grid(
     ctx: &egui::Context,
@@ -344,14 +344,14 @@ fn pointer_owns_grid(
 /// lock.
 ///
 /// The PTY reader leases the terminal for the whole of every parse, so each
-/// separate `lock()` a frame takes queues behind one.  Reading these together
+/// separate `lock()` a frame takes queues behind one. Reading these together
 /// keeps a burst of output from costing the frame one parse per handler.
 struct TermPeek {
     mode: TermMode,
     /// Shape and blink the running program asked for over DECSCUSR.
     cursor_style: CursorStyle,
     display_offset: i32,
-    /// Link under the mouse pointer.  `None` when the pointer is outside the
+    /// Link under the mouse pointer. `None` when the pointer is outside the
     /// grid, when no link covers that cell, or when the pointer is driving a
     /// drag, so click-to-open never fights with text selection.
     link: Option<Link>,
@@ -495,7 +495,7 @@ fn handle_selection(
         paste::write_selection(&session.term.lock(), config, Target::Primary);
     } else if response.clicked_by(primary) {
         // A bare primary click on a link follows it instead of clearing the
-        // selection.  That matches alacritty's default URL hint, which fires
+        // selection. That matches alacritty's default URL hint, which fires
         // on release without any modifier.
         if let Some(link) = hovered_link {
             detached_jobs.push(links::open(&link.uri));
@@ -507,10 +507,10 @@ fn handle_selection(
 }
 
 /// Forward raw button and motion events to a mouse-tracking app, mirroring
-/// alacritty's `on_mouse_press` / `on_mouse_release` / `mouse_moved`.  Presses
+/// alacritty's `on_mouse_press` / `on_mouse_release` / `mouse_moved`. Presses
 /// and releases report the clicked cell; motion reports only when the pointer
 /// crosses into a new cell and the app opted into motion (any-motion) or drag
-/// tracking.  Events outside the grid — or under an overlay above it — are
+/// tracking. Events outside the grid — or under an overlay above it — are
 /// ignored so sidebar clicks and drags inside dialogs don't leak.
 #[allow(clippy::too_many_arguments)]
 fn handle_mouse_reporting(
@@ -614,7 +614,7 @@ fn button_code(button: PointerButton) -> Option<u8> {
     }
 }
 
-/// Mouse-wheel scrolling.  Mirrors alacritty's `scroll_terminal`: accumulate
+/// Mouse-wheel scrolling. Mirrors alacritty's `scroll_terminal`: accumulate
 /// pixel deltas across frames, divide by cell height for whole-line steps,
 /// and route to the PTY or scrollback depending on terminal mode.
 #[allow(clippy::too_many_arguments)]
@@ -689,7 +689,7 @@ fn apply_scroll(
     let mouse_mode = mode.intersects(TermMode::MOUSE_MODE);
     // ConPTY interprets a pager's alternate-screen switch itself and repaints
     // onto the primary screen, so ALT_SCREEN never reaches this Term on
-    // Windows.  A diff pane runs `delta --paging=always` by construction —
+    // Windows. A diff pane runs `delta --paging=always` by construction —
     // route its wheel to arrow keys as if the alt screen were visible.
     let on_alt_screen = mode.contains(TermMode::ALT_SCREEN)
         || (cfg!(windows) && matches!(session.kind, SessionKind::Diff { .. }));
@@ -730,7 +730,7 @@ fn apply_scroll(
     } else if alt_alt_scroll && !modifiers.shift {
         // Alt-screen apps (vim/less/man) opted into ALTERNATE_SCROLL ask for
         // arrow keys instead of touching the scrollback (which doesn't exist
-        // on the alt screen).  Shift overrides this so users can still scroll
+        // on the alt screen). Shift overrides this so users can still scroll
         // back the host history if anything ever lands there.
         let line_cmd = if is_up { b'A' } else { b'B' };
         let column_cmd = if dx_pt > 0.0 { b'D' } else { b'C' };
@@ -774,7 +774,7 @@ fn start_selection_at(
     paste::write_selection(&term, config, Target::Primary);
 }
 
-/// Pointer position to use for click handlers.  Triple/double click are
+/// Pointer position to use for click handlers. Triple/double click are
 /// reported only on release, by which point `interact_pointer_pos` has already
 /// dropped the press location, so fall back to the last hover position.
 fn click_position(ui: &Ui, response: &Response) -> Option<Pos2> {
@@ -830,9 +830,9 @@ fn consume_events(events: &[Event], mode: TermMode) -> Vec<ConsumedEvent> {
 /// `Event::Paste` is dropped rather than pasted: egui-winit synthesizes it for
 /// every `command+V` press, Shift included, so acting on it would paste on
 /// Ctrl+V regardless of the binding table and leave the shortcut impossible to
-/// rebind or unbind.  Keyboard paste runs through `NamedAction::Paste`, which
-/// reads the clipboard itself.  Text widgets outside the terminal still consume
-/// the event normally.  `Event::Ime` is handled separately by the caller.
+/// rebind or unbind. Keyboard paste runs through `NamedAction::Paste`, which
+/// reads the clipboard itself. Text widgets outside the terminal still consume
+/// the event normally. `Event::Ime` is handled separately by the caller.
 fn consumed_event(event: &Event, next: Option<&Event>, mode: TermMode) -> Option<ConsumedEvent> {
     match event {
         Event::Paste(_) => None,
@@ -862,9 +862,9 @@ impl Style {
         // The two halves of a wide glyph are written from one cursor template,
         // so the spacer carries the same colours and the same SGR flags as the
         // character it belongs to and differs only in which of these two bits
-        // is set.  Reading them as style would end a run between the halves of
+        // is set. Reading them as style would end a run between the halves of
         // a single character and leave the right half with no background and
-        // no decoration.  kitty sidesteps the question by storing the spacer as
+        // no decoration. kitty sidesteps the question by storing the spacer as
         // a copy of the lead cell (`screen.c`, `draw_text_loop`); alacritty
         // instead drops spacers from its renderable cells and puts the column
         // back when it draws a line (`renderer/rects.rs`).
@@ -881,7 +881,7 @@ impl Style {
     ///
     /// A blank draws nothing but its background, so its foreground is free to
     /// differ — unless something in the run paints with the foreground, which
-    /// underlines, strikeout and reverse video all do.  Keeping the two
+    /// underlines, strikeout and reverse video all do. Keeping the two
     /// together is what lets an over-wide glyph grow into the space an icon is
     /// authored with, since growth may only claim blanks its own run holds;
     /// kitty reaches the same place by copying the icon's foreground into the
@@ -898,14 +898,14 @@ impl Style {
 ///
 /// The PTY thread applies output under the same `FairMutex` the painter needs,
 /// so every microsecond a frame holds it is a microsecond the terminal cannot
-/// parse — and the echo of a keystroke waits behind that.  Mirrors alacritty's
+/// parse — and the echo of a keystroke waits behind that. Mirrors alacritty's
 /// `Display::draw`, which collects its renderable cells and drops the terminal
 /// guard before rendering anything.
 ///
 /// Both buffers are reused across frames, and colours are resolved during the
 /// copy, so painting from a snapshot needs neither the lock nor the palette.
 pub(crate) struct GridSnapshot {
-    /// One entry per viewport row.  Each row owns its bytes so re-walking one
+    /// One entry per viewport row. Each row owns its bytes so re-walking one
     /// row never moves another's, which is what lets a capture skip the rows
     /// the terminal reports as clean.
     rows: Vec<RowSnapshot>,
@@ -917,7 +917,7 @@ pub(crate) struct GridSnapshot {
     /// The terminal's background as of the last capture, and the configured
     /// one before the first.
     default_bg: Color32,
-    /// Scrollback position of the last capture.  Scrolling renumbers every row
+    /// Scrollback position of the last capture. Scrolling renumbers every row
     /// at once, which is how the cursor animation tells a jump the screen made
     /// from one the cursor made.
     display_offset: i32,
@@ -937,7 +937,7 @@ struct RowSnapshot {
 }
 
 /// What a capture depends on that the terminal's own damage tracking does not
-/// cover.  `Term::damage` documents the selection as caller-tracked, and it
+/// cover. `Term::damage` documents the selection as caller-tracked, and it
 /// knows nothing about link highlighting, so a change to either invalidates
 /// rows the terminal calls clean.
 #[derive(Default, PartialEq)]
@@ -997,7 +997,7 @@ impl GridSnapshot {
         self.rows.iter().flat_map(row_runs)
     }
 
-    /// Every run on exactly these rows, in the order given.  A frame that
+    /// Every run on exactly these rows, in the order given. A frame that
     /// rewrote three rows reads three rows: walking the runs of a full screen
     /// costs more than writing the records of the ones that changed, and two
     /// damaged rows far apart span every clean row between them.
@@ -1009,7 +1009,7 @@ impl GridSnapshot {
         rows.into_iter().filter(move |&row| row < len).flat_map(|row| row_runs(&self.rows[row]))
     }
 
-    /// Rows the last capture rewrote, merged into one span.  The grid
+    /// Rows the last capture rewrote, merged into one span. The grid
     /// uploads exactly this much.
     fn dirty_rows(&self) -> std::ops::Range<usize> {
         self.dirty_rows.clone()
@@ -1024,7 +1024,7 @@ impl GridSnapshot {
     /// `dirty_rows` with the span covering them.
     ///
     /// Mirrors `Display::update_damage` in alacritty: take the terminal's own
-    /// damage, then add what it documents as the caller's to track.  Anything
+    /// damage, then add what it documents as the caller's to track. Anything
     /// that moves every row — a resize, a scroll, a palette change, the first
     /// capture — comes back as the full range.
     fn collect_damage(
@@ -1211,7 +1211,7 @@ fn row_runs(row: &RowSnapshot) -> impl Iterator<Item = (&str, &Run)> {
 }
 
 /// Viewport rows a buffer-coordinate span covers, clipped to what is on
-/// screen.  A span entirely in scrollback comes back empty.
+/// screen. A span entirely in scrollback comes back empty.
 fn viewport_rows(
     start: Point,
     end: Point,
@@ -1303,7 +1303,7 @@ fn decoration_tile(flags: Flags) -> u16 {
 /// Fill the GPU grid's buffers from this frame's snapshot and hand egui the
 /// callback that draws them.
 ///
-/// Backgrounds, font glyphs and decorations are drawn on the GPU.  A cell
+/// Backgrounds, font glyphs and decorations are drawn on the GPU. A cell
 /// [`GlyphPainter::overlays`] claims is left blank there and painted as an
 /// ordinary shape after the callback, which keeps it above every background,
 /// including those of the blanks an icon grows across.
@@ -1422,7 +1422,7 @@ struct GlyphPainter<'a> {
 
 impl GlyphPainter<'_> {
     /// Whether `ch` is painted over the GPU grid rather than sampled from the
-    /// font atlas.  A box-drawing glyph and an emoji carry their own textures,
+    /// font atlas. A box-drawing glyph and an emoji carry their own textures,
     /// and an icon too wide for its cell moves by how many blanks follow it,
     /// which one slot shared by every cell showing that icon cannot say.
     fn overlays(&mut self, ch: char, face: Face) -> bool {
@@ -1435,7 +1435,7 @@ impl GlyphPainter<'_> {
             })
     }
 
-    /// Draw `ch` in the cell whose top-left corner is `at`.  `spare` counts
+    /// Draw `ch` in the cell whose top-left corner is `at`. `spare` counts
     /// the blanks that follow it on the same run, the cells an over-wide icon
     /// may grow across.
     fn paint(
@@ -1490,7 +1490,7 @@ impl GlyphPainter<'_> {
 /// How thick a beam or an underline cursor is drawn, in points.
 const BAR_THICKNESS: f32 = 2.0;
 
-/// Draw the cursor in the cell the snapshot recorded.  `smear` is the quad the
+/// Draw the cursor in the cell the snapshot recorded. `smear` is the quad the
 /// animation has it stretched across while it catches up, and `None` once it
 /// has, so with the animation off the cursor is the rect it always was.
 fn paint_cursor(
@@ -1542,7 +1542,7 @@ fn paint_cursor(
     }
 
     // The solid block covers the glyph; redraw it in inverted color so it stays
-    // legible.  No trailing run: the grid already drew whatever an over-wide
+    // legible. No trailing run: the grid already drew whatever an over-wide
     // icon grew across, and this redraws only the cell under the cursor.
     if let Some((ch, flags, color)) = cursor.glyph {
         let face = Face::new(flags.contains(Flags::BOLD), flags.contains(Flags::ITALIC));
@@ -1588,7 +1588,7 @@ fn paint_smear(
 /// Draw the in-progress IME composition at the cursor, mirroring alacritty's
 /// `draw_ime_preview`: default foreground on default background, underlined,
 /// with a beam caret after the last char (egui-winit drops the preedit
-/// cursor offset, so the caret can only sit at the end).  Returns the caret
+/// cursor offset, so the caret can only sit at the end). Returns the caret
 /// cell rect so the candidate window can follow it.
 #[allow(clippy::too_many_arguments)]
 fn paint_preedit(
@@ -1653,9 +1653,9 @@ fn char_cells(c: char) -> u32 {
     c.width().unwrap_or(1).max(1) as u32
 }
 
-/// Blit a colour glyph into its cell.  Unlike the built-in glyphs, this carries
+/// Blit a colour glyph into its cell. Unlike the built-in glyphs, this carries
 /// its own colours, so it is tinted white (a no-op multiply) rather than with
-/// the cell's foreground.  Placement is already centred within the cell box by
+/// the cell's foreground. Placement is already centred within the cell box by
 /// the cache, so the offsets only need converting from pixels to points.
 fn paint_color_glyph(
     painter: &egui::Painter,
@@ -1672,10 +1672,10 @@ fn paint_color_glyph(
     painter.image(cached.texture.id(), rect, uv, Color32::WHITE);
 }
 
-/// Place the cached pixel-space glyph into the cell.  alacritty positions
+/// Place the cached pixel-space glyph into the cell. alacritty positions
 /// glyphs as `screen_y_top = baseline - top` with `baseline = cell_bottom`;
 /// because we pass `descent = 0` to the renderer, that simplifies to
-/// `cell_h - top`.  We do the same arithmetic in logical points by dividing
+/// `cell_h - top`. We do the same arithmetic in logical points by dividing
 /// the pixel offsets by `ppp`.
 fn paint_builtin_glyph(
     painter: &egui::Painter,
@@ -1758,7 +1758,7 @@ mod tests {
     }
 
     /// A PTY-less session whose grid can be driven straight from a byte
-    /// stream.  `spawn_scratchpad` is the only constructor that builds a
+    /// stream. `spawn_scratchpad` is the only constructor that builds a
     /// `Session` without a child process; dropping the editor afterwards
     /// leaves a plain terminal session behind.
     fn headless_session(
@@ -1806,7 +1806,7 @@ mod tests {
         }
     }
 
-    /// One focused frame of the terminal view, fed `events`.  With no GL
+    /// One focused frame of the terminal view, fed `events`. With no GL
     /// context the grid's callback is emitted and never invoked, so the frame
     /// is exactly the CPU half, which is the half that runs on the UI thread
     /// and delays a keystroke.
@@ -1870,7 +1870,7 @@ mod tests {
     }
 
     /// The text a focused frame handed the grid after feeding it `events`, in
-    /// row order.  The records are written from the rows this frame captured,
+    /// row order. The records are written from the rows this frame captured,
     /// so this is what the user saw *that* frame rather than what the terminal
     /// state became by the end of it.
     fn painted_text(
@@ -1918,7 +1918,7 @@ mod tests {
     }
 
     /// A context with the three named terminal families bound, as
-    /// `fonts::install_terminal_fonts` leaves it in the app.  egui panics on a
+    /// `fonts::install_terminal_fonts` leaves it in the app. egui panics on a
     /// family it was never given, so any fixture with a bold or italic cell
     /// needs them.
     fn ctx_with_terminal_faces() -> egui::Context {
@@ -1933,7 +1933,7 @@ mod tests {
     }
 
     /// A blank paints nothing but its background, so a run can hold one in
-    /// whatever foreground it carries.  Icons are authored with a trailing
+    /// whatever foreground it carries. Icons are authored with a trailing
     /// space that the surrounding highlight usually owns, and an over-wide
     /// glyph can only grow into blanks its own run holds.
     #[test]
@@ -1961,7 +1961,7 @@ mod tests {
     }
 
     /// The whole point of reading damage: a frame that changed one row rewrites
-    /// one row.  The cursor stays on the line being written and `Term::damage`
+    /// one row. The cursor stays on the line being written and `Term::damage`
     /// always reports its line, so this is the narrowest span a frame produces.
     #[test]
     fn writing_one_line_dirties_only_that_line() {
@@ -2025,7 +2025,7 @@ mod tests {
         assert!(dirty.start <= 1 && dirty.end >= 3, "selection rows 1..3 missing from {dirty:?}");
     }
 
-    /// What the grid reads to rebuild records.  Reading the runs of a
+    /// What the grid reads to rebuild records. Reading the runs of a
     /// clean row costs more than writing the records of the dirty one, and a
     /// row between two damaged ones is exactly as clean as one outside them.
     #[test]
@@ -2071,7 +2071,7 @@ mod tests {
         );
     }
 
-    /// A wide glyph owns two cells and its decoration belongs to both.  The
+    /// A wide glyph owns two cells and its decoration belongs to both. The
     /// terminal writes the spacer from the same cursor template as the
     /// character, so the two differ only in one flag; reading that flag as
     /// style ends the run between the halves and leaves the right half of
@@ -2128,7 +2128,7 @@ mod tests {
 
     /// The IME candidate window is placed from the caret, so the caret has to
     /// keep tracking the cursor cell while the running app has the cursor
-    /// hidden (`CSI ?25l`).  Only the drawn cursor goes away; losing the cell
+    /// hidden (`CSI ?25l`). Only the drawn cursor goes away; losing the cell
     /// too would pin the candidate popup to the corner of the grid.
     #[test]
     fn a_hidden_cursor_still_leaves_a_caret() {
@@ -2153,7 +2153,7 @@ mod tests {
     /// A context whose monospace fallbacks are scaled far past the primary
     /// face, so a character the primary lacks comes back several times wider
     /// than the cell, a Nerd Font icon against a half-width cell in
-    /// miniature.  U+E600 arrives from the bundled icon font, U+FB01 from
+    /// miniature. U+E600 arrives from the bundled icon font, U+FB01 from
     /// Ubuntu-Light.
     fn ctx_with_oversized_fallback() -> egui::Context {
         let ctx = egui::Context::default();
@@ -2209,7 +2209,7 @@ mod tests {
         ctx.fonts(|f| f.glyph_width(&FontId::monospace(Config::default().font.logical_size()), ch))
     }
 
-    /// An icon sized to its own face's em overruns a narrower cell.  It is
+    /// An icon sized to its own face's em overruns a narrower cell. It is
     /// drawn across the blanks that follow instead, centred on the span it was
     /// granted.
     #[test]
@@ -2231,9 +2231,9 @@ mod tests {
     }
 
     /// Growth may only claim blanks, so an icon can want more cells than it
-    /// gets.  Centring it on the shorter span would put it left of its own
+    /// gets. Centring it on the shorter span would put it left of its own
     /// cell, over the character before it, which is worse than the right-hand
-    /// overrun growth exists to avoid.  It stays where it is instead.
+    /// overrun growth exists to avoid. It stays where it is instead.
     #[test]
     fn an_over_wide_icon_is_not_pulled_left_when_the_room_falls_short() {
         let painted = painted_row(&ctx_with_oversized_fallback(), "M\u{e600} X".as_bytes());
@@ -2245,7 +2245,7 @@ mod tests {
         );
     }
 
-    /// Growth is for icons.  A letter that happens to arrive from an over-wide
+    /// Growth is for icons. A letter that happens to arrive from an over-wide
     /// fallback face keeps its cell and stays in the atlas with the rest of
     /// the text, which is what makes growing safe to do without a switch.
     #[test]
@@ -2305,7 +2305,7 @@ mod tests {
     }
 
     /// The cursor redraws the cell it covers, so it has to resolve that
-    /// character through the same three sources the grid did.  A box-drawing
+    /// character through the same three sources the grid did. A box-drawing
     /// glyph comes from the hand-drawn cache, which paints an image rather
     /// than text.
     #[test]
@@ -2326,7 +2326,7 @@ mod tests {
         );
     }
 
-    /// `font.glyph_offset` moves every glyph the font draws.  The shader adds
+    /// `font.glyph_offset` moves every glyph the font draws. The shader adds
     /// it, so the frame's uniforms are as far as a headless test can follow.
     #[test]
     fn the_glyph_offset_reaches_the_glyph_pass() {
@@ -2440,7 +2440,7 @@ mod tests {
         assert_eq!(first, second);
     }
 
-    /// Where a frame's time goes.  `build` is the grid walk that turns cells
+    /// Where a frame's time goes. `build` is the grid walk that turns cells
     /// into records and overlay shapes, the part damage tracking can skip;
     /// `tessellate` turns the shapes into vertices and runs whether or not
     /// anything changed.
@@ -2467,7 +2467,7 @@ mod tests {
     /// Not a gate — run it by hand:
     /// `cargo test -p alacritree --release -- --ignored --nocapture report_damage`
     ///
-    /// Decides whether damage can drive a partial repaint at all.  Scrolling
+    /// Decides whether damage can drive a partial repaint at all. Scrolling
     /// the screen marks the whole terminal damaged (`Term::scroll_up_relative`
     /// calls `mark_fully_damaged`), and a program appending output to a full
     /// screen scrolls on every line.
@@ -2507,7 +2507,7 @@ mod tests {
     ///
     /// The PTY thread applies output under the same `FairMutex` the painter
     /// holds, so whatever a frame holds it for is time the terminal cannot
-    /// parse — and the echo of a keystroke waits behind it.  Measured from the
+    /// parse — and the echo of a keystroke waits behind it. Measured from the
     /// PTY thread's side: how long acquiring the lock takes while frames paint.
     #[test]
     #[ignore = "timing harness, not an assertion"]
@@ -2537,10 +2537,10 @@ mod tests {
                     let (mut waits, mut total, mut worst) =
                         (0u32, std::time::Duration::ZERO, std::time::Duration::ZERO);
                     // The PTY thread does not just take the lock, it writes
-                    // under it.  A locker that only acquires and releases
+                    // under it. A locker that only acquires and releases
                     // leaves the terminal unchanged, so every frame after the
                     // first captures the empty-damage path and holds the lock
-                    // for a fraction of what a real frame holds it for.  One
+                    // for a fraction of what a real frame holds it for. One
                     // line per acquisition is the shape of a PTY read, and
                     // damage accumulates across the frames it spans.
                     let mut parser = Processor::<StdSyncHandler>::new();
@@ -2597,10 +2597,10 @@ mod tests {
     /// report_echo_latency`
     ///
     /// What the user actually waits for: output reaching the terminal, and
-    /// that output reaching the screen.  The frame loop is modelled the way
+    /// that output reaching the screen. The frame loop is modelled the way
     /// eframe drives it — a frame runs only when something asked for a repaint
     /// — and the sample is written from another thread so it lands mid-frame
-    /// the way real PTY output does.  The paint harnesses time one frame in
+    /// the way real PTY output does. The paint harnesses time one frame in
     /// isolation; this times the wait a frame is only part of.
     #[test]
     #[ignore = "timing harness, not an assertion"]
@@ -2696,7 +2696,7 @@ mod tests {
                         // the frame period: injecting the moment the last
                         // sample landed would phase-lock to the loop and
                         // measure how fast it can cycle rather than how long
-                        // an arbitrary write waits.  Spun rather than slept
+                        // an arbitrary write waits. Spun rather than slept
                         // because Windows rounds a sleep up to the timer tick.
                         let gap = std::time::Duration::from_micros(2000 + (next as u64 % 7) * 1500);
                         let until = std::time::Instant::now() + gap;
@@ -2756,7 +2756,7 @@ mod tests {
     ///
     /// A full-screen app repaints in place, so its damage is a handful of rows
     /// rather than the whole grid — the one workload where skipping unchanged
-    /// rows is possible at all.  What that would be worth is how much of a
+    /// rows is possible at all. What that would be worth is how much of a
     /// frame the rows carry: blank rows emit no glyphs, so painting `filled`
     /// of `rows` approximates repainting only that many.
     #[test]
@@ -2813,7 +2813,7 @@ mod tests {
     /// under real program output rather than collapsing to one run per line.
     ///
     /// Written once, this screen never changes again, so every frame after the
-    /// first finds the terminal undamaged.  That is the wrong shape for
+    /// first finds the terminal undamaged. That is the wrong shape for
     /// anything measuring a renderer that skips clean rows — use
     /// `termbench_frame` there, which moves every cell every frame.
     fn dense_screen(cols: usize, rows: usize) -> Vec<u8> {
@@ -2831,7 +2831,7 @@ mod tests {
     }
 
     /// A row between two damaged ones holds records nothing invalidated, so
-    /// the frame owes it nothing.  Handing the painter the span instead makes
+    /// the frame owes it nothing. Handing the painter the span instead makes
     /// one edited line and one repainted status bar cost the whole screen.
     #[test]
     fn a_frame_rewrites_only_the_rows_the_terminal_damaged() {
@@ -2840,7 +2840,7 @@ mod tests {
     }
 
     /// Clearing renumbers the table from nothing, so every record written
-    /// against the old numbering now addresses some other character.  Nothing
+    /// against the old numbering now addresses some other character. Nothing
     /// on screen is still correct, whatever the terminal reports as damaged.
     #[test]
     fn a_renumbered_glyph_table_rewrites_every_row() {
@@ -2848,7 +2848,7 @@ mod tests {
     }
 
     /// A decoration is a flag on the cells it covers, and the fragment shader
-    /// draws it from there.  Left to the painter it is a shape per run, which
+    /// draws it from there. Left to the painter it is a shape per run, which
     /// on a screen of underlined text is more geometry than the whole grid.
     #[test]
     fn a_decorated_run_costs_no_geometry() {
@@ -2930,7 +2930,7 @@ mod tests {
     /// `cargo test -p alacritree --release -- --ignored --nocapture paint_cost`
     ///
     /// Every PTY wakeup requests a repaint, and a repaint runs this whole path
-    /// for the visible session.  What it costs is what a keystroke queues
+    /// for the visible session. What it costs is what a keystroke queues
     /// behind while a session is streaming output.
     #[test]
     #[ignore = "timing harness, not an assertion"]
@@ -2992,7 +2992,7 @@ mod tests {
     }
 
     /// Full-screen apps hide the cursor with DECTCEM while they repaint, then
-    /// leave it parked wherever their last write landed.  `cursor_style()`
+    /// leave it parked wherever their last write landed. `cursor_style()`
     /// never reports `Hidden`, so the mode is the only place that says so, and
     /// it is what `show` reads before deciding to draw a cursor at all.
     #[test]
@@ -3134,10 +3134,10 @@ mod tests {
         }
     }
 
-    /// A wheel tick over the diff pane must page its pager.  ConPTY repaints
+    /// A wheel tick over the diff pane must page its pager. ConPTY repaints
     /// the pager's alternate screen onto the primary one, so gating the
     /// arrow-key route on ALT_SCREEN alone sends the wheel into the pane's
-    /// (empty) scrollback instead — the pager never moves.  Drives a real
+    /// (empty) scrollback instead — the pager never moves. Drives a real
     /// `less` under a real ConPTY through `apply_scroll`.
     #[cfg(windows)]
     #[test]
@@ -3175,7 +3175,7 @@ mod tests {
         wait_for_top_line(&session, "line 1 ")
             .unwrap_or_else(|top| panic!("less never drew the file; top line: {top:?}"));
 
-        // One wheel notch down: a cell height of pixels.  The default
+        // One wheel notch down: a cell height of pixels. The default
         // `scrolling.multiplier` of 3 turns it into three pager lines.
         let config = Config::default();
         let mode = *session.term.lock().mode();

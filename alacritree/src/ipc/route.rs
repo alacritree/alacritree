@@ -1,4 +1,4 @@
-//! Where each request runs.  This is the one place that decides it: every
+//! Where each request runs. This is the one place that decides it: every
 //! [`IpcRequest`] variant lands in exactly one of the enums below, and each
 //! handler matches only the enum it owns, so a new request is placed here once
 //! rather than claimed by one handler and refused by the others.
@@ -159,7 +159,7 @@ mod tests {
     use super::*;
 
     /// A route arm that built the wrong variant (an add answered as a
-    /// refresh, say) still compiles, since both carry a path.  The variant
+    /// refresh, say) still compiles, since both carry a path. The variant
     /// name surviving the trip is what catches it.
     #[test]
     fn every_request_keeps_its_name_through_routing() {

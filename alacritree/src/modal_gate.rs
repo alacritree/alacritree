@@ -1,7 +1,7 @@
 //! Which modal may act on the input events reaching the current frame.
 //!
 //! egui hands a frame the key presses produced while the *previous* frame was
-//! on screen.  A modal that opens and reads keys in the same frame therefore
+//! on screen. A modal that opens and reads keys in the same frame therefore
 //! reads presses aimed at whatever the user was actually looking at, so an
 //! Enter meant for a shell can confirm a dialog that had not appeared yet.
 //! The same hazard applies when a modal's content changes: the worktree-create
@@ -9,13 +9,13 @@
 //! screen was up.
 //!
 //! Both cases are one rule: a modal may act on a frame's events only when the
-//! previous frame painted that same modal showing the same thing.  Every
+//! previous frame painted that same modal showing the same thing. Every
 //! distinct thing a modal can show is its own [`ModalKind`], so the phases of
 //! the create dialog are as separate here as two unrelated dialogs are.
 
 use std::cell::Cell;
 
-/// A modal, at the granularity the gate compares.  Two states a user must be
+/// A modal, at the granularity the gate compares. Two states a user must be
 /// able to tell apart before answering are two kinds, not one.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum ModalKind {
@@ -54,7 +54,7 @@ impl ModalGate {
         self.painted.get() == Some(now)
     }
 
-    /// Carry what this frame painted into the next frame's gate.  Runs every
+    /// Carry what this frame painted into the next frame's gate. Runs every
     /// frame, including the frames that paint no modal at all.
     pub(crate) fn end_frame(&self) {
         self.painted.set(self.current.take());

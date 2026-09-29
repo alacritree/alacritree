@@ -6,7 +6,7 @@
 
 use strum::{EnumIter, IntoStaticStr};
 
-/// How a path is spelled to the user.  `Full` is the identity and the
+/// How a path is spelled to the user. `Full` is the identity and the
 /// default, so an unmodified config renders exactly what it renders today.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, EnumIter, IntoStaticStr)]
 #[serde(into = "&'static str")]
@@ -20,7 +20,7 @@ pub enum PathStyle {
     Zed,
 }
 
-/// A path cut where it may be abbreviated.  `root` is never abbreviated and
+/// A path cut where it may be abbreviated. `root` is never abbreviated and
 /// never reordered; `parent` keeps its trailing separator, and is empty for a
 /// bare name.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -123,7 +123,7 @@ fn is_drive_relative(s: &str) -> bool {
 }
 
 /// Byte offset past `n` `\`-separated segments *and* the separator closing the
-/// last one.  `None` when the string runs out first, which means the whole
+/// last one. `None` when the string runs out first, which means the whole
 /// input is root and there is nothing beneath it.
 fn segments_len(s: &str, n: usize) -> Option<usize> {
     let mut idx = 0;
@@ -144,7 +144,7 @@ fn segments_of(rest: &str, sep: char) -> Vec<String> {
 /// An exact match yields `""` — the path *is* home.
 fn strip_home<'a>(path: &'a str, home: &str, sep: char) -> Option<&'a str> {
     // A home that is nothing but separators would collapse every absolute
-    // path to `~`, which reads as a bug rather than as a shortening.  `/` is
+    // path to `~`, which reads as a bug rather than as a shortening. `/` is
     // no one's home directory; root's is `/root`.
     let home = home.trim_end_matches(['/', '\\']);
     if home.is_empty() {

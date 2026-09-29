@@ -4,7 +4,7 @@ use serde::Deserialize;
 
 use alacritree_multiplexer::Pane;
 
-/// The live sessions in `zellij list-sessions --no-formatting` output.  A
+/// The live sessions in `zellij list-sessions --no-formatting` output. A
 /// session zellij keeps only so it can be resurrected is listed too, marked
 /// `EXITED`, and has no server to ask about its panes.
 pub(super) fn live_sessions(stdout: &str) -> Vec<String> {
@@ -17,7 +17,7 @@ pub(super) fn live_sessions(stdout: &str) -> Vec<String> {
         .collect()
 }
 
-/// One entry of `zellij action list-panes --json`.  Only the fields a row
+/// One entry of `zellij action list-panes --json`. Only the fields a row
 /// needs are read, so a field zellij adds later changes nothing here.
 #[derive(Deserialize)]
 struct ListedPane {
@@ -31,8 +31,8 @@ struct ListedPane {
 }
 
 /// The terminal panes in `zellij action list-panes --json` output for
-/// `session`.  Plugin panes (the tab bar, the status bar) are zellij's own
-/// chrome and never a row.  `None` when the output is not a listing: zellij
+/// `session`. Plugin panes (the tab bar, the status bar) are zellij's own
+/// chrome and never a row. `None` when the output is not a listing: zellij
 /// asked about a session that is gone prints the session list instead, and
 /// exits zero.
 pub(super) fn panes(session: &str, stdout: &str) -> Option<Vec<Pane>> {
@@ -61,10 +61,10 @@ pub(super) fn pane_id(id: u32) -> String {
     format!("terminal_{id}")
 }
 
-/// A pane's identity across polls.  zellij numbers terminal panes from one
+/// A pane's identity across polls. zellij numbers terminal panes from one
 /// counter per server that never hands a number out twice, and a pane keeps
 /// its number when it moves between tabs, so the number is stable within its
-/// session.  zellij refuses a session name containing `/`, which is what
+/// session. zellij refuses a session name containing `/`, which is what
 /// makes the split in [`split_terminal_id`] unambiguous.
 pub fn terminal_id(session: &str, id: u32) -> String {
     format!("{session}/{}", pane_id(id))

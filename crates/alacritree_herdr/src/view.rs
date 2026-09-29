@@ -1,7 +1,7 @@
 //! Which herdr pane alacritree is showing, and when to tell herdr to move.
 //!
 //! Every herdr client draws the one pane herdr has focused, so activating a
-//! row is what puts herdr on that row's pane.  A session sharing herdr's
+//! row is what puts herdr on that row's pane. A session sharing herdr's
 //! whole view follows herdr afterwards too, since that is what it is drawing.
 
 use std::collections::HashMap;
@@ -13,7 +13,7 @@ use alacritree_multiplexer::{PaneError, PaneKey, SessionId, Side};
 use crate::settings::FollowFocus;
 use crate::{EndpointCache, pane_key};
 
-/// Where a side's focus was last established, and when.  The stamp is a
+/// Where a side's focus was last established, and when. The stamp is a
 /// watermark: a listing sampled at or before it cannot form an edge, so one
 /// already in flight when alacritree moved herdr's focus cannot run the
 /// change backwards.
@@ -22,23 +22,23 @@ struct TrailEntry {
     stamped_at: Instant,
 }
 
-/// How long the user has to stop typing before a follow lands.  Long enough
+/// How long the user has to stop typing before a follow lands. Long enough
 /// to clear the pause between keystrokes and short enough that a deliberate
 /// pause is not mistaken for continued work.
 const FOLLOW_QUIET_GAP: Duration = Duration::from_millis(750);
 
-/// How long a proposed follow keeps waiting.  Matches `PROBE_GRACE`, the
-/// codebase's one existing answer to "the user is active".  Past it the
+/// How long a proposed follow keeps waiting. Matches `PROBE_GRACE`, the
+/// codebase's one existing answer to "the user is active". Past it the
 /// change is stale, and moving the user then is worse than not moving them.
 const FOLLOW_EXPIRY: Duration = Duration::from_secs(10);
 
 /// A follow that has been proposed and is waiting for the user to stop
-/// typing.  Both clocks count attentive time only: counting wall-clock time
+/// typing. Both clocks count attentive time only: counting wall-clock time
 /// would expire a follow while the user was in another window, which is the
 /// catch-up-on-return case the trail exists to preserve.
 struct PendingFollow {
     key: PaneKey,
-    /// The session that was active when this was proposed.  A different one
+    /// The session that was active when this was proposed. A different one
     /// means the proposal no longer describes the situation.
     active: Option<SessionId>,
     /// Attentive time since the last direct input.
@@ -48,7 +48,7 @@ struct PendingFollow {
 }
 
 /// The shared view herdr is being pointed at, and the call doing the
-/// pointing.  The handle is held rather than dropped because dropping a job
+/// pointing. The handle is held rather than dropped because dropping a job
 /// cancels it.
 pub struct HerdrViewFocus {
     pub session: SessionId,
@@ -83,7 +83,7 @@ pub enum HerdrViewAction {
 /// them than a positional call can carry legibly and clippy allows.
 pub struct ViewInputs<'a> {
     /// The active session, its herdr key, and whether that session shares
-    /// herdr's whole view rather than drawing one pane of its own.  The last
+    /// herdr's whole view rather than drawing one pane of its own. The last
     /// is settled when the session attaches: a pane that gains or loses an
     /// agent afterwards does not change what its client is already drawing.
     pub active: Option<(SessionId, Option<&'a PaneKey>, bool)>,
@@ -96,7 +96,7 @@ pub struct ViewInputs<'a> {
     /// This frame's clock reading, for timing a pending follow's quiet gap
     /// and expiry.
     pub now: Instant,
-    /// When the user last gave the app a direct-input event, if ever.  A
+    /// When the user last gave the app a direct-input event, if ever. A
     /// pending follow's quiet gap is measured from this rather than from
     /// `now`, so it restarts on new input instead of aging out from under
     /// continued typing.
@@ -113,7 +113,7 @@ impl HerdrViewSync {
             self.focused = None;
         }
         // A follow to a row the user just closed would respawn its attach
-        // client.  herdr still reports that pane as focused, so only stamping
+        // client. herdr still reports that pane as focused, so only stamping
         // the refusal stops the same edge re-forming on the next frame.
         if let Some(key) = key.filter(|key| self.pending.as_ref().is_some_and(|p| &p.key == *key)) {
             self.moved_focus(key, at);
@@ -136,7 +136,7 @@ impl HerdrViewSync {
     }
 
     /// Settle where the focus on a side now stands, without proposing
-    /// anything.  Every decision about a pane records itself here, whether
+    /// anything. Every decision about a pane records itself here, whether
     /// the focus was moved onto it or a follow to it was refused, so a move
     /// alacritree asked for is never mistaken for one the user made inside
     /// herdr and a refusal is never re-proposed from the same stale entry.
@@ -201,7 +201,7 @@ impl HerdrViewSync {
         edge
     }
 
-    /// Drop a pending whose side herdr has moved off the proposed pane.  The
+    /// Drop a pending whose side herdr has moved off the proposed pane. The
     /// proposal exists because herdr focused that pane; following once herdr
     /// is elsewhere lands the user on a pane herdr has left, which a shared
     /// view there would then drag herdr back to.
@@ -218,7 +218,7 @@ impl HerdrViewSync {
     pub fn next(&mut self, inputs: ViewInputs<'_>) -> Option<HerdrViewAction> {
         let elapsed = self.tick(&inputs);
         if let Some(action) = self.shared_view(&inputs) {
-            // The shared-view path outranks the trail.  The trail itself is
+            // The shared-view path outranks the trail. The trail itself is
             // untouched, so the tick baseline goes with the pending, or a
             // reborn one inherits this frame's gap.
             if self.pending.take().is_some() {
@@ -237,7 +237,7 @@ impl HerdrViewSync {
         }
         // The trail serves `always` alone, and the mode is read once at
         // startup, so nothing recorded here in another mode could ever be
-        // wanted later.  A user who did not opt in pays for none of it.
+        // wanted later. A user who did not opt in pays for none of it.
         if inputs.follow != FollowFocus::Always {
             return None;
         }
@@ -247,7 +247,7 @@ impl HerdrViewSync {
         self.deliver(&inputs, elapsed)
     }
 
-    /// Attentive time since the previous frame.  The baseline is replaced on
+    /// Attentive time since the previous frame. The baseline is replaced on
     /// every call, including the busy and inattentive frames that return
     /// before `deliver`, so the stretch they cover is charged to a frame that
     /// discards it rather than to the pending follow afterwards.
@@ -258,8 +258,8 @@ impl HerdrViewSync {
 
     /// A second edge replaces the target and restarts the clock; re-seeing
     /// the same edge, which happens every frame until the trail is stamped,
-    /// changes nothing.  A move back to the trailed pane forms no edge to see,
-    /// so `void_pending` is what retires the proposal there.  `input_seen` is
+    /// changes nothing. A move back to the trailed pane forms no edge to see,
+    /// so `void_pending` is what retires the proposal there. `input_seen` is
     /// left for `deliver` to reconcile, so a pending born this frame is never
     /// credited with quiet time that predates its own proposal.
     fn propose(&mut self, key: PaneKey, inputs: &ViewInputs<'_>) {
@@ -313,12 +313,12 @@ impl HerdrViewSync {
     }
 
     /// The session on screen asking herdr for its own pane, and following
-    /// herdr afterwards.  Watermarked against listings that were already in
+    /// herdr afterwards. Watermarked against listings that were already in
     /// flight when our own focus call landed.
     ///
-    /// Every row asks.  A row that did not would leave the user looking at
+    /// Every row asks. A row that did not would leave the user looking at
     /// whichever pane herdr was already on, which is that row's own pane only
-    /// by luck.  Only a shared view follows, because a client wired to one
+    /// by luck. Only a shared view follows, because a client wired to one
     /// pane keeps drawing it wherever herdr looks.
     fn shared_view(&mut self, inputs: &ViewInputs<'_>) -> Option<HerdrViewAction> {
         let active = inputs.active.and_then(|(id, key, shares)| Some((id, key?, shares)));
@@ -351,7 +351,7 @@ impl HerdrViewSync {
     }
 }
 
-/// Whether the session on screen still owes herdr a focus call.  An ordinary
+/// Whether the session on screen still owes herdr a focus call. An ordinary
 /// shell holds no pane and never asks; every session that does hold one asks
 /// once per switch onto it, so activating a row always points herdr at that
 /// row's pane.
@@ -753,7 +753,7 @@ mod tests {
         assert_eq!(sync.next(inputs(active, &no_caches, false)), None);
     }
 
-    /// The setting governs whether herdr may move alacritree.  A shared view
+    /// The setting governs whether herdr may move alacritree. A shared view
     /// still owes herdr a focus call, or it draws the wrong pane.
     #[test]
     fn off_still_asks_herdr_for_the_shared_view_pane() {
@@ -984,7 +984,7 @@ mod tests {
         }
     }
 
-    /// herdr picks another pane itself when the one it was on closes.  The
+    /// herdr picks another pane itself when the one it was on closes. The
     /// close already landed the user somewhere, and following herdr's pick
     /// afterwards moves them a second time, to a pane they never chose.
     #[test]
@@ -1037,7 +1037,7 @@ mod tests {
         );
     }
 
-    /// A pending proposes going where herdr went.  herdr going back before
+    /// A pending proposes going where herdr went. herdr going back before
     /// the gap clears takes the reason with it, and following anyway lands
     /// the user on a pane herdr has left.
     #[test]
@@ -1153,7 +1153,7 @@ mod tests {
     }
 
     /// Returning a follow stamps nothing; the caller stamps, on arrival or on
-    /// refusal.  Until it does, the change stands and is proposed again.
+    /// refusal. Until it does, the change stands and is proposed again.
     #[test]
     fn an_undelivered_follow_is_proposed_again() {
         let side = Side::Native;

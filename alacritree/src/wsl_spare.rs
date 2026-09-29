@@ -1,9 +1,9 @@
 //! Warm spare terminals for WSL, under `[wsl] warm_spare`.
 //!
 //! A `wsl.exe` launch can hang for half a minute while a fragmented WSL VM
-//! compacts memory for its vmbus ring buffers.  This keeps one `wsl.exe` per
+//! compacts memory for its vmbus ring buffers. This keeps one `wsl.exe` per
 //! distro already past that point, parked in [`SPARE_SCRIPT`], and hands it
-//! to the next session opening there, whose line names what to run.  Only a
+//! to the next session opening there, whose line names what to run. Only a
 //! distro a session already opened in gets one, so a spare never boots a VM.
 
 use std::collections::HashMap;
@@ -34,12 +34,12 @@ pub(crate) fn enabled() -> bool {
 
 /// Park until one line of shell-quoted words arrives, then run it: probe key,
 /// session id, directory, argv, where no argv means the login shell, found
-/// the way `wsl_helper::SHIM_SCRIPT` finds it.  Echo is off before the title
-/// announces readiness, so the line never shows in the session.  The `\r` is
+/// the way `wsl_helper::SHIM_SCRIPT` finds it. Echo is off before the title
+/// announces readiness, so the line never shows in the session. The `\r` is
 /// stripped by hand too, so a pipe reads the same line a terminal does.
 pub(crate) const SPARE_SCRIPT: &str = r##"t=$(stty -g 2>/dev/null); stty -echo 2>/dev/null; printf '\033]2;%s\007' "$1"; IFS= read -r l || exit 1; [ -z "$t" ] || stty "$t"; cr=$(printf '\r'); eval "set -- ${l%"$cr"}"; k=$1; [ -z "$2" ] || export ALACRITREE_SESSION_ID="$2"; if [ -n "$3" ]; then cd "$3" || cd; else cd; fi; shift 3; [ -z "$k" ] || { d=${XDG_RUNTIME_DIR:-/tmp}/alacritree; mkdir -p "$d" 2>/dev/null && printf %s $$ > "$d/session-$k.pid"; }; [ $# -eq 0 ] || exec "$@"; s=$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f7); [ -x "$s" ] || s=/bin/sh; exec "$s" -l"##;
 
-/// The title a spare sets once it is parked on its read.  ConPTY renders the
+/// The title a spare sets once it is parked on its read. ConPTY renders the
 /// console rather than relaying bytes, so plain text could be coalesced away
 /// before it reached the pipe, while a title change is always forwarded.
 const READY_TITLE: &str = "alacritree-spare-ready";
@@ -53,11 +53,11 @@ const READY_POLL: Duration = Duration::from_millis(20);
 /// longer is cut off there and runs something other than what was asked.
 const MAX_LINE: usize = 4000;
 
-/// The size a spare parks at.  The session that takes it resizes it first.
+/// The size a spare parks at. The session that takes it resizes it first.
 const SPARE_SIZE: WindowSize =
     WindowSize { num_lines: 24, num_cols: 80, cell_width: 8, cell_height: 16 };
 
-/// A WSL launch in the terms a spare can replay.  Only the argv shapes
+/// A WSL launch in the terms a spare can replay. Only the argv shapes
 /// alacritree builds itself parse, plus a bare `--exec`; anything else
 /// launches cold, since a spare that ran something slightly different would
 /// be worse than a slow tab.
@@ -65,7 +65,7 @@ const SPARE_SIZE: WindowSize =
 pub(crate) struct Launch {
     distro: String,
     probe_key: Option<String>,
-    /// The distro's own spelling.  Empty means the home directory.
+    /// The distro's own spelling. Empty means the home directory.
     dir: String,
     /// Empty means the login shell.
     argv: Vec<String>,
@@ -119,7 +119,7 @@ impl Launch {
     }
 
     /// The line [`SPARE_SCRIPT`] reads, or `None` when a word cannot survive
-    /// a terminal's line discipline.  `session_id` is empty when the id does
+    /// a terminal's line discipline. `session_id` is empty when the id does
     /// not cross into the distro, so the spare exports what a cold launch
     /// would.
     fn line(&self, session_id: &str) -> Option<Vec<u8>> {
@@ -141,7 +141,7 @@ impl Launch {
 }
 
 /// `--cd`'s argument, or wsl.exe's own translation of the Windows working
-/// directory, as a path inside `distro`.  `None` is a path whose meaning this
+/// directory, as a path inside `distro`. `None` is a path whose meaning this
 /// cannot reproduce: `~/x`, or another distro's UNC path.
 fn distro_dir(path: &str, distro: &str) -> Option<String> {
     if path == "~" {
@@ -158,7 +158,7 @@ fn distro_dir(path: &str, distro: &str) -> Option<String> {
     }
 }
 
-/// What a spare's PTY was opened with.  A request asking for anything else
+/// What a spare's PTY was opened with. A request asking for anything else
 /// launches cold and the spare is replaced, which is how a config reload
 /// reaches the spares.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -201,7 +201,7 @@ pub(crate) struct Claimed {
 /// Take the spare parked for `launch`'s distro, and launch its replacement.
 /// `None` means launch cold: no spare is parked yet, it was opened with
 /// another template, it died while parked, or the line cannot carry
-/// `launch`.  A cold launch still starts a spare, so the next one is warm.
+/// `launch`. A cold launch still starts a spare, so the next one is warm.
 pub(crate) fn claim(launch: &Launch, session_id: &str, template: &Template) -> Option<Claimed> {
     let session_id = if wslenv_lists(SESSION_ID_ENV) { session_id } else { "" };
     let claimed = launch.line(session_id).and_then(|line| {
@@ -230,7 +230,7 @@ fn wslenv_lists(name: &str) -> bool {
         .is_ok_and(|wslenv| wslenv.split(':').any(|entry| entry.split('/').next() == Some(name)))
 }
 
-/// Drop every parked spare and stop launching new ones.  Statics are never
+/// Drop every parked spare and stop launching new ones. Statics are never
 /// dropped, so exit has to call this or the parked `wsl.exe`s outlive the app.
 pub fn shutdown() {
     let parked = pool().close();
@@ -266,7 +266,7 @@ fn replenish(distro: &str, template: &Template) {
     }
 }
 
-/// Open the spare's PTY and wait for it to park.  The job is made here rather
+/// Open the spare's PTY and wait for it to park. The job is made here rather
 /// than when a session takes the spare: a process joins a job when it is
 /// created, so waiting would leave out whatever `wsl.exe` has started by then.
 fn launch(distro: &str, template: Template) -> io::Result<Spare> {
@@ -322,7 +322,7 @@ fn await_ready(pty: &mut tty::Pty) -> io::Result<Vec<u8>> {
 }
 
 /// `seen` with the ready title's OSC cut out, once the whole sequence has
-/// arrived.  ConPTY may re-spell the title as OSC 0, so only the text is
+/// arrived. ConPTY may re-spell the title as OSC 0, so only the text is
 /// matched, and the sequence is whatever `ESC ]` precedes it up to the BEL.
 fn without_ready_title(seen: &[u8]) -> Option<Vec<u8>> {
     let title = READY_TITLE.as_bytes();
@@ -352,8 +352,8 @@ enum Slot<S> {
     Ready(S),
 }
 
-/// At most one spare per distro, parked or on its way.  Generic so its rules
-/// can be tested without launching anything.  Spares leave through return
+/// At most one spare per distro, parked or on its way. Generic so its rules
+/// can be tested without launching anything. Spares leave through return
 /// values rather than being dropped here, because closing a PTY can block and
 /// this is only ever used under a lock.
 struct Pool<S> {
@@ -367,7 +367,7 @@ impl<S> Pool<S> {
         self.slots.get_or_insert_with(HashMap::new)
     }
 
-    /// The parked spare, if one is.  A spare still launching stays put.
+    /// The parked spare, if one is. A spare still launching stays put.
     fn take(&mut self, distro: &str) -> Option<S> {
         let slots = self.slots();
         match slots.get(distro) {
@@ -379,7 +379,7 @@ impl<S> Pool<S> {
         }
     }
 
-    /// Claim the right to launch `distro`'s spare.  `false` when one is
+    /// Claim the right to launch `distro`'s spare. `false` when one is
     /// already parked or launching, or the pool is closed.
     fn reserve(&mut self, distro: &str) -> bool {
         if self.closed || self.slots().contains_key(distro) {
@@ -389,7 +389,7 @@ impl<S> Pool<S> {
         true
     }
 
-    /// Park a spare whose launch [`Pool::reserve`] granted.  A pool closed
+    /// Park a spare whose launch [`Pool::reserve`] granted. A pool closed
     /// meanwhile has no slot for it and hands it back to be dropped.
     fn fill(&mut self, distro: &str, spare: S) -> Result<(), S> {
         match self.slots().get_mut(distro) {

@@ -1,12 +1,12 @@
 //! Whether the mouse pointer is hidden because the user is typing, behind
-//! alacritty's `[mouse] hide_when_typing`.  Alacritty hides the pointer on
+//! alacritty's `[mouse] hide_when_typing`. Alacritty hides the pointer on
 //! every key it processes and shows it again on motion, a click or a wheel
 //! tick; the same two rules live here, read off one frame of egui events
 //! rather than off winit callbacks.
 
 use egui::Event;
 
-/// Hidden state, carried across frames.  `Default` is visible, which is where
+/// Hidden state, carried across frames. `Default` is visible, which is where
 /// a window starts and where the option being off leaves it.
 #[derive(Debug, Default)]
 pub(crate) struct MouseHide {
@@ -14,7 +14,7 @@ pub(crate) struct MouseHide {
 }
 
 impl MouseHide {
-    /// Fold one frame's events in.  They are read in order, so a frame
+    /// Fold one frame's events in. They are read in order, so a frame
     /// carrying both a keystroke and a pointer move ends wherever the later of
     /// the two put it.
     ///

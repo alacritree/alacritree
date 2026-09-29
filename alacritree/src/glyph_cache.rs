@@ -1,11 +1,11 @@
 //! Laid-out single-character galleys, reused across frames.
 //!
 //! The grid paints one glyph per cell so every character lands on the cursor's
-//! `col * cell_w` boundary — egui's own run layout drifts off it.  Going
+//! `col * cell_w` boundary — egui's own run layout drifts off it. Going
 //! through `Painter::text` for each one costs a `String`, a `LayoutJob`, and a
 //! galley-cache probe per glyph *per frame*, which at a maximized window is
 //! tens of thousands of allocations to redraw glyphs that mostly did not
-//! change.  A galley is immutable and its colour can be replaced at paint time
+//! change. A galley is immutable and its colour can be replaced at paint time
 //! with `TextShape::override_text_color`, so one galley per character and
 //! style serves every cell that ever shows it.
 
@@ -17,7 +17,7 @@ use egui::{Color32, Context, FontFamily, FontId, Galley};
 
 use crate::fonts::{BOLD_FAMILY, BOLD_ITALIC_FAMILY, ITALIC_FAMILY};
 
-/// Which of the four terminal faces a glyph is drawn with.  Cheaper to hash
+/// Which of the four terminal faces a glyph is drawn with. Cheaper to hash
 /// than a `FontId`, whose `f32` size is not `Hash` anyway.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) enum Face {
@@ -62,12 +62,12 @@ fn glyph_job(ch: char, face: Face, size: f32) -> LayoutJob {
 /// How far past its cell a glyph may reach before it counts as over-wide.
 /// Cell width is floored to whole device pixels, so an ordinary glyph's
 /// advance is routinely a fraction wider than the cell derived from it and a
-/// bare comparison would call every glyph on screen over-wide.  WezTerm
+/// bare comparison would call every glyph on screen over-wide. WezTerm
 /// allows the same 25% before it acts on a glyph.
 const OVERFLOW_SLACK: f32 = 1.25;
 
 /// Ceiling on how many extra cells one glyph may claim, mirroring kitty's
-/// `MAX_NUM_EXTRA_GLYPHS_PUA`.  A face reporting an absurd advance must not
+/// `MAX_NUM_EXTRA_GLYPHS_PUA`. A face reporting an absurd advance must not
 /// swallow the rest of the line.
 pub(crate) const MAX_EXTRA_CELLS: usize = 4;
 
@@ -76,7 +76,7 @@ pub(crate) const MAX_EXTRA_CELLS: usize = 4;
 ///
 /// A Nerd Font icon is sized to its own face's em, which on a narrow cell —
 /// a CJK-derived face's half-width advance, say — is wider than the column
-/// the terminal gave it.  kitty grows such a glyph over the blanks that
+/// the terminal gave it. kitty grows such a glyph over the blanks that
 /// follow rather than letting it overrun them; blanks are the only cells it
 /// may take, since anything else is a character it would paint over.
 pub(crate) fn grown_cells(glyph_w: f32, cell_w: f32, spare: usize) -> usize {
@@ -91,13 +91,13 @@ pub(crate) fn grown_cells(glyph_w: f32, cell_w: f32, spare: usize) -> usize {
 /// Whether an over-wide glyph for `c` may be drawn across the blanks that
 /// follow it.
 ///
-/// Only the private use areas, where Nerd Font and Powerline icons live.  A
+/// Only the private use areas, where Nerd Font and Powerline icons live. A
 /// letter served by an over-wide fallback face is never a candidate however
 /// far it overruns, which is what makes growing safe to do unconditionally —
 /// kitty draws the same line, restricting it to private-use, symbol and
 /// dingbat codepoints from a non-primary face.
 ///
-/// The two ranges held back are kitty's own `narrow_symbols` default.  Those
+/// The two ranges held back are kitty's own `narrow_symbols` default. Those
 /// marks read as part of the segment beside them rather than as icons in
 /// their own right, so a wider one looks wrong where a clipped one only looks
 /// cramped.
@@ -111,9 +111,9 @@ pub(crate) fn may_grow(c: char) -> bool {
 /// How far right to nudge a laid-out glyph so it sits centred on the cells it
 /// was granted.
 ///
-/// Never negative.  The span is capped by the blanks actually available, so a
+/// Never negative. The span is capped by the blanks actually available, so a
 /// glyph can end up wider than the cells it got; centring on that span would
-/// put it left of its own cell, over the character before it.  Such a glyph
+/// put it left of its own cell, over the character before it. Such a glyph
 /// stays where it started and overruns to the right, as it does with growth
 /// off.
 pub(crate) fn growth_offset(glyph_w: f32, cell_w: f32, spare: usize) -> f32 {
@@ -121,7 +121,7 @@ pub(crate) fn growth_offset(glyph_w: f32, cell_w: f32, spare: usize) -> f32 {
     ((cells as f32 * cell_w - glyph_w) / 2.0).max(0.0)
 }
 
-/// The font atlas a set of galleys was laid out against.  A galley's mesh
+/// The font atlas a set of galleys was laid out against. A galley's mesh
 /// stores atlas positions, so it only means anything while that atlas is the
 /// one being sampled.
 #[derive(Clone, Copy, PartialEq)]
@@ -143,7 +143,7 @@ impl AtlasState {
     }
 
     /// Whether galleys laid out against `self` can still be painted now that
-    /// the atlas looks like `now`.  Repacking is the case that matters, but
+    /// the atlas looks like `now`. Repacking is the case that matters, but
     /// growth moves nothing and is folded in anyway: it costs one relayout of
     /// the visible glyphs on a frame the atlas changed shape, and keeping the
     /// rule to "anything moved" leaves no repack unnoticed.
@@ -157,11 +157,11 @@ impl AtlasState {
 
 #[derive(Default)]
 pub(crate) struct GlyphCache {
-    /// Point size the cached galleys were laid out at.  A font-size change
+    /// Point size the cached galleys were laid out at. A font-size change
     /// (zoom, config reload) invalidates every one of them.
     size: f32,
     /// The atlas the entries were laid out against, once a frame has observed
-    /// one.  `None` before the first `begin_frame`, when there is nothing
+    /// one. `None` before the first `begin_frame`, when there is nothing
     /// cached to invalidate.
     atlas: Option<AtlasState>,
     entries: HashMap<(char, Face), Arc<Galley>>,
@@ -172,12 +172,12 @@ impl GlyphCache {
         Self::default()
     }
 
-    /// Drop every galley egui's font atlas has outlived.  Call once per frame
+    /// Drop every galley egui's font atlas has outlived. Call once per frame
     /// before any `get`.
     ///
     /// `epaint::Fonts::begin_pass` replaces the whole atlas — and drops egui's
     /// own galley cache with it — when the scale changes, the texture limit
-    /// changes, or the atlas passes 80% full.  Glyphs are repacked into
+    /// changes, or the atlas passes 80% full. Glyphs are repacked into
     /// different positions, so a galley held across that boundary addresses
     /// whatever landed in its old slot and paints some other character.
     pub(crate) fn begin_frame(&mut self, ctx: &Context) {
@@ -188,7 +188,7 @@ impl GlyphCache {
         self.atlas = Some(now);
     }
 
-    /// The galley for `ch` in `face`, laid out once and reused.  Colour is not
+    /// The galley for `ch` in `face`, laid out once and reused. Colour is not
     /// baked in: callers override it per cell.
     pub(crate) fn get(&mut self, ctx: &Context, ch: char, face: Face, size: f32) -> Arc<Galley> {
         if self.size != size {
@@ -214,7 +214,7 @@ mod tests {
     use super::*;
 
     /// A context with fonts available and the three named terminal families
-    /// bound, as `fonts::install_terminal_fonts` leaves it in the app.  egui
+    /// bound, as `fonts::install_terminal_fonts` leaves it in the app. egui
     /// has no fonts at all until a frame has run, and panics on a family it
     /// was never given.
     fn ctx() -> Context {
@@ -277,7 +277,7 @@ mod tests {
     }
 
     /// egui repacks the whole font atlas when the scale changes, and drops its
-    /// own galley cache doing it.  A galley kept across that boundary still
+    /// own galley cache doing it. A galley kept across that boundary still
     /// addresses the slot it had in the discarded atlas, so it paints whatever
     /// character was repacked into that slot instead of its own.
     #[test]
@@ -305,7 +305,7 @@ mod tests {
         );
     }
 
-    /// Icons live in the private use areas.  Nothing else grows, whatever
+    /// Icons live in the private use areas. Nothing else grows, whatever
     /// face served it and however far it overruns.
     #[test]
     fn only_private_use_codepoints_grow() {
@@ -355,7 +355,7 @@ mod tests {
     }
 
     /// The span is capped by the blanks actually available, so a glyph can be
-    /// wider than the cells it was granted.  Centring on that span would put
+    /// wider than the cells it was granted. Centring on that span would put
     /// it left of its own cell, over the character before it — worse than the
     /// right-hand overrun growth exists to avoid.
     #[test]

@@ -7,11 +7,11 @@
 //!
 //! Windows does not spread the class on its own: `CreateProcess` gives a new
 //! process the normal class unless its creator is at *idle* or *below* normal,
-//! so a raise only ever travels downward and nothing here can leak.  That also
+//! so a raise only ever travels downward and nothing here can leak. That also
 //! means raising a shell reaches neither an agent running inside it nor the
 //! command it has just started, and a boost that goes looking for those misses
 //! everything living less than one scan — which is what a short command on a
-//! saturated machine is.  A job object closes that gap: a process created by a
+//! saturated machine is. A job object closes that gap: a process created by a
 //! member joins the job and is *born* at the job's class.
 //!
 //! So a session owns a [`PriorityJob`] and focus moves the class between them.
@@ -52,7 +52,7 @@ fn class(boosted: bool) -> u32 {
 
 /// Put `pid` one class above the load, or return it to normal.
 ///
-/// Best effort by design.  A process that exits between being listed and being
+/// Best effort by design. A process that exits between being listed and being
 /// opened, or one this user may not touch, is skipped: the cost of missing it
 /// is the latency that was there anyway.
 fn set_boosted(pid: u32, boosted: bool) {
@@ -85,15 +85,15 @@ pub(crate) fn set_self_boosted(boosted: bool) {
 pub(crate) struct PriorityJob {
     job: Owned,
     boosted: Cell<bool>,
-    /// Whether closing this job ends what it holds.  Fixed at creation, since
+    /// Whether closing this job ends what it holds. Fixed at creation, since
     /// the flag has to be in place before the members exist.
     reaping: bool,
 }
 
 // A job handle is a process-wide kernel object: the thread that closes it
-// need not be the thread that opened it.  Moving one is what lets the PTY be
+// need not be the thread that opened it. Moving one is what lets the PTY be
 // opened off the UI thread, since the job can only be created once the shell
-// it adopts has a pid.  The interior `Cell` keeps the type `!Sync`, which is
+// it adopts has a pid. The interior `Cell` keeps the type `!Sync`, which is
 // what we want: only one thread may drive the boost at a time.
 unsafe impl Send for PriorityJob {}
 
@@ -102,7 +102,7 @@ unsafe impl Send for PriorityJob {}
 /// Kill-on-close is what makes the job answer for its members' lifetime: the
 /// console only reaps its own clients, so a descendant that left the console —
 /// an editor's search helper, anything started detached — outlives the session
-/// unless the job ends it.  Breakaway is the way out for a process that means
+/// unless the job ends it. Breakaway is the way out for a process that means
 /// to outlive the terminal: it must ask with `CREATE_BREAKAWAY_FROM_JOB`, and
 /// without this flag that request fails rather than being granted.
 fn lifetime_limits(reaping: bool) -> u32 {
@@ -141,7 +141,7 @@ impl PriorityJob {
     }
 
     /// Raise every member one class above the load, or return them all to
-    /// normal.  Focus asks for this every frame, so an unchanged state costs
+    /// normal. Focus asks for this every frame, so an unchanged state costs
     /// nothing.
     pub(crate) fn set_boosted(&self, boosted: bool) {
         if self.boosted.get() == boosted {
@@ -187,7 +187,7 @@ impl PriorityJob {
 impl Drop for PriorityJob {
     /// A job outlives the last handle to it for as long as it still has
     /// members, and a session's tab can be closed while something it started
-    /// keeps running.  A reaping job ends those survivors as the last handle
+    /// keeps running. A reaping job ends those survivors as the last handle
     /// closes, so there is nothing left to put back; one that carries only the
     /// boost has to release it, which both lowers them and leaves them free to
     /// set their own class.
@@ -244,7 +244,7 @@ mod tests {
     ///
     /// Where a new process starts is not this module's contract, and it is not
     /// fixed either: a creator inside a job hands its job's class on, and half
-    /// of these tests build jobs.  A test that reads a class it did not set is
+    /// of these tests build jobs. A test that reads a class it did not set is
     /// asserting against whatever the rest of the suite was doing at the time.
     fn subject() -> Subject {
         spawn(NORMAL_PRIORITY_CLASS, ["/c", "pause"])
@@ -319,7 +319,7 @@ mod tests {
     }
 
     /// Windows only spreads a priority class downward, so a child of a boosted
-    /// process starts at normal.  This is what keeps a raise from leaking, and
+    /// process starts at normal. This is what keeps a raise from leaking, and
     /// it is also why the job exists: without one, the command a boosted shell
     /// just started competes with the load on equal terms.
     #[test]
@@ -345,7 +345,7 @@ mod tests {
     /// The number has to be one the kernel cannot hand to anything, not one
     /// this test reaped: a pid is free for reuse the moment its last handle
     /// closes, so boosting a reaped one reaches whichever process picked it
-    /// up next.  Windows numbers processes in multiples of four, which the
+    /// up next. Windows numbers processes in multiples of four, which the
     /// probe below confirms rather than assumes.
     #[test]
     fn a_vanished_pid_is_ignored() {
@@ -374,7 +374,7 @@ mod tests {
     }
 
     /// The whole reason for the job: a process born inside it comes up at the
-    /// class with nothing having to notice it started.  A boost that had to
+    /// class with nothing having to notice it started. A boost that had to
     /// find it first would miss anything shorter than one scan interval, which
     /// is exactly what a short command under load is.
     #[test]
@@ -390,7 +390,7 @@ mod tests {
     /// A closing tab must leave nothing raised behind it, and nothing held
     /// down either: a process the job held can outlive the session, and a job
     /// whose last handle has gone still enforces whatever limit it was left
-    /// with.  Lowering the survivor is only half the job; it also has to be
+    /// with. Lowering the survivor is only half the job; it also has to be
     /// free to set its own class again.
     #[test]
     fn dropping_the_job_lowers_what_it_raised_without_pinning_it() {
@@ -408,7 +408,7 @@ mod tests {
     }
 
     /// Losing focus has to hand the members back their own class, not hold
-    /// them at normal.  A session that keeps the limit standing caps
+    /// them at normal. A session that keeps the limit standing caps
     /// everything it is running for as long as it is not the focused tab —
     /// including anything that raises itself, which is what a build or an
     /// agent under the shell does.
@@ -429,7 +429,7 @@ mod tests {
     struct Member {
         pid: u32,
         name: String,
-        /// Whether the kernel counted it as part of the session's job.  A
+        /// Whether the kernel counted it as part of the session's job. A
         /// survivor that was never a member means the model is wrong; one
         /// that was means kill-on-close is.
         in_job: Option<bool>,
@@ -469,8 +469,8 @@ mod tests {
     /// A parent pid alone does not establish descent: Windows frees a pid for
     /// reuse as soon as the last handle to it closes, and an orphan goes on
     /// naming the number its parent had, so whoever is given that number next
-    /// inherits a stranger's children.  The teardown arms kill what they find
-    /// here, which is what makes the guard load-bearing rather than tidy.  No
+    /// inherits a stranger's children. The teardown arms kill what they find
+    /// here, which is what makes the guard load-bearing rather than tidy. No
     /// child predates its parent, and that is what rules the orphans out.
     fn tree_of(sys: &System, root: u32) -> Vec<u32> {
         // A process the snapshot could not open reports no start time at all,
@@ -714,7 +714,7 @@ mod tests {
     ///
     /// `DETACHED_PROCESS` is what does the escaping — the child gets no
     /// console at all, so it is nobody's console client and closing the
-    /// session's console has no claim on it.  It also spawns no window and no
+    /// session's console has no claim on it. It also spawns no window and no
     /// console host, so a test run leaves the desktop alone.
     #[test]
     #[ignore = "the escaping child a reaping test runs as its session's shell"]
@@ -741,9 +741,9 @@ mod tests {
         std::thread::sleep(Duration::from_secs(60));
     }
 
-    /// The baseline the jobbed arms are measured against.  Closing a
+    /// The baseline the jobbed arms are measured against. Closing a
     /// pseudoconsole ends the shell and the command it is running, because
-    /// conhost keeps its clients in a job it kills on close.  A failure here
+    /// conhost keeps its clients in a job it kills on close. A failure here
     /// is the harness, not the feature.
     #[test]
     fn closing_a_pseudoconsole_reaps_its_console_clients() {
@@ -755,7 +755,7 @@ mod tests {
     }
 
     /// The session's job nests inside conhost's, and conhost's is what reaps
-    /// the console's clients.  A job that cost the session that reaping would
+    /// the console's clients. A job that cost the session that reaping would
     /// buy typing latency with processes that outlive the terminal.
     #[test]
     fn a_job_does_not_cost_the_session_its_reaping() {
@@ -771,9 +771,9 @@ mod tests {
         );
     }
 
-    /// The leak the feature exists for.  A console reaps its clients and
+    /// The leak the feature exists for. A console reaps its clients and
     /// nothing else, so a descendant that left it is stranded by the teardown
-    /// and runs until the machine is rebooted.  Without this the reaping arm
+    /// and runs until the machine is rebooted. Without this the reaping arm
     /// below could pass on a session that never escaped anything.
     #[test]
     fn the_console_alone_strands_what_leaves_it() {

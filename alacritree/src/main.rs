@@ -24,7 +24,7 @@ fn main() -> eframe::Result<()> {
     let mut log_builder =
         env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default_filter));
     // `Target::Pipe` makes env_logger resolve `Auto` to `Never`, so the terminal
-    // check `Auto` stands for has to happen here.  An explicit `RUST_LOG_STYLE`
+    // check `Auto` stands for has to happen here. An explicit `RUST_LOG_STYLE`
     // still decides for itself.
     let style_is_explicit =
         std::env::var("RUST_LOG_STYLE").is_ok_and(|s| s == "always" || s == "never");
@@ -33,7 +33,7 @@ fn main() -> eframe::Result<()> {
     }
     log_builder.target(env_logger::Target::Pipe(Box::new(tee))).init();
 
-    // A subcommand talks to an alacritree instead of being one.  Log output
+    // A subcommand talks to an alacritree instead of being one. Log output
     // always goes to stderr, whether or not `persistent_logging` also tees it
     // to a file, leaving stdout to the reply.
     attach_parent_console();
@@ -45,7 +45,7 @@ fn main() -> eframe::Result<()> {
         std::process::exit(code);
     }
 
-    // Only the GUI path records crashes.  Every subcommand exits before config
+    // Only the GUI path records crashes. Every subcommand exits before config
     // is read, so no gate could govern them, and `alacritree mcp` is a
     // long-lived loop that would write records nothing could disable.
     let default_log_dir = logdir::log_dir();
@@ -78,9 +78,9 @@ fn main() -> eframe::Result<()> {
         logging::prune_session_logs(dir);
     }
     // `gpu_timing` and `frame_log` report through the log stream, and a
-    // GUI-subsystem binary has no console for stderr to reach.  Asking for a
+    // GUI-subsystem binary has no console for stderr to reach. Asking for a
     // report has to open the file it lands in, or it is written where nothing
-    // can read it.  `--log-file` turns logging on by itself: a flag naming a
+    // can read it. `--log-file` turns logging on by itself: a flag naming a
     // file that then stays empty because a config key was off is the trap the
     // flag exists to avoid.
     let logging_to_file = log_file.is_some()
@@ -134,7 +134,7 @@ fn main() -> eframe::Result<()> {
         }),
     );
 
-    // Only reached when `run_native` returns.  A panic unwinds past this — winit
+    // Only reached when `run_native` returns. A panic unwinds past this — winit
     // resumes it outside the window procedure — so the hook is what records
     // that case.
     crash_log::record_exit(&result);
@@ -147,14 +147,14 @@ fn main() -> eframe::Result<()> {
 ///
 /// A `windows_subsystem = "windows"` binary starts with no console attached, so
 /// in a release build `println!` writes to a handle that goes nowhere and the
-/// CLI is silent at a prompt.  (A debug build has a console and looks fine,
-/// which is how this hides.)  Attaching the parent's console fixes that.
+/// CLI is silent at a prompt. (A debug build has a console and looks fine,
+/// which is how this hides.) Attaching the parent's console fixes that.
 ///
 /// But a caller that already gave us a stdout — a redirect, a pipe, or WSL,
 /// which relays the Windows binary's output through a pipe of its own — needs
 /// no console, and grabbing one actively breaks WSL: output is repointed at a
 /// Windows console whose contents WSL relays line by line as CRLF, so `--help`
-/// and every other command come out littered with `^M`.  So attach only when
+/// and every other command come out littered with `^M`. So attach only when
 /// `GetStdHandle` reports no stdout at all.
 ///
 /// Must run before anything touches `std::io::stdout()`, which caches the

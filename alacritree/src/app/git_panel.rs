@@ -14,9 +14,9 @@ pub(super) const GIT_FILTER_TOGGLES: &[char] = &['m', 'd', 'u'];
 
 pub(super) struct GitPanel {
     /// Fuzzy-search query and `m`/`d`/`u` change-kind toggle state for the git
-    /// panel.  Transient: never persisted.
+    /// panel. Transient: never persisted.
     pub(super) filter: PanelFilter,
-    /// Git-panel cursor, identified by `(section, path)`.  Rebuilt every render
+    /// Git-panel cursor, identified by `(section, path)`. Rebuilt every render
     /// pass from `rows`, so it survives the 1.5 s status refresh.
     pub(super) cursor: Option<git_nav::GitRow>,
     /// One-shot: scroll the git cursor row into view on the next paint.
@@ -31,7 +31,7 @@ pub(super) struct GitPanel {
     pub(super) auto_shown: bool,
     pub(super) status: HashMap<PathBuf, StatusCache>,
     /// Per-worktree override of the git panel's diff base, keyed by worktree
-    /// path.  Mirrors `state.toml`; written through `state::set_base_branch`.
+    /// path. Mirrors `state.toml`; written through `state::set_base_branch`.
     pub(super) base_branch_overrides: HashMap<PathBuf, String>,
 }
 
@@ -86,7 +86,7 @@ struct GitSidebarRequests {
 
 impl AlacritreeApp {
     /// Arrow/Enter/Escape navigation while the git sidebar owns keyboard
-    /// focus.  Same event-drain shape as `handle_sidebar_nav`: consumes only
+    /// focus. Same event-drain shape as `handle_sidebar_nav`: consumes only
     /// unmodified nav keys, leaving modifier-bound shortcuts for
     /// `handle_shortcuts`.
     pub(super) fn handle_git_sidebar_nav(&mut self, ctx: &Context) {
@@ -170,7 +170,7 @@ impl AlacritreeApp {
     }
 
     /// Rebuild `rows` from the cached status under the active filter,
-    /// without polling.  The render pass recomputes the same way from a fresh
+    /// without polling. The render pass recomputes the same way from a fresh
     /// poll; this keeps the row set current between frames so a filter change
     /// and a following key event in the same batch agree on the rows.
     pub(super) fn recompute_git_rows(&mut self) {
@@ -561,7 +561,7 @@ impl AlacritreeApp {
         }
     }
 
-    /// Key of the diff currently displayed in this workspace, if any.  Used by
+    /// Key of the diff currently displayed in this workspace, if any. Used by
     /// the sidebar to highlight the originating row so the toggle-on-reclick
     /// behavior is discoverable.
     fn active_diff_key(&self) -> Option<String> {
@@ -1048,7 +1048,7 @@ pub(super) fn path_header_label(
 /// A git panel row's path, laid out rather than added as an `egui::Label` so
 /// its tooltip is the row's to give: the label covers only the text, and a
 /// pointer sweeping down the panel spends most of its time past the end of
-/// short paths, where a label-borne tooltip would go quiet.  The row passes the
+/// short paths, where a label-borne tooltip would go quiet. The row passes the
 /// galley back through `git_path_tooltip` once it has its full-width response.
 pub(super) fn git_path_label(
     ui: &mut egui::Ui,
@@ -1082,7 +1082,7 @@ fn git_path_tooltip(
 }
 
 /// Outline the git row the keyboard cursor rests on, matched by section+path so
-/// it survives the status refresh.  Full-width rect from the panel plus the
+/// it survives the status refresh. Full-width rect from the panel plus the
 /// row's `y_range`, mirroring the project rows.
 fn paint_git_row_cursor(
     ui: &egui::Ui,
@@ -1275,7 +1275,7 @@ pub(super) fn git_toggles_pass(m: bool, d: bool, u: bool, kind: ChangeKind) -> b
 }
 
 /// The diff a git-panel cursor row would open, mirroring the render pass's
-/// per-section click mapping.  `None` for a branch-diff row with no resolved
+/// per-section click mapping. `None` for a branch-diff row with no resolved
 /// base, matching the render pass's unclickable base-less rows.
 pub(super) fn git_row_diff_request(
     row: &git_nav::GitRow,
@@ -1324,7 +1324,7 @@ pub(super) fn effective_base_branch(
 
 /// The worktree a SetBaseBranch press targets: the sidebar cursor's worktree
 /// while the projects sidebar owns focus (a session row resolves to its
-/// workspace), otherwise the current workspace.  Home and project-header
+/// workspace), otherwise the current workspace. Home and project-header
 /// cursors, and the home workspace, have no base branch to override.
 pub(super) fn base_branch_target(
     sidebar_focused: bool,

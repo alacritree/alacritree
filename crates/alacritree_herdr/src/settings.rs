@@ -19,14 +19,14 @@ pub enum AttachMode {
 }
 
 /// Whether a focus change made inside herdr may move alacritree, and from
-/// which sessions.  Following moves the keyboard, so the default is the
+/// which sessions. Following moves the keyboard, so the default is the
 /// narrower rule: only a session that is already showing herdr's view
 /// follows it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, EnumIter, IntoStaticStr)]
 #[serde(into = "&'static str")]
 #[strum(serialize_all = "snake_case")]
 pub enum FollowFocus {
-    /// herdr never moves alacritree.  alacritree still tells herdr where to
+    /// herdr never moves alacritree. alacritree still tells herdr where to
     /// point when the user picks a row.
     Off,
     /// Follow only while the active session is herdr-backed.
@@ -55,7 +55,7 @@ pub struct HerdrConfig {
     /// List every pane a herdr server owns, not only the ones it detected an
     /// agent in.
     pub show_panes: bool,
-    /// What a row opens.  Honoured per side; the native side of a Windows
+    /// What a row opens. Honoured per side; the native side of a Windows
     /// host attaches to the session whatever this says.
     pub attach: AttachMode,
     /// Whether a focus change inside herdr moves alacritree, and from which
@@ -85,22 +85,22 @@ pub struct RawHerdr {
     /// drawn by your own fonts instead.
     #[schemars(default = "default_icon")]
     icon: Option<RawIconStyle>,
-    /// Discover herdr servers and list their agents in the sidebar.  Inert
+    /// Discover herdr servers and list their agents in the sidebar. Inert
     /// when no herdr binary or server is present.
     ///
     /// Changes arrive on herdr's event stream, read through `herdr
-    /// remote-api-bridge`.  0.9.1 has it and 0.8.2 does not; a herdr without
+    /// remote-api-bridge`. 0.9.1 has it and 0.8.2 does not; a herdr without
     /// it lists nothing.
     enabled: bool,
     /// List panes whose working directory matches no worktree, under Home.
     show_unmatched: bool,
     /// List every pane a herdr server owns, not only the ones it detected an
-    /// agent in.  A pane running a plain shell gets a row named by its own
+    /// agent in. A pane running a plain shell gets a row named by its own
     /// title, carrying no status, and opening it shares herdr's view of the
     /// tab that holds it rather than attaching to the pane.
     ///
-    /// Needs a herdr that knows `pane list` (0.8.2 does).  An older one
-    /// answers with a usage error, which reads as no herdr on that side.  A
+    /// Needs a herdr that knows `pane list` (0.8.2 does). An older one
+    /// answers with a usage error, which reads as no herdr on that side. A
     /// side that has never answered is then abandoned for the process
     /// lifetime; one that answered before this was turned on keeps retrying
     /// and recovers when it goes back off.
@@ -112,16 +112,16 @@ pub struct RawHerdr {
     /// "session" hands the mouse to herdr's own client, where a selection
     /// joins soft-wrapped rows and copy mode works; a direct attach is
     /// repainted row by row, so the host terminal sees every wrap as a line
-    /// break.  Honoured per side: the native side of a Windows host always
+    /// break. Honoured per side: the native side of a Windows host always
     /// attaches to the session, because herdr implements no direct attach
     /// there.
     attach: ClosedSet<AttachMode>,
     /// Whether a focus change made inside herdr moves alacritree to the
     /// matching session.
     ///
-    /// "off" never moves it.  "herdr" moves it only while the active session
+    /// "off" never moves it. "herdr" moves it only while the active session
     /// is already showing herdr's view, which is what an unmodified config
-    /// has always done.  "always" also moves it from a plain native session,
+    /// has always done. "always" also moves it from a plain native session,
     /// on any reachable side, after a gap in typing.
     follow_focus: ClosedSet<FollowFocus>,
 }

@@ -1,7 +1,7 @@
 //! Resolve font faces and register them as egui font families.
 //!
 //! Four faces are loaded so ANSI bold/italic cells use real Bold/Italic
-//! glyphs.  On Unix we go through libfontconfig directly (same pattern flow
+//! glyphs. On Unix we go through libfontconfig directly (same pattern flow
 //! as `crossfont::ft::FreeTypeRasterizer::get_face`) — `fc-match` on the CLI
 //! mishandles `family:weight=bold` patterns when the family is an `<alias>`,
 //! so building the pattern programmatically is what makes weight/slant pick
@@ -24,7 +24,7 @@ use egui::{Context, FontData, FontDefinitions, FontFamily, FontTweak};
 
 use crate::config::{FontConfig, UiFont};
 
-/// Hard cap on fallback faces.  fontconfig's trimmed sort tops out at a few
+/// Hard cap on fallback faces. fontconfig's trimmed sort tops out at a few
 /// dozen on a typical system; this just bounds startup memory and parse cost
 /// when someone has hundreds of fonts installed.
 const MAX_FALLBACK_FACES: usize = 32;
@@ -34,7 +34,7 @@ pub(crate) const ITALIC_FAMILY: &str = "alacritree_italic";
 pub(crate) const BOLD_ITALIC_FAMILY: &str = "alacritree_bold_italic";
 
 /// Glyphs alacritree paints itself, so the chrome renders on systems whose
-/// fonts lack them.  Appended last in each chrome family, so an installed
+/// fonts lack them. Appended last in each chrome family, so an installed
 /// font that already has a glyph keeps rendering it.
 const SYMBOLS_FONT: &[u8] = include_bytes!("../assets/alacritree-symbols.ttf");
 const SYMBOLS_ID: &str = "alacritree_symbols";
@@ -50,7 +50,7 @@ const UI_FONT_ID: &str = "alacritree_ui_normal";
 /// the head of `Proportional`; removed again so it never leaks to egui.
 const UI_FAMILY: &str = "alacritree_ui";
 
-/// Registered variant families for chrome text.  Distinct from
+/// Registered variant families for chrome text. Distinct from
 /// `BOLD_FAMILY`/`ITALIC_FAMILY`/`BOLD_ITALIC_FAMILY` (the terminal grid's
 /// variant faces) so a `[ui.font]` override never changes what bold/italic
 /// cells render in the terminal.
@@ -77,7 +77,7 @@ impl Variant {
     }
 }
 
-/// Platform default that mirrors `crossfont::FontDescription::default`.  Used
+/// Platform default that mirrors `crossfont::FontDescription::default`. Used
 /// when the user hasn't set `[font.normal] family`, so alacritree picks the
 /// same face alacritty would pick from the same (empty) config.
 const DEFAULT_FAMILY: &str = if cfg!(target_os = "macos") {
@@ -88,7 +88,7 @@ const DEFAULT_FAMILY: &str = if cfg!(target_os = "macos") {
     "monospace"
 };
 
-/// Where `scanned_coverage` persists its results.  `Standard` resolves the
+/// Where `scanned_coverage` persists its results. `Standard` resolves the
 /// per-user location lazily at scan time; `Fixed` pins the cache to a given
 /// file — or disables it with `None` — so tests never read or write the
 /// user's real cache.
@@ -103,7 +103,7 @@ enum CacheLocation {
 }
 
 /// Lazily-loaded system font database shared by every resolution within one
-/// `install_terminal_fonts` call.  Loading is deferred so Unix systems where
+/// `install_terminal_fonts` call. Loading is deferred so Unix systems where
 /// fontconfig answers everything never pay for a fontdb scan.
 #[derive(Default)]
 struct SystemFonts {
@@ -173,9 +173,9 @@ impl SystemFonts {
     }
 }
 
-/// How many faces to scan at once.  Four is where the measured curve
+/// How many faces to scan at once. Four is where the measured curve
 /// flattens; the work is memory-bound, so more cores stop helping well
-/// before they run out.  The floor matters because rayon reads a thread
+/// before they run out. The floor matters because rayon reads a thread
 /// count of zero as "choose automatically", so a caller that mapped an
 /// error to zero would get every logical CPU instead of the cap.
 #[cfg(not(unix))]
@@ -184,7 +184,7 @@ fn worker_count(reported: usize) -> usize {
 }
 
 /// Scan every system face's cmap, reusing ranges from `cache_path` for files
-/// whose size and mtime still match a prior scan.  `cache_path` is a
+/// whose size and mtime still match a prior scan. `cache_path` is a
 /// parameter (rather than always `disk_cache::default_cache_path()`) so
 /// tests can point it at a scratch directory instead of the real
 /// `%LOCALAPPDATA%`.
@@ -198,7 +198,7 @@ fn scan_coverage(
 }
 
 /// The scan proper, with the worker count injected so tests can compare a
-/// parallel run against a serial one.  Returns the candidate list and how
+/// parallel run against a serial one. Returns the candidate list and how
 /// many faces came from the cache.
 #[cfg(not(unix))]
 fn scan_coverage_with_workers(
@@ -211,7 +211,7 @@ fn scan_coverage_with_workers(
     let started = std::time::Instant::now();
     let cache = cache_path.and_then(disk_cache::load).unwrap_or_default();
 
-    // Faces addressable by path, in database order.  A `.ttc` contributes
+    // Faces addressable by path, in database order. A `.ttc` contributes
     // several entries sharing one path.
     let faces: Vec<(PathBuf, u32, &fontdb::FaceInfo)> = db
         .faces()
@@ -272,7 +272,7 @@ fn scan_coverage_with_workers(
     };
 
     // `par_iter().collect()` preserves input order, so the scan stays
-    // deterministic with nothing carried or sorted to make it so.  A local
+    // deterministic with nothing carried or sorted to make it so. A local
     // pool rather than rayon's global one, which would keep its threads for
     // the life of the process for a scan that runs once.
     let scanned_faces: Vec<_> = match rayon::ThreadPoolBuilder::new().num_threads(workers).build() {
@@ -283,9 +283,9 @@ fn scan_coverage_with_workers(
         },
     };
 
-    // Accumulation stays serial.  One `CachedFile` holds every face of a
+    // Accumulation stays serial. One `CachedFile` holds every face of a
     // collection, so folding per-worker fragments would have to merge those
-    // per-file maps or silently drop faces.  This is one pass over a list
+    // per-file maps or silently drop faces. This is one pass over a list
     // that is already built; parallelising it would buy nothing.
     let mut fresh_files: HashMap<String, disk_cache::CachedFile> = HashMap::new();
     let mut scanned = Vec::with_capacity(scanned_faces.len());
@@ -314,7 +314,7 @@ fn scan_coverage_with_workers(
 
     // A cache that was absent or invalid produced zero hits, so every face that parsed
     // above went through the fresh-parse branch and `any_fresh` is already
-    // true; no separate "was the cache valid" bookkeeping is needed.  A face
+    // true; no separate "was the cache valid" bookkeeping is needed. A face
     // that fails to parse never reaches the loop, so a scan that is otherwise
     // all hits writes nothing, and entries for fonts deleted since the last
     // write survive until some face parses fresh.
@@ -334,7 +334,7 @@ fn scan_coverage_with_workers(
 }
 
 /// Persists the coverage scan across launches, keyed by each font file's
-/// size and mtime.  A custom binary format (rather than a serde crate) keeps
+/// size and mtime. A custom binary format (rather than a serde crate) keeps
 /// this cache std-only; corruption or a version mismatch just means the next
 /// launch rescans, so the format has no need to be self-describing beyond a
 /// magic/version check.
@@ -359,7 +359,7 @@ mod disk_cache {
     }
 
     /// A file's identity for cache purposes: byte size plus modification
-    /// time.  Either changing is treated as "this file might have new
+    /// time. Either changing is treated as "this file might have new
     /// glyphs" and forces a rescan of every face in it.
     pub(super) fn stat_file(path: &Path) -> Option<(u64, u64)> {
         let meta = std::fs::metadata(path).ok()?;
@@ -466,7 +466,7 @@ mod disk_cache {
 }
 
 /// One face in the order egui consults it: the primary, then the user's
-/// `[font] fallback` entries, then the automatic system chain.  Colour-only
+/// `[font] fallback` entries, then the automatic system chain. Colour-only
 /// faces appear here even though they are withheld from egui, because the
 /// colour glyph renderer resolves against this same order and must see the
 /// face the user asked for.
@@ -488,7 +488,7 @@ struct FallbackBook {
     loaded_faces: HashSet<(PathBuf, u32)>,
     ids_by_face: HashMap<(PathBuf, u32), String>,
     warned_entries: HashSet<String>,
-    /// Faces withheld from egui because they carry no outlines.  Kept so a
+    /// Faces withheld from egui because they carry no outlines. Kept so a
     /// later variant's chain doesn't re-read and re-probe the same face.
     color_only: HashSet<(PathBuf, u32)>,
     /// Height ratio of the primary normal face, used to normalize fallback
@@ -499,7 +499,7 @@ struct FallbackBook {
 }
 
 impl FallbackBook {
-    /// Record a face in the normal-variant chain.  Other variants re-walk the
+    /// Record a face in the normal-variant chain. Other variants re-walk the
     /// same fallbacks and must not append to it a second time.
     fn extend_chain(&mut self, variant: Variant, path: &Path, face_index: u32, color_only: bool) {
         if !matches!(variant, Variant::Normal) {
@@ -512,7 +512,7 @@ impl FallbackBook {
     }
 }
 
-/// Whether `face` can hand egui an outline for `c`.  A face may claim a
+/// Whether `face` can hand egui an outline for `c`. A face may claim a
 /// character in its cmap and still have nothing to draw for it, which is what
 /// makes a cell go blank.
 #[cfg(test)]
@@ -542,10 +542,10 @@ impl ttf_parser::OutlineBuilder for DiscardOutline {
     fn close(&mut self) {}
 }
 
-/// egui rasterizes `glyf`/`CFF` outlines and nothing else.  COLR and CBDT
+/// egui rasterizes `glyf`/`CFF` outlines and nothing else. COLR and CBDT
 /// emoji fonts keep their artwork in colour tables and leave the base glyphs
 /// empty, so egui would claim every character such a face covers and then paint
-/// a blank cell.  Those faces are withheld from egui and drawn by `color_glyph`
+/// a blank cell. Those faces are withheld from egui and drawn by `color_glyph`
 /// instead.
 ///
 /// A table-level check is not enough — Twemoji has a `glyf` table full of empty
@@ -589,9 +589,9 @@ fn is_color_only(data: &[u8], index: u32) -> bool {
     probed > 0 && !outlined
 }
 
-/// Whether epaint will accept this face.  epaint re-parses every registered
+/// Whether epaint will accept this face. epaint re-parses every registered
 /// face with ab_glyph and aborts the process on failure, so a face must pass
-/// this exact parse before it may reach the definitions.  System font indexes
+/// this exact parse before it may reach the definitions. System font indexes
 /// commonly list faces ab_glyph rejects — macOS `.dfont` suitcases and
 /// bitmap-only families — which the ttf_parser-based probes here don't catch.
 fn epaint_can_parse(bytes: &[u8], face_index: u32) -> bool {
@@ -600,7 +600,7 @@ fn epaint_can_parse(bytes: &[u8], face_index: u32) -> bool {
 
 /// Register the user-configured `[font] fallback` entries for one variant.
 /// They slot between the primary face and the automatic system chain, in
-/// list order.  Entries are family names or font file paths, resolved with
+/// list order. Entries are family names or font file paths, resolved with
 /// the variant's weight/slant so bold cells cascade through bold fallbacks.
 fn register_user_fallbacks(
     defs: &mut FontDefinitions,
@@ -686,7 +686,7 @@ fn face_height_ratio(data: &[u8], index: u32) -> Option<f32> {
     (units > 0.0 && height > 0.0).then(|| height / units)
 }
 
-/// Em fractions used where a face reports nothing usable.  A zero in a metric
+/// Em fractions used where a face reports nothing usable. A zero in a metric
 /// table means "not supplied" rather than "at the baseline", so every field is
 /// checked against these rather than used as read.
 const DEFAULT_ASCENDER: f32 = 0.8;
@@ -695,12 +695,12 @@ const DEFAULT_UNDERLINE_POSITION: f32 = -0.1;
 const DEFAULT_UNDERLINE_THICKNESS: f32 = 0.05;
 
 /// Where a strikeout goes above the baseline when OS/2 does not say, as a
-/// fraction of the ascender.  kitty spells the same rule as
+/// fraction of the ascender. kitty spells the same rule as
 /// `floor(baseline * 0.65)` measured down from the cell top.
 const STRIKEOUT_ASCENDER_RATIO: f32 = 0.35;
 
 /// What a face asks for its decorations, as fractions of the em measured from
-/// the baseline with up positive.  That is the sign convention of the `post`
+/// the baseline with up positive. That is the sign convention of the `post`
 /// and OS/2 tables the numbers come from: an underline position is negative,
 /// a strikeout position is positive, and so is the ascender while the
 /// descender is negative.
@@ -728,7 +728,7 @@ impl Default for FaceMetrics {
 }
 
 impl FaceMetrics {
-    /// Read face `index` of `data`.  Anything the face leaves at zero, omits,
+    /// Read face `index` of `data`. Anything the face leaves at zero, omits,
     /// or cannot express is filled in by `resolve_fallbacks`.
     pub(crate) fn from_face(data: &[u8], index: u32) -> Self {
         let Ok(face) = ttf_parser::Face::parse(data, index) else {
@@ -755,7 +755,7 @@ impl FaceMetrics {
     }
 }
 
-/// Substitute for every field a face left at zero.  Split out from
+/// Substitute for every field a face left at zero. Split out from
 /// `from_face` so each substitution is reachable from a test without a font
 /// file engineered to be broken in exactly one way.
 fn resolve_fallbacks(raw: FaceMetrics) -> FaceMetrics {
@@ -789,7 +789,7 @@ fn correctly_signed(value: f32, positive: bool) -> Option<f32> {
 
 /// Scale a fallback face so one point of it is as tall as one point of the
 /// primary face; without this, powerline caps, emoji, and CJK glyphs from
-/// fallback fonts overshoot or undershoot the cell.  Clamped so a face with
+/// fallback fonts overshoot or undershoot the cell. Clamped so a face with
 /// broken metrics cannot render unreadably small or huge.
 fn fallback_tweak(primary_ratio: Option<f32>, data: &[u8], index: u32) -> FontTweak {
     let scale = match (primary_ratio, face_height_ratio(data, index)) {
@@ -801,7 +801,7 @@ fn fallback_tweak(primary_ratio: Option<f32>, data: &[u8], index: u32) -> FontTw
 
 /// Put the `[ui.font]` family — and its own fallback chain — ahead of the
 /// terminal font in egui's `Proportional` family, so all chrome text prefers
-/// it.  `Monospace` (the grid) is untouched.  Returns `false` and leaves the
+/// it. `Monospace` (the grid) is untouched. Returns `false` and leaves the
 /// definitions unchanged when the family cannot be resolved or read, in which
 /// case the chrome keeps using the terminal font.
 fn install_ui_normal_chain(
@@ -861,7 +861,7 @@ fn install_ui_normal_chain(
 /// Splice `[ui.font] family` into `Proportional` when configured, then
 /// register the bold/italic/bold-italic chrome families unconditionally —
 /// they must exist even with no `[ui.font]` table so bold/italic chrome text
-/// has somewhere to resolve to.  Returns whether the normal chain installed.
+/// has somewhere to resolve to. Returns whether the normal chain installed.
 fn install_ui_font(defs: &mut FontDefinitions, ui: &UiFont, fonts: &SystemFonts) -> bool {
     let installed = match ui.family.as_deref() {
         Some(family_or_path) => install_ui_normal_chain(defs, family_or_path, fonts),
@@ -884,7 +884,7 @@ fn install_ui_font(defs: &mut FontDefinitions, ui: &UiFont, fonts: &SystemFonts)
 
 /// Order is explicit because egui families cannot nest: the configured UI
 /// variant first, then the variant derived from the UI family, then the
-/// terminal's variant ids, then normal.  Deduplicated by id.
+/// terminal's variant ids, then normal. Deduplicated by id.
 fn install_ui_variant(
     defs: &mut FontDefinitions,
     ui: &UiFont,
@@ -952,14 +952,14 @@ fn install_ui_variant(
 
 /// Append the bundled symbol face to each chrome family as the last resort.
 ///
-/// Runs after every family is assembled, never during.  `install_ui_font`
+/// Runs after every family is assembled, never during. `install_ui_font`
 /// builds its chain under `UI_FAMILY` and then front-splices it into
 /// `Proportional`, so a face added there would land *ahead* of the
 /// terminal-derived fallbacks and override glyphs that already draw.
 ///
 /// One font-data id per distinct height ratio among the targets: the ratio
 /// anchors `fallback_tweak` to whichever face heads that family, and bold or
-/// italic chrome can be a different face from normal.  Sharing bytes across
+/// italic chrome can be a different face from normal. Sharing bytes across
 /// ids is free — `FontData::from_static` borrows.
 fn install_symbol_fallback(defs: &mut FontDefinitions, ui: &UiFont) {
     if !ui.builtin_symbols {
@@ -1042,7 +1042,7 @@ pub(crate) fn install_terminal_fonts(
 }
 
 /// The chain's head is the `[font.normal]` face, pushed ahead of every
-/// fallback, so its metrics are the ones the grid is laid out against.  An
+/// fallback, so its metrics are the ones the grid is laid out against. An
 /// empty chain means the family could not be resolved at all.
 fn primary_face_metrics(chain: &[ChainFace]) -> FaceMetrics {
     let Some(primary) = chain.first() else {
@@ -1139,7 +1139,7 @@ fn build_font_definitions(
     // keeping — `Ubuntu-Light` is what draws `√` when the terminal font cannot.
     // But `Ubuntu-Light` also fills the legacy Adobe PUA slots, where U+F001
     // and U+F002 hold the `fi`/`fl` ligatures, and Nerd Fonts put icons at
-    // those codepoints.  Left where egui put them they answer before anything
+    // those codepoints. Left where egui put them they answer before anything
     // the user configured, so they are lifted out here and appended last.
     let bundled = take_bundled_faces(&mut defs);
 
@@ -1232,7 +1232,7 @@ fn restore_bundled_faces(defs: &mut FontDefinitions, bundled: Vec<(FontFamily, V
 
 /// Append every font from fontconfig's trimmed sort to `target_families` so
 /// that glyphs missing from the primary face (symbols, box drawing, emoji)
-/// fall through to a system font that has them.  Mirrors what crossfont does
+/// fall through to a system font that has them. Mirrors what crossfont does
 /// per-glyph in upstream alacritty.
 fn register_fallback_faces(
     defs: &mut FontDefinitions,
@@ -1325,7 +1325,7 @@ fn gather_fallback_faces(
 fn cmap_coverage(face: &ttf_parser::Face) -> Option<coverage::Coverage> {
     let cmap = face.tables().cmap?;
     // A font's BMP and full subtables overlap heavily, so the per-subtable
-    // sets are unioned rather than concatenated.  `merge` coalesces
+    // sets are unioned rather than concatenated. `merge` coalesces
     // overlapping and adjacent ranges, which concatenation would not.
     let mut covered = coverage::Coverage::default();
     for subtable in cmap.subtables {
@@ -1357,7 +1357,7 @@ fn face_coverage_parses() -> usize {
 }
 
 /// The scan already carries every system face and is disk-cached across
-/// launches, so a seed found here costs no parse at all.  `Candidate` carries
+/// launches, so a seed found here costs no parse at all. `Candidate` carries
 /// both path and face index, so the match is exact — face 0 of a collection
 /// file can be an unrelated family.
 #[cfg(not(unix))]
@@ -1420,17 +1420,17 @@ fn gather_fallback_faces(
         .collect()
 }
 
-/// Face bytes reach egui as a mapping rather than a buffer.  `FontData` holds
+/// Face bytes reach egui as a mapping rather than a buffer. `FontData` holds
 /// a `Cow<'static, [u8]>` and epaint clones the whole buffer of every owned
 /// entry when it builds the `ab_glyph` face, so a face handed over as bytes
-/// costs its file size twice for the life of the process.  Handed over
+/// costs its file size twice for the life of the process. Handed over
 /// borrowed it costs nothing: the pages stay file-backed, and a fallback face
 /// no cell ever renders from resides as its table headers instead of its full
-/// size.  This is what FreeType does for alacritty and wezterm, which is why
+/// size. This is what FreeType does for alacritty and wezterm, which is why
 /// they carry a long fallback chain for a fraction of the memory.
 ///
 /// A mapping outlives the egui context it is registered with, which lives as
-/// long as the process — so the mappings do too.  Keying them by path is what
+/// long as the process — so the mappings do too. Keying them by path is what
 /// bounds that: a face maps once no matter how many variant chains list it,
 /// and a second `install_terminal_fonts` reuses the mappings of the first.
 static FONT_MAPS: OnceLock<Mutex<HashMap<PathBuf, &'static [u8]>>> = OnceLock::new();
@@ -1445,7 +1445,7 @@ pub(crate) fn map_font_file(path: &Path) -> std::io::Result<&'static [u8]> {
     }
 
     let file = std::fs::File::open(path)?;
-    // SAFETY: the mapping is read-only and never written through.  Rewriting a
+    // SAFETY: the mapping is read-only and never written through. Rewriting a
     // font file in place while it is mapped would fault the process — the same
     // bet FreeType makes when it maps a face, and fontdb already maps every
     // system font to scan its cmap.
@@ -1455,8 +1455,8 @@ pub(crate) fn map_font_file(path: &Path) -> std::io::Result<&'static [u8]> {
     Ok(bytes)
 }
 
-/// Whether `path` already has a mapping.  Test-only: nothing in the app needs
-/// to ask, and a release build should not carry the lookup.  Gated on
+/// Whether `path` already has a mapping. Test-only: nothing in the app needs
+/// to ask, and a release build should not carry the lookup. Gated on
 /// `not(unix)` because its only caller is Windows-gated; otherwise this
 /// test-only helper is dead code on Linux.
 #[cfg(all(test, not(unix)))]
@@ -1488,10 +1488,10 @@ fn register_variant(
 }
 
 /// Returns the bytes and face index of the variant face if a *real* variant
-/// exists, or `None` if the matcher fell back to the normal face.  A
+/// exists, or `None` if the matcher fell back to the normal face. A
 /// collection file holds many faces, so "fell back" means the same file *and*
 /// the same face index — the bold sibling of a `.ttc` family lives in the
-/// same file.  The caller registers the normal face as a fallback under the
+/// same file. The caller registers the normal face as a fallback under the
 /// variant's family name.
 fn load_variant(
     family: &str,
@@ -1532,7 +1532,7 @@ fn load_variant(
 
 struct ResolvedFace {
     path: PathBuf,
-    /// Which face inside the file.  A `.ttc` holds several — `Noto Sans Mono
+    /// Which face inside the file. A `.ttc` holds several — `Noto Sans Mono
     /// CJK KR` and its `JP` sibling can share one file — so dropping this
     /// would silently load the wrong language's face.
     face_index: u32,
@@ -1556,12 +1556,12 @@ fn resolve_face(
     resolve_via_fontdb(family_or_path, variant, fonts)
 }
 
-/// Strict resolution for the `[ui.font]` family.  `FcFontMatch` substitutes a
+/// Strict resolution for the `[ui.font]` family. `FcFontMatch` substitutes a
 /// default face for unknown families instead of failing, which would turn a
 /// typo'd family into a silent chrome-font change — so gate on fontdb, which
 /// matches family names literally, and only then let fontconfig pick the face
-/// (its alias and weight substitution beats fontdb's).  CSS generics skip the
-/// gate: they are aliases, not listed families.  Custom `<alias>` names lose
+/// (its alias and weight substitution beats fontdb's). CSS generics skip the
+/// gate: they are aliases, not listed families. Custom `<alias>` names lose
 /// out (fontdb can't see them), a fair trade for keeping typos on the
 /// terminal font.
 #[cfg(unix)]
@@ -1689,7 +1689,7 @@ mod fontconfig_resolve {
     }
 
     /// fontconfig hands back `(named_instance << 16) | face` for a variable
-    /// font's named instances (FreeType's encoding).  ttf_parser and epaint
+    /// font's named instances (FreeType's encoding). ttf_parser and epaint
     /// take a plain collection index and cannot apply a named instance
     /// anyway, so the default instance stands in for the named one.
     pub(super) fn plain_face_index(index: i32) -> u32 {
@@ -1697,7 +1697,7 @@ mod fontconfig_resolve {
     }
 
     /// `FcFontSort` with `trim=true` returns fonts in match order, dropping
-    /// any whose Unicode coverage is fully covered by an earlier entry.  This
+    /// any whose Unicode coverage is fully covered by an earlier entry. This
     /// is the same chain `FcFontMatch` walks per glyph when crossfont misses,
     /// so registering it up front in egui gives equivalent coverage.
     pub(super) fn sorted_fallbacks(
@@ -1854,7 +1854,7 @@ mod tests {
 
     /// An egui family is a flat vector of font ids — one family cannot reference
     /// another — so each UI variant chain must physically contain the terminal
-    /// variant's ids, deduplicated, after its own faces.  `register_variant`
+    /// variant's ids, deduplicated, after its own faces. `register_variant`
     /// with no real face falls back to normal bytes under a fresh id, so
     /// `BOLD_FONT_ID`/`ITALIC_FONT_ID`/`BOLD_ITALIC_FONT_ID` here are fallback
     /// ids, not real variant faces — this only proves the splice carries
@@ -1993,7 +1993,7 @@ mod tests {
 
     // epaint re-parses every registered face with ab_glyph at first layout
     // and panics on any it cannot parse, so the installed definitions must
-    // never contain one.  macOS font indexes commonly carry such faces
+    // never contain one. macOS font indexes commonly carry such faces
     // (.dfont suitcases, bitmap-only families).
     #[test]
     fn every_registered_face_parses_like_epaint() {
@@ -2231,9 +2231,9 @@ mod tests {
     fn egui_bundled_faces_answer_after_the_configured_fallbacks() {
         // `FontDefinitions::default()` seeds Monospace with epaint's own faces,
         // and `Ubuntu-Light` among them fills the legacy Adobe PUA slots, where
-        // U+F001 and U+F002 hold the `fi`/`fl` ligatures.  Nerd Fonts put icons
+        // U+F001 and U+F002 hold the `fi`/`fl` ligatures. Nerd Fonts put icons
         // at those codepoints, so a bundled face left ahead of the configured
-        // fallbacks answers first and a magnifier draws as `fl`.  They stay in
+        // fallbacks answers first and a magnifier draws as `fl`. They stay in
         // the list — epaint ships `Ubuntu-Light` for `√` and friends — but only
         // once every configured face has had its turn.
         let defaults = FontDefinitions::default();
@@ -2363,7 +2363,7 @@ mod tests {
     #[test]
     fn every_face_of_a_collection_file_is_a_cache_hit_on_the_second_scan() {
         // A .ttc holds several faces behind one path, and they share one
-        // CachedFile.  Accumulating that per worker rather than serially would
+        // CachedFile. Accumulating that per worker rather than serially would
         // drop all but one worker's faces, and the only symptom would be that
         // they reparse on every launch.
         let cache_path = scratch_cache_path("collection_hits");
@@ -2392,7 +2392,7 @@ mod tests {
 
         // Not every face can be cached: one whose file cannot be stat'd never
         // reaches `fresh_files`, and one whose cmap emits a codepoint above
-        // U+10FFFF is rejected on the way back out of the cache.  Both are
+        // U+10FFFF is rejected on the way back out of the cache. Both are
         // properties of the font set, not of the accumulation.
         let cacheable = cold
             .iter()
@@ -2457,7 +2457,7 @@ mod tests {
         std::fs::remove_file(&cache_path).ok();
     }
 
-    /// Every glyph alacritree ships must be drawable from the baked face.  A
+    /// Every glyph alacritree ships must be drawable from the baked face. A
     /// cmap entry is not enough: a font can map a codepoint to a glyph with no
     /// outline, which paints as a blank box.
     #[test]
@@ -2507,7 +2507,7 @@ mod tests {
 
     /// A default icon is spelled at a plane 16 codepoint so no installed face
     /// can shadow it, which only works if the whole stack carries a `char`
-    /// past the BMP.  `glyph_id` is the call epaint makes, and it treats zero
+    /// past the BMP. `glyph_id` is the call epaint makes, and it treats zero
     /// as "this face cannot draw it", so a cmap that silently dropped the
     /// entry reads here exactly as it would on screen.
     #[test]
@@ -2525,7 +2525,7 @@ mod tests {
     }
 
     /// Every private glyph comes from an SVG carrying no font metrics at all,
-    /// so the build fits each to a capital M's box.  M is not in the baked
+    /// so the build fits each to a capital M's box. M is not in the baked
     /// face, so its cap height comes from the metrics the face carries over.
     /// Driving this from `PRIVATE_GLYPHS` rather than a list of its own keeps
     /// it from drifting against the set `build_symbols.py` actually fits.
@@ -2548,7 +2548,7 @@ mod tests {
     }
 
     /// Last position is the whole guarantee: an earlier face that already draws
-    /// a glyph must keep drawing it.  Front-splicing the baked face would
+    /// a glyph must keep drawing it. Front-splicing the baked face would
     /// override working chrome instead of filling gaps.
     #[test]
     fn the_symbol_face_lands_last_in_every_chrome_family() {
@@ -2625,7 +2625,7 @@ mod tests {
     }
 
     /// Appending cannot move a family's metrics, which are read from its first
-    /// font.  A future change that front-loads the face would silently alter
+    /// font. A future change that front-loads the face would silently alter
     /// line height for every chrome label.
     #[test]
     fn the_symbol_face_does_not_become_the_metrics_source() {
@@ -2636,7 +2636,7 @@ mod tests {
     }
 
     /// When no configured font resolves, the chrome families are aliased to
-    /// egui's bundled defaults.  That is precisely when a system is least likely
+    /// egui's bundled defaults. That is precisely when a system is least likely
     /// to have the glyphs, so the face has to reach this path too.
     #[test]
     fn the_unresolvable_font_path_still_gets_the_symbol_face() {
@@ -2771,7 +2771,7 @@ mod tests {
         assert!(compared > 0, "no system faces were parsed, so this proved nothing");
     }
 
-    /// Raw font units are in the hundreds; em fractions are not.  A face read
+    /// Raw font units are in the hundreds; em fractions are not. A face read
     /// without dividing by `units_per_em` passes every other test in this file
     /// and puts the underline several cells below the glyph.
     #[test]
@@ -2841,7 +2841,7 @@ mod tests {
     }
 
     /// A non-positive ascender passes the "is it zero" check but still flips
-    /// `px_per_em` downstream.  The rejection also has to feed the *default*
+    /// `px_per_em` downstream. The rejection also has to feed the *default*
     /// ascender into the strikeout-position fallback, not the rejected value.
     #[test]
     fn a_negative_ascender_falls_back_to_the_default() {
@@ -2862,7 +2862,7 @@ mod tests {
 }
 
 // Pure candidate-selection logic for the automatic fallback chain: Unicode
-// coverage sets and FcFontSort-style greedy trimming.  Platform-neutral so
+// coverage sets and FcFontSort-style greedy trimming. Platform-neutral so
 // the unit tests run on every platform, even though only the Windows chain
 // consumes it at runtime.
 #[cfg_attr(unix, allow(dead_code))]
@@ -2908,7 +2908,7 @@ mod coverage {
         ///
         /// Every cmap format but 2 walks ascending in ttf-parser, and a
         /// well-formed format 4/12/13 table does too, so this is the normal
-        /// path.  A walk that turns out not to be ascending is re-run
+        /// path. A walk that turns out not to be ascending is re-run
         /// through `from_codepoints`, which is why `walk` is `Fn`: `codepoints`
         /// has no early exit, so the first pass has to finish before the second
         /// can start.
@@ -2919,7 +2919,7 @@ mod coverage {
                 match ranges.last_mut() {
                     Some((_, end)) if cp.checked_sub(1) == Some(*end) => *end = cp,
                     // Equality counts: a repeat would otherwise push a range that
-                    // overlaps the one before it.  Rejecting `cp <= end` is also
+                    // overlaps the one before it. Rejecting `cp <= end` is also
                     // what keeps `end` the maximum seen so far, which is what
                     // makes this check total.
                     Some((_, end)) if cp <= *end => ascending = false,
@@ -3018,9 +3018,9 @@ mod coverage {
 
     /// A fallback face is mapped and parsed at startup and stays registered
     /// with egui for the life of the process, so one that covers a handful of
-    /// codepoints nothing will render is pure cost.  Weighing coverage against
+    /// codepoints nothing will render is pure cost. Weighing coverage against
     /// file size is what separates a 21 MiB CJK face carrying 58k codepoints
-    /// from a 35 MiB one carrying three.  Faces below `CHEAP_FACE_BYTES` skip
+    /// from a 35 MiB one carrying three. Faces below `CHEAP_FACE_BYTES` skip
     /// the test — at that size coverage alone is reason enough to keep them,
     /// and a small face with a few rare glyphs (powerline caps, a script's
     /// combining marks) is exactly what the chain exists to find.
@@ -3112,7 +3112,7 @@ mod coverage {
         fn trim_drops_faces_that_do_not_earn_their_size() {
             // A 35 MiB CJK face that contributes three codepoints the chain
             // lacks is not worth mapping and parsing; a face of the same size
-            // carrying tens of thousands of them is.  Small faces are cheap
+            // carrying tens of thousands of them is. Small faces are cheap
             // enough that coverage alone decides.
             let seed = Coverage::from_codepoints((0..128).collect());
             let candidates = vec![

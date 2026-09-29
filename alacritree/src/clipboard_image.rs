@@ -1,7 +1,7 @@
 //! Turning a clipboard bitmap into a file on disk that something else can open.
 //!
 //! Nothing here knows about the clipboard or about sessions: it takes pixels,
-//! and it returns a path.  That is what keeps it testable without a window.
+//! and it returns a path. That is what keeps it testable without a window.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
@@ -13,7 +13,7 @@ use alacritree_common::jobs;
 use arboard::ImageData;
 
 /// A clipboard owner can advertise any dimensions it likes, and encoding runs
-/// on the UI thread during a keystroke.  64 MP is far past any screenshot.
+/// on the UI thread during a keystroke. 64 MP is far past any screenshot.
 const MAX_PIXELS: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]
@@ -49,7 +49,7 @@ pub(crate) fn encode_png(image: &ImageData<'_>) -> Result<Vec<u8>, EncodeError> 
     Ok(out)
 }
 
-/// The file a set of PNG bytes belongs in.  Content-addressed, so pasting the
+/// The file a set of PNG bytes belongs in. Content-addressed, so pasting the
 /// same screenshot twice reuses one file, and the full 64-bit digest rather
 /// than the scratchpad's truncated one, since here a collision would paste the
 /// wrong image instead of merely colliding a label.
@@ -61,7 +61,7 @@ pub(crate) fn file_name(png: &[u8]) -> String {
 ///
 /// `owned` is true only for a directory alacritree owns, never for one the
 /// user named — a user's directory may hold files alacritree never wrote, and
-/// a filename pattern is no proof of ownership.  An owned directory gets the
+/// a filename pattern is no proof of ownership. An owned directory gets the
 /// tightened permissions of [`prepare_managed_dir`]; the resulting cap on file
 /// count is [`sweep`]'s job, not this function's.
 pub(crate) fn store(dir: &Path, png: &[u8], owned: bool) -> io::Result<PathBuf> {
@@ -77,14 +77,14 @@ pub(crate) fn store(dir: &Path, png: &[u8], owned: bool) -> io::Result<PathBuf> 
     Ok(path)
 }
 
-/// Trim the managed directory to its cap.  Separate from `store` because the
+/// Trim the managed directory to its cap. Separate from `store` because the
 /// stored path is pasted into the terminal the moment it exists, while the
 /// sweep is housekeeping nothing reads.
 pub(crate) fn sweep(dir: &Path, keep: usize, in_use: &Path, _blocking: &jobs::Blocking) {
     apply_cap(dir, keep, in_use);
 }
 
-/// Create and revalidate the directory that alacritree owns.  The open uses
+/// Create and revalidate the directory that alacritree owns. The open uses
 /// `O_NOFOLLOW` on Unix so a fixed-name symlink in a shared cache parent cannot
 /// redirect screenshots into an attacker-controlled location.
 #[cfg(unix)]
@@ -114,7 +114,7 @@ fn prepare_managed_dir(dir: &Path) -> io::Result<()> {
 }
 
 /// Create a new image or staging file without ever exposing its contents to
-/// other local users.  `create_new` also refuses pre-planted symlinks.
+/// other local users. `create_new` also refuses pre-planted symlinks.
 fn create_private_file(path: &Path) -> io::Result<File> {
     let mut options = OpenOptions::new();
     options.create_new(true).write(true);
@@ -157,7 +157,7 @@ fn open_existing_private(path: &Path) -> io::Result<File> {
 }
 
 /// Whether the destination already holds these bytes *and* its timestamp was
-/// refreshed.  Content addressing makes equal names strong evidence of equal
+/// refreshed. Content addressing makes equal names strong evidence of equal
 /// bytes, not proof, so the length is checked too; a link, a directory or a
 /// timestamp that would not move all mean "write it again".
 fn reusable(path: &Path, len: u64) -> bool {
@@ -214,7 +214,7 @@ fn write_atomically(dir: &Path, path: &Path, png: &[u8]) -> io::Result<()> {
 /// `rename` replaces a file but cannot replace a directory, so a directory
 /// squatting on a generated name would fail that image's every paste forever.
 ///
-/// Only an empty one is removed.  A populated directory is something this
+/// Only an empty one is removed. A populated directory is something this
 /// module did not create, and losing its contents to a name collision is a
 /// far worse outcome than the paste failing.
 fn clear_directory_at(path: &Path) {
@@ -233,7 +233,7 @@ fn clear_directory_at(path: &Path) {
 ///
 /// A sweep is queued at the moment its own `in_use` path is decided but runs
 /// later, off the UI thread — long enough for a second paste to land and
-/// reach the terminal first.  That second file is not this sweep's `in_use`,
+/// reach the terminal first. That second file is not this sweep's `in_use`,
 /// so by name alone it looks stale; excluding anything at least as new as
 /// `in_use` is what keeps a queued sweep from deleting a path that was
 /// already handed to the PTY after it was queued.
@@ -296,7 +296,7 @@ fn apply_cap(dir: &Path, keep: usize, in_use: &Path) {
     }
 }
 
-/// Only names this module produces are ever deleted.  The `.tmp` suffix a
+/// Only names this module produces are ever deleted. The `.tmp` suffix a
 /// half-finished write leaves behind fails this too, so a crashed process
 /// cannot have its leftovers swept by a later one — a trade for never
 /// deleting something a user put here.
@@ -340,7 +340,7 @@ mod tests {
         assert_eq!(&out[..info.buffer_size()], source.bytes.as_ref());
     }
 
-    /// A clipboard owner can advertise any dimensions it likes.  Reject before
+    /// A clipboard owner can advertise any dimensions it likes. Reject before
     /// allocating, because this runs on the UI thread during a keystroke.
     #[test]
     fn an_absurdly_large_image_is_rejected_before_allocating() {
@@ -502,7 +502,7 @@ mod tests {
         assert_eq!(fs::read_dir(tmp.path()).unwrap().count(), 1);
     }
 
-    /// Reuse must refresh the timestamp.  Without it a re-pasted old screenshot
+    /// Reuse must refresh the timestamp. Without it a re-pasted old screenshot
     /// keeps its original mtime, and the next sweep — by which time it is no
     /// longer the returned path and so no longer exempt — deletes a file the
     /// user pasted moments ago.
@@ -558,7 +558,7 @@ mod tests {
 
     /// A sweep captures `in_use` at submission time but runs later, off the
     /// UI thread — long enough for a second paste to land and reach the
-    /// terminal before the first paste's sweep executes.  A queued sweep must
+    /// terminal before the first paste's sweep executes. A queued sweep must
     /// never delete that second, newer file just because it isn't the
     /// specific path the sweep was queued with.
     #[test]
@@ -624,7 +624,7 @@ mod tests {
         assert_eq!(fs::read(&stored).unwrap(), b"payload");
     }
 
-    /// The limit of that replacement.  Whatever a populated directory on this
+    /// The limit of that replacement. Whatever a populated directory on this
     /// name is, it is not something this module wrote, and its contents are
     /// worth more than one paste succeeding.
     #[test]
@@ -679,7 +679,7 @@ mod tests {
             last = store(dir.path(), &[byte], true).expect("store");
             // The sweep exempts anything at least as new as the in-use file,
             // and four writes in a row do not cross a filesystem timestamp
-            // tick.  Left tied, the neighbours read as new as `last` and
+            // tick. Left tied, the neighbours read as new as `last` and
             // survive the cap, so stamp a strict order instead.
             age(&last, u64::from(4 - byte));
         }

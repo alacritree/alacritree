@@ -1,16 +1,16 @@
 //! Rasterize emoji from a font's colour tables.
 //!
-//! egui draws `glyf`/`CFF` outlines and nothing else.  Colour emoji fonts keep
+//! egui draws `glyf`/`CFF` outlines and nothing else. Colour emoji fonts keep
 //! their artwork in COLR, CBDT, sbix or SVG tables; the ones that also carry
 //! monochrome outlines (Segoe UI Emoji) come out as black-and-white silhouettes,
 //! and the ones that don't (Twemoji, Noto Color Emoji) come out as blank cells,
-//! because egui still claims every codepoint their cmap covers.  Upstream
+//! because egui still claims every codepoint their cmap covers. Upstream
 //! alacritty has no such gap — crossfont loads glyphs through FreeType with
 //! `FT_LOAD_COLOR` and uploads RGBA bitmaps — so this restores parity for the
 //! egui renderer.
 //!
 //! Characters are resolved against the same fallback chain, in the same order,
-//! that `fonts::install_terminal_fonts` handed to egui.  Resolving against a
+//! that `fonts::install_terminal_fonts` handed to egui. Resolving against a
 //! different order would rasterize from a font egui never considered, which is
 //! the sort of divergence that only shows up as one wrong-looking glyph months
 //! later.
@@ -46,11 +46,11 @@ pub(crate) struct ColorGlyphCache {
     /// The fallback chain in egui's own consultation order.
     chain: Vec<ChainFace>,
     /// Font files behind the chain, borrowed from the mappings `fonts` already
-    /// holds.  A `None` marks a file that would not map, so a broken font is
+    /// holds. A `None` marks a file that would not map, so a broken font is
     /// not retried on every cache miss.
     files: HashMap<PathBuf, Option<&'static [u8]>>,
-    /// Which chain entry, if any, draws this character in colour.  `None` means
-    /// egui's own glyph pipeline owns it.  The index is what a re-render after
+    /// Which chain entry, if any, draws this character in colour. `None` means
+    /// egui's own glyph pipeline owns it. The index is what a re-render after
     /// a budget eviction uses instead of walking the chain again.
     source: HashMap<char, Option<usize>>,
     entries: HashMap<char, CachedColorGlyph>,
@@ -87,7 +87,7 @@ impl ColorGlyphCache {
         }
     }
 
-    /// Get or rasterize the colour glyph for `c`.  `None` means no font in the
+    /// Get or rasterize the colour glyph for `c`. `None` means no font in the
     /// chain has colour artwork for it, and egui should paint it as usual.
     ///
     /// `cells` is the character's width in terminal cells, so a double-width
@@ -117,14 +117,14 @@ impl ColorGlyphCache {
             self.used.insert(c, now);
             return self.entries.get(&c);
         }
-        // Only the claiming face is considered.  Looking further down the chain
+        // Only the claiming face is considered. Looking further down the chain
         // would rasterize from a font egui had already passed over, so the two
         // renderers would disagree about which face owns the character.
         let index = match self.source.get(&c) {
-            // Known monochrome: egui's own glyph pipeline draws it.  The whole
+            // Known monochrome: egui's own glyph pipeline draws it. The whole
             // grid takes this path on every frame, so it costs one lookup.
             Some(None) => return None,
-            // Re-render after a budget eviction.  The chain is fixed at
+            // Re-render after a budget eviction. The chain is fixed at
             // construction, so the recorded index still names the same face.
             Some(Some(i)) => *i,
             None => match self.claiming_index(c) {
@@ -173,7 +173,7 @@ impl ColorGlyphCache {
         None
     }
 
-    /// The face egui resolves `c` to, colour or not.  Exists so the no-blank-cell
+    /// The face egui resolves `c` to, colour or not. Exists so the no-blank-cell
     /// invariant can be stated over the same face egui would have used.
     #[cfg(test)]
     fn resolve_claiming_face(&mut self, c: char) -> Option<ChainFace> {
@@ -181,7 +181,7 @@ impl ColorGlyphCache {
     }
 
     /// Rasterize `c` from `face`, scaled and centred into its `cells`-wide cell
-    /// box.  `None` when the face has no colour artwork for the character, which
+    /// box. `None` when the face has no colour artwork for the character, which
     /// is the signal to leave it to egui.
     fn render(
         &mut self,
@@ -194,7 +194,7 @@ impl ColorGlyphCache {
         let font = FontRef::from_index(data, face.face_index as usize)?;
         let glyph = font.charmap().map(c);
 
-        // Ask for the glyph at the cell's height.  Outline-backed colour glyphs
+        // Ask for the glyph at the cell's height. Outline-backed colour glyphs
         // (COLR) honour this exactly; bitmap strikes (CBDT/sbix) come back at
         // whatever fixed size the font ships, so both paths are rescaled below.
         let mut scaler = self.scale.builder(font).size(cell.1 as f32).hint(false).build();
@@ -239,7 +239,7 @@ impl ColorGlyphCache {
         Some(CachedColorGlyph { texture, left, top, width: width as i32, height: height as i32 })
     }
 
-    /// Drop the coldest glyphs until the cache fits its budget.  `keep` is the
+    /// Drop the coldest glyphs until the cache fits its budget. `keep` is the
     /// glyph just inserted; evicting it would leave the caller holding nothing.
     fn evict_to_budget(&mut self, keep: char) {
         while self.bytes > self.budget && self.entries.len() > 1 {
@@ -260,7 +260,7 @@ impl ColorGlyphCache {
     }
 }
 
-/// COLR first, then bitmap strikes.  `Source::Outline` is deliberately absent:
+/// COLR first, then bitmap strikes. `Source::Outline` is deliberately absent:
 /// a monochrome outline is exactly the case we want to hand back to egui.
 const COLOR_SOURCES: &[Source] =
     &[Source::ColorOutline(0), Source::ColorBitmap(StrikeWith::BestFit)];
@@ -281,7 +281,7 @@ fn load(files: &mut HashMap<PathBuf, Option<&'static [u8]>>, path: &Path) -> Opt
     })
 }
 
-/// Bilinear resample of an RGBA buffer.  Colour bitmap strikes arrive at the
+/// Bilinear resample of an RGBA buffer. Colour bitmap strikes arrive at the
 /// size the font shipped them (often 136px), which is far larger than a cell.
 fn scale_rgba(src: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> Vec<u8> {
     if (src_w, src_h) == (dst_w, dst_h) {
@@ -337,16 +337,16 @@ mod tests {
     }
 
     /// Build the real chain the app would install, with whichever colour emoji
-    /// fonts the machine actually has.  `None` when none carry emoji artwork the
+    /// fonts the machine actually has. `None` when none carry emoji artwork the
     /// renderer can rasterize — the one case these tests have nothing to say about.
     ///
     /// Renderability is decided by reading the claiming face's colour tables
     /// directly, never by asking the renderer under test: a guard that called
     /// `get` would skip silently the moment the renderer broke, which is exactly
-    /// when it needs to fail.  But `COLOR_SOURCES` only rasterizes bitmap strikes
+    /// when it needs to fail. But `COLOR_SOURCES` only rasterizes bitmap strikes
     /// (CBDT/sbix) and COLR *version 0* layers; it has no COLRv1 paint-graph or
     /// SVG path, so a face whose only artwork for the glyph is COLRv1 (what modern
-    /// Noto Color Emoji ships) or SVG produces nothing.  Counting those as
+    /// Noto Color Emoji ships) or SVG produces nothing. Counting those as
     /// renderable is what wedged CI on runners that carry a COLRv1 emoji font.
     ///
     /// Only the first face that claims U+1F600 is inspected, because that is the
@@ -381,7 +381,7 @@ mod tests {
     }
 
     /// The defect this module exists for: a face may not claim a codepoint it
-    /// cannot draw.  egui picks the first face in the chain whose cmap has the
+    /// cannot draw. egui picks the first face in the chain whose cmap has the
     /// character and never reconsiders, so if that face has neither an outline
     /// for it nor colour artwork, the cell paints blank.
     #[test]
@@ -559,7 +559,7 @@ mod tests {
         };
 
         // `chain_with_color_fonts` proves renderability for U+1F600 alone, so
-        // the second glyph is found rather than assumed.  A throwaway cache
+        // the second glyph is found rather than assumed. A throwaway cache
         // keeps the probe out of the cache under test.
         let mut probe = ColorGlyphCache::new(chain.clone(), 10);
         let renderable: Vec<char> = ['\u{1F600}', '\u{1F601}', '\u{2764}', '\u{1F44D}']

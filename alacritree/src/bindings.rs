@@ -103,7 +103,7 @@ pub enum Key {
     F20,
 }
 
-/// The modifiers a binding requires, or that a key press carried.  `command`
+/// The modifiers a binding requires, or that a key press carried. `command`
 /// is Super on macOS; off macOS the input side raises it with every Ctrl.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
 pub struct Modifiers {
@@ -122,7 +122,7 @@ impl Modifiers {
     pub const SHIFT: Self = Self { shift: true, ..Self::NONE };
 
     /// Alacritty semantics: `Control|Shift` does not fire on Ctrl alone, so alt
-    /// and shift match exactly.  Ctrl and command are only required when the
+    /// and shift match exactly. Ctrl and command are only required when the
     /// binding names them, because one Ctrl press can carry both; a binding
     /// naming neither refuses either.
     pub fn fires(self, required: Self) -> bool {
@@ -171,7 +171,7 @@ fn chars_as_string<S: serde::Serializer>(bytes: &[u8], serializer: S) -> Result<
 }
 
 /// A `Copy` stand-in for an action's identity, for logs that outlive the
-/// action itself.  The payloads are dropped: they are the user's keystrokes
+/// action itself. The payloads are dropped: they are the user's keystrokes
 /// and config text, and naming the action is what a timing log needs.
 #[derive(Clone, Copy)]
 pub enum ActionLabel {
@@ -266,7 +266,7 @@ pub enum NamedAction {
     AddProject(action::AddProject),
     ToggleSidebarFocus(action::ToggleSidebarFocus),
     CloseSession(action::CloseSession),
-    /// Close the session on screen once its child has exited.  Its default
+    /// Close the session on screen once its child has exited. Its default
     /// trigger is a bare `Enter`, which only a scope this narrow can afford.
     CloseExitedSession(action::CloseExitedSession),
     /// Open a new pane in the multiplexer and a session on it, in the focused
@@ -335,28 +335,28 @@ pub enum NamedAction {
     /// Narrow the projects sidebar to workspaces with a live session.
     ToggleSessionsFilter(action::ToggleSessionsFilter),
     /// Flip whether `ToggleSessionsFilter` also counts a listed detached
-    /// herdr agent as occupying a workspace.  Runtime-only, like
+    /// herdr agent as occupying a workspace. Runtime-only, like
     /// `ToggleSessionRows`: it flips a preference rather than a panel toggle,
     /// so it is not scoped to the sidebar owning focus.
     ToggleDetachedSessionsFilter(action::ToggleDetachedSessionsFilter),
     /// Narrow the projects sidebar to workspaces whose session wants attention.
     ToggleAttentionFilter(action::ToggleAttentionFilter),
-    /// PR-state filters.  One dimension: the active states union, and the
+    /// PR-state filters. One dimension: the active states union, and the
     /// result ANDs with the session and attention filters.
     TogglePrOpenFilter(action::TogglePrOpenFilter),
     TogglePrDraftFilter(action::TogglePrDraftFilter),
     TogglePrMergedFilter(action::TogglePrMergedFilter),
     TogglePrClosedFilter(action::TogglePrClosedFilter),
-    /// Drop every projects-sidebar toggle.  Reachable without knowing which are
+    /// Drop every projects-sidebar toggle. Reachable without knowing which are
     /// set, which `Esc` cannot offer a caller that has no view of the state.
     ClearProjectFilters(action::ClearProjectFilters),
-    /// Git sidebar change-kind filters.  The active kinds union.
+    /// Git sidebar change-kind filters. The active kinds union.
     ToggleModifiedFilter(action::ToggleModifiedFilter),
     ToggleDeletedFilter(action::ToggleDeletedFilter),
     ToggleUntrackedFilter(action::ToggleUntrackedFilter),
     ClearGitFilters(action::ClearGitFilters),
     /// Switch between a query confined by the active toggles and one evaluated
-    /// against every row.  Session-only; restarting returns to `[ui] search_scope`.
+    /// against every row. Session-only; restarting returns to `[ui] search_scope`.
     ToggleSearchScope(action::ToggleSearchScope),
     /// Re-query `gh` for every cached worktree.
     RefreshPrStatus(action::RefreshPrStatus),
@@ -402,7 +402,7 @@ impl NamedAction {
     }
 
     /// Sidebar-cursor actions whose meaning depends on the project panel
-    /// browsing rather than searching.  Narrower than `is_sidebar_scoped`: the
+    /// browsing rather than searching. Narrower than `is_sidebar_scoped`: the
     /// four cursor *moves* stay valid mid-query, because navigating filtered
     /// results is the point of filtering.
     pub fn requires_project_browsing(&self) -> bool {
@@ -416,7 +416,7 @@ impl NamedAction {
     }
 
     /// Valid only while the projects sidebar owns focus: the default triggers
-    /// are bare letters that belong to the PTY anywhere else.  No mode
+    /// are bare letters that belong to the PTY anywhere else. No mode
     /// component is needed — a letter typed into the search box never reaches
     /// the binding table, because its text is swallowed first.
     pub fn is_projects_filter_scoped(&self) -> bool {
@@ -433,7 +433,7 @@ impl NamedAction {
         )
     }
 
-    /// Valid only while the session on screen has exited.  The default trigger
+    /// Valid only while the session on screen has exited. The default trigger
     /// is a bare `Enter`, which belongs to the PTY in every live session, so
     /// dispatch must leave the press alone until the child that would have
     /// read it is gone.
@@ -678,16 +678,16 @@ impl From<NamedAction> for String {
     }
 }
 
-/// One `[[keyboard.bindings]]` entry.  A binding needs `key`, plus exactly one
+/// One `[[keyboard.bindings]]` entry. A binding needs `key`, plus exactly one
 /// of `chars`, `action` or `command` to say what pressing it does.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct RawBinding {
     /// The key, as alacritty spells it: a character (`"A"`), a named key
-    /// (`"F5"`, `"PageUp"`), or a scancode.  A key alacritree cannot map is
+    /// (`"F5"`, `"PageUp"`), or a scancode. A key alacritree cannot map is
     /// dropped with a warning.
     pub key: String,
     /// Modifiers held with the key, joined by `|`: `"Control"`, `"Shift"`,
-    /// `"Alt"`, `"Super"`.  Unset means no modifiers.
+    /// `"Alt"`, `"Super"`. Unset means no modifiers.
     #[serde(default)]
     pub mods: Option<String>,
     /// Terminal mode the binding applies in, e.g. `"Vi"` or `"~Search"`.
@@ -698,15 +698,15 @@ pub(crate) struct RawBinding {
     /// Bytes to write to the PTY, with the usual escapes (`\x1b`, `\u001b`).
     #[serde(default)]
     pub chars: Option<String>,
-    /// Named action to run, e.g. `"Paste"`, `"ToggleLeftSidebar"`.  The schema
+    /// Named action to run, e.g. `"Paste"`, `"ToggleLeftSidebar"`. The schema
     /// suggests every name alacritree implements without rejecting the rest:
     /// the shared `alacritty.toml` legitimately carries actions only the real
     /// alacritty implements, and alacritree ignores those rather than
-    /// rejecting them.  `docs/keyboard-shortcuts.md` says what each one does.
+    /// rejecting them. `docs/keyboard-shortcuts.md` says what each one does.
     #[serde(default)]
     #[schemars(schema_with = "action_schema")]
     pub action: Option<String>,
-    /// External program to run.  alacritree parses it so the binding still
+    /// External program to run. alacritree parses it so the binding still
     /// displaces alacritty's default for that key, but never runs it.
     #[serde(default)]
     #[schemars(with = "Option<BindingCommand>")]
@@ -715,7 +715,7 @@ pub(crate) struct RawBinding {
 
 // Exists only to describe `RawBinding::command`, which is read as an opaque
 // `toml::Value` because alacritree needs no more than the fact that the key
-// was claimed.  Never constructed.
+// was claimed. Never constructed.
 /// An external program to run, as either a bare path or a table with
 /// arguments.
 #[derive(JsonSchema)]
@@ -728,7 +728,7 @@ enum BindingCommand {
     Detailed {
         /// Path to the program.
         program: String,
-        /// Arguments passed to the program.  Optional.
+        /// Arguments passed to the program. Optional.
         #[schemars(default)]
         args: Vec<String>,
     },
@@ -771,7 +771,7 @@ pub(crate) fn parse_bindings(raw: Vec<RawBinding>) -> Vec<KeyBinding> {
     // Alacritty replaces a default binding when a user binding has the same
     // trigger — key + mods (`Binding::triggers_match` in
     // `alacritty/src/config/bindings.rs`; modes don't apply here because
-    // mode-bindings are dropped above).  Without the filter, a rebound key
+    // mode-bindings are dropped above). Without the filter, a rebound key
     // would run both the user action and the default one, and a key freed
     // via `ReceiveChar` would still trigger the default.
     let user_triggers: Vec<_> = out.iter().map(|b| (b.key, b.mods)).collect();
@@ -781,7 +781,7 @@ pub(crate) fn parse_bindings(raw: Vec<RawBinding>) -> Vec<KeyBinding> {
     out
 }
 
-/// Alacritty's hardcoded default key bindings.  Alacritty merges these with
+/// Alacritty's hardcoded default key bindings. Alacritty merges these with
 /// the user's TOML at runtime; without them, configs that rely on bindings
 /// like `Ctrl+Shift+V → Paste` (never written explicitly because they're
 /// "always there" in alacritty) silently do nothing.
@@ -860,7 +860,7 @@ fn default_bindings() -> Vec<KeyBinding> {
     ];
 
     // App-level (alacritree) shortcuts: sidebars, session/workspace cycling,
-    // project management.  Each can be rebound, or freed for the PTY with a
+    // project management. Each can be rebound, or freed for the PTY with a
     // user binding on the same key+mods (`ReceiveChar` forwards the key,
     // `None` swallows it).
     b.extend([
@@ -1202,7 +1202,7 @@ fn parse_key(name: &str) -> Option<Key> {
         // egui-winit collapses numpad keys into their standard counterparts
         // (`KeyCode::NumpadEnter` → `egui::Key::Enter`, NumpadAdd → the plus
         // key, ...), so a numpad binding can't be told apart from the main
-        // key.  Aliasing would silently fire it on the standard key — drop
+        // key. Aliasing would silently fire it on the standard key — drop
         // the binding instead.
         log::warn!("ignoring {n} binding: numpad keys cannot be told apart from the main keys");
         return None;
@@ -1306,7 +1306,7 @@ fn char_to_key(c: char) -> Option<Key> {
     })
 }
 
-/// Winit key names that egui doesn't model.  Default alacritty configs include
+/// Winit key names that egui doesn't model. Default alacritty configs include
 /// a handful of these, so swallow them silently rather than logging noise.
 fn is_silent_unsupported_key(name: &str) -> bool {
     let n = name.trim();
@@ -1378,10 +1378,10 @@ fn parse_mods(s: &str) -> Option<Modifiers> {
         }
     }
     // Off macOS there is no Super modifier to match on: egui carries no such
-    // field, and egui-winit raises `command` on every Ctrl press.  A Super
+    // field, and egui-winit raises `command` on every Ctrl press. A Super
     // chord could therefore only ever fire on the Ctrl chord instead — and for
     // the clipboard bindings a shared alacritty.toml carries (`Super+C ->
-    // Copy`), that means eating Ctrl+C.  Drop it rather than steal the
+    // Copy`), that means eating Ctrl+C. Drop it rather than steal the
     // interrupt.
     #[cfg(not(target_os = "macos"))]
     if m.command {
@@ -1398,7 +1398,7 @@ fn action_names() -> Vec<String> {
 }
 
 /// The schema for a binding's `action`: every name alacritree implements as an
-/// `enum`, beside an open string branch.  The `enum` alone would be wrong —
+/// `enum`, beside an open string branch. The `enum` alone would be wrong —
 /// the shared `alacritty.toml` legitimately carries actions only the real
 /// alacritty implements, which alacritree ignores rather than rejects — so an
 /// editor completes from the names while every other value still validates.
@@ -1524,7 +1524,7 @@ mod tests {
     }
 
     /// A shared alacritty.toml commonly carries macOS clipboard bindings like
-    /// `Super+C -> Copy`.  egui has no Super modifier and egui-winit raises
+    /// `Super+C -> Copy`. egui has no Super modifier and egui-winit raises
     /// `command` on every Ctrl press, so honoring that binding here would let
     /// it fire on Ctrl+C and swallow the interrupt every terminal app needs.
     #[test]
@@ -1568,7 +1568,7 @@ mod tests {
     }
 
     /// Modern alacritty configs name keys after winit's `NamedKey`
-    /// ("ArrowUp"); the legacy alacritty names ("Up") are aliases.  Both
+    /// ("ArrowUp"); the legacy alacritty names ("Up") are aliases. Both
     /// spellings must keep their bindings.
     #[test]
     fn winit_named_arrow_keys_parse() {

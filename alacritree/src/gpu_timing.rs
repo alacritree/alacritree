@@ -1,18 +1,18 @@
 //! What the grid's paint callback costs on the GPU.
 //!
 //! Every other timer in this crate measures the producer: capture, the record
-//! write, the upload staged in memory.  None of them reach past
+//! write, the upload staged in memory. None of them reach past
 //! `GlResources::draw`, because nothing outside a live paint callback holds a
 //! `glow::Context`, so the consumer half of a frame has never had a number
-//! against it.  A ranking built only on producer microseconds is a ranking of
+//! against it. A ranking built only on producer microseconds is a ranking of
 //! half the frame.
 //!
 //! `GL_TIME_ELAPSED` measures the GPU executing a range of commands, which is
 //! not the wall time of submitting them: a driver that validates state on the
-//! client spends its frame somewhere the query cannot see.  Both are reported
+//! client spends its frame somewhere the query cannot see. Both are reported
 //! for that reason.
 //!
-//! Results come back a few frames late.  Asking for a query on the frame that
+//! Results come back a few frames late. Asking for a query on the frame that
 //! issued it blocks until the GPU catches up, which would make the instrument
 //! the slowest thing in the frame it is measuring.
 
@@ -23,7 +23,7 @@ use eframe::glow::{self, HasContext};
 /// The command ranges timed separately, in the order the callback issues them.
 const STAGES: [&str; 4] = ["upload", "backgrounds", "glyphs", "decorations"];
 
-/// Frames of queries in flight.  A slot is read on the frame that reuses it,
+/// Frames of queries in flight. A slot is read on the frame that reuses it,
 /// by which point its work is long retired.
 const DEPTH: usize = 3;
 
@@ -32,16 +32,16 @@ const REPORT_EVERY: usize = 240;
 
 pub(crate) struct GpuTimers {
     queries: [[glow::Query; STAGES.len()]; DEPTH],
-    /// Which queries a slot actually issued.  A frame that skipped the
+    /// Which queries a slot actually issued. A frame that skipped the
     /// decoration pass runs three stages, not four, so this cannot be one flag
     /// per slot.
     issued: [[bool; STAGES.len()]; DEPTH],
     slot: usize,
-    /// One bracket around everything the callback issues.  The stages still do
+    /// One bracket around everything the callback issues. The stages still do
     /// not add up to it: the vertex-array binds between them belong to no
     /// stage, and a bracket that ends at bottom-of-pipe charges its stage for a
     /// drain the next stage would otherwise have overlapped, which pushes the
-    /// sum the other way.  Only a span measured on its own says by how much.
+    /// sum the other way. Only a span measured on its own says by how much.
     /// `GL_TIME_ELAPSED` cannot nest, so this alternates with the per-stage
     /// queries frame by frame rather than wrapping them, and one window reports
     /// both.
@@ -52,12 +52,12 @@ pub(crate) struct GpuTimers {
     whole_frame: bool,
     gpu: [Vec<f64>; STAGES.len()],
     /// Every stage of one frame added up, for the frames that got all their
-    /// answers back.  A per-stage median cannot be summed into this: the
+    /// answers back. A per-stage median cannot be summed into this: the
     /// medians come from different frames.
     total: Vec<f64>,
     /// Wall time inside the callback, which no query can see.
     submit: Vec<f64>,
-    /// Frames this window that skipped the decoration pass.  Without it the
+    /// Frames this window that skipped the decoration pass. Without it the
     /// report cannot tell a gate that fired on every frame from one that never
     /// fired: the stage median describes only the frames that drew.
     skipped: usize,
@@ -67,7 +67,7 @@ pub(crate) struct GpuTimers {
 }
 
 impl GpuTimers {
-    /// `None` on a context that cannot time itself.  The grid runs on anything
+    /// `None` on a context that cannot time itself. The grid runs on anything
     /// from GL 3 up and timer queries arrive in 3.3, so this is a real case
     /// rather than a defensive one.
     pub(crate) fn new(gl: &glow::Context) -> Option<Self> {
@@ -139,7 +139,7 @@ impl GpuTimers {
         }
         // A frame still waiting on a query it issued has no total worth
         // keeping: the sum of the rest would read as a cheaper frame rather
-        // than an unfinished one.  A stage the callback never issued is a
+        // than an unfinished one. A stage the callback never issued is a
         // different case -- a gated decoration pass leaves a three-stage frame
         // that is complete as drawn, and its total counts.
         if ran && complete {
@@ -211,7 +211,7 @@ impl GpuTimers {
             0 => line.push_str("  total -"),
             n => line.push_str(&format!("  total {:.0}us/{n}", median(&mut self.total))),
         }
-        // Read against `total`, which is the stages added up.  What is left is
+        // Read against `total`, which is the stages added up. What is left is
         // the binds between stages plus whatever a per-stage bracket charges
         // its stage for beyond the work inside it.
         match self.frame.len() {

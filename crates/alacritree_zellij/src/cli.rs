@@ -2,7 +2,7 @@
 //!
 //! Everything goes through zellij's CLI, which reaches a session's server
 //! over its socket, so a missing binary or no running session is a quiet
-//! empty listing.  This is the only file that spawns zellij.
+//! empty listing. This is the only file that spawns zellij.
 
 use std::io::{self, Read};
 use std::process::{Command, Output, Stdio};
@@ -14,7 +14,7 @@ use alacritree_multiplexer::{CreatedPane, Pane, Side};
 
 use super::listing;
 
-/// How long one zellij call may take before it counts as no answer.  Each
+/// How long one zellij call may take before it counts as no answer. Each
 /// call is a local socket round trip; this covers a cold `wsl.exe` start and
 /// still keeps a wedged server from holding a pool worker.
 const CALL_TIMEOUT: Duration = Duration::from_secs(5);
@@ -43,7 +43,7 @@ impl SideListing {
     }
 }
 
-/// Why a zellij call brought back nothing to read.  Every variant but
+/// Why a zellij call brought back nothing to read. Every variant but
 /// [`NoAnswer`](CallError::NoAnswer) says no zellij ran on the side, or the
 /// one there would not list.
 #[derive(Debug, thiserror::Error)]
@@ -98,8 +98,8 @@ fn run(program: &str, side: &Side, args: &[&str]) -> Result<Output, CallError> {
     run_child(command, CALL_TIMEOUT)
 }
 
-/// Runs `command` to completion within `limit`, killing it past that.  The
-/// bound comes from this side because `Command::output` has none.  On a WSL
+/// Runs `command` to completion within `limit`, killing it past that. The
+/// bound comes from this side because `Command::output` has none. On a WSL
 /// side the child is `wsl.exe`, so a zellij already started inside the
 /// distro runs on.
 #[allow(clippy::disallowed_methods)] // Every caller is a pool job.
@@ -151,7 +151,7 @@ fn refusal(output: &Output) -> String {
     said.trim().to_string()
 }
 
-/// The running sessions in what `zellij list-sessions` answered.  zellij
+/// The running sessions in what `zellij list-sessions` answered. zellij
 /// exits non-zero when it has no session to list, which is an answer; any
 /// other failure is a shell that found no zellij.
 fn sessions(side: &Side, succeeded: bool, said: &str) -> Result<Vec<String>, CallError> {
@@ -161,7 +161,7 @@ fn sessions(side: &Side, succeeded: bool, said: &str) -> Result<Vec<String>, Cal
     Ok(listing::live_sessions(said))
 }
 
-/// Every running session on `side` and the terminal panes in each.  `Err`
+/// Every running session on `side` and the terminal panes in each. `Err`
 /// means no zellij answered on this side at all.
 pub fn list_side(program: &str, side: &Side) -> Result<SideListing, CallError> {
     match side {
@@ -192,10 +192,10 @@ fn list_natively(program: &str, side: &Side) -> Result<SideListing, CallError> {
 }
 
 /// Lists a distro's sessions and the panes of each in one run, so a poll
-/// costs one round trip.  `$1` is zellij, looked up through the user's login
-/// shell when it is a bare name.  Prints the listing's exit status and what
+/// costs one round trip. `$1` is zellij, looked up through the user's login
+/// shell when it is a bare name. Prints the listing's exit status and what
 /// it said, then a section per live session: its name on the first line and
-/// its panes after.  Each zellij call is bounded, since the resident helper
+/// its panes after. Each zellij call is bounded, since the resident helper
 /// cannot stop a job it started, and a wedged server would otherwise keep
 /// one alive per poll.
 const LIST_SCRIPT: &str = r#"z=$1
@@ -217,7 +217,7 @@ done
 const TIMED_OUT: &str = "124";
 
 /// Runs [`LIST_SCRIPT`] on the distro's resident helper, or as a one-shot
-/// `wsl.exe` when the helper is not up.  A bare name the helper's hello
+/// `wsl.exe` when the helper is not up. A bare name the helper's hello
 /// found is passed as its path, sparing the script a login shell per poll.
 fn list_in_wsl(program: &str, distro: &str, side: &Side) -> Result<SideListing, CallError> {
     let sampled_at = Instant::now();
@@ -263,7 +263,7 @@ fn read_listing(
     Ok(SideListing { side: side.clone(), sessions, read, panes, sampled_at })
 }
 
-/// Brings `pane_id` to the front of `session`, switching to its tab.  zellij
+/// Brings `pane_id` to the front of `session`, switching to its tab. zellij
 /// applies a CLI focus to the client that last typed, or to the session's
 /// own default view when no client is attached.
 pub fn focus_pane(
@@ -283,7 +283,7 @@ pub fn focus_pane(
     }
 }
 
-/// The `zellij` arguments that open a pane in `session`.  zellij drops
+/// The `zellij` arguments that open a pane in `session`. zellij drops
 /// `--cwd` from a pane given no command, so a directory comes with the
 /// user's own shell named explicitly.
 fn new_pane_args(session: &str, cwd: Option<&str>, focus: bool) -> Vec<String> {

@@ -188,10 +188,10 @@ fn create_error(error: VcsError) -> WorktreeError {
     }
 }
 
-/// Worktrees live under `<base>/<project>-<hash>/<branch>`.  `base` defaults
+/// Worktrees live under `<base>/<project>-<hash>/<branch>`. `base` defaults
 /// to `~/.alacritree/worktrees` so worktrees don't clutter the repo's parent
 /// directory and stay grouped per app; a configured `workspace.worktree_dir`
-/// relocates them.  The path hash disambiguates same-named repos in different
+/// relocates them. The path hash disambiguates same-named repos in different
 /// locations.
 fn pick_worktree_path(
     repo: &Path,
@@ -213,10 +213,10 @@ fn pick_worktree_path(
     Ok(candidate)
 }
 
-/// Worktrees live under `<base>/<project>-<hash>/`.  `base` is the configured
+/// Worktrees live under `<base>/<project>-<hash>/`. `base` is the configured
 /// `[workspace]` override when set; otherwise `<home>/.alacritree/worktrees`,
 /// using the *distro's* home for WSL repos so the worktree stays on the Linux
-/// filesystem next to its repo instead of crossing onto 9P-mounted NTFS.  The
+/// filesystem next to its repo instead of crossing onto 9P-mounted NTFS. The
 /// path hash disambiguates same-named repos in different locations.
 fn project_worktree_dir(
     repo: &Path,
@@ -503,7 +503,7 @@ mod tests {
         assert!(!branch_exists(&repo, "feature"));
     }
 
-    /// `create` must stop between steps when its handle is gone.  Killing a
+    /// `create` must stop between steps when its handle is gone. Killing a
     /// registered child only covers the steps that have one; the local steps
     /// would otherwise run to completion for a worktree nobody is waiting for.
     #[test]
@@ -520,10 +520,10 @@ mod tests {
         let (started_tx, started_rx) = mpsc::channel();
         let (gate_tx, gate_rx) = mpsc::channel::<()>();
         let job = jobs::pool().spawn(jobs::Priority::Interactive, move |blocking| {
-            // Both halves of this handshake are load-bearing.  Without the
+            // Both halves of this handshake are load-bearing. Without the
             // started signal, a flag set while the task is still queued hits the
             // pre-start check, the task is skipped, `tx` drops unsent, and the
-            // assertion below reports a disconnect.  Without the gate, the task
+            // assertion below reports a disconnect. Without the gate, the task
             // can race past the first bail before the flag lands and fail on the
             // missing remote instead.
             let _ = started_tx.send(());

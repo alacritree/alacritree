@@ -21,7 +21,7 @@ pub(crate) enum ShellDecision {
 }
 
 /// Precedence: project override, then WSL location, then the default
-/// profile, then the config shell.  A stale override (distro unregistered,
+/// profile, then the config shell. A stale override (distro unregistered,
 /// profile removed from config) warns and continues down the chain rather
 /// than failing the spawn.
 pub(crate) fn shell_decision(

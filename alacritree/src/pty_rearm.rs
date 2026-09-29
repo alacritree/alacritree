@@ -3,33 +3,33 @@
 //!
 //! Windows has no readiness to report for a console pipe, so the reader
 //! emulates it: a completion packet reaches the poller through the waker
-//! `piper` holds for its pipe.  `piper` installs that waker only when a drain
-//! comes up empty, which is the ordinary contract — poll until pending.  The
+//! `piper` holds for its pipe. `piper` installs that waker only when a drain
+//! comes up empty, which is the ordinary contract — poll until pending. The
 //! reader takes `PollMode::Level` and then never posts a packet of its own
 //! after a drain returns data, so a drain that leaves bytes behind ends with
-//! the pipe holding data and nothing able to announce it.  The loop sleeps
+//! the pipe holding data and nothing able to announce it. The loop sleeps
 //! until something unrelated arrives — a keystroke, a resize, the child
 //! exiting — which is why a pane streaming megabytes only advances while the
 //! user types.
 //!
-//! Wrapping the reader posts that packet.  Two things have to hold, and the
+//! Wrapping the reader posts that packet. Two things have to hold, and the
 //! second is the one that bites.
 //!
 //! A visit must not post more packets than it consumes, or the queue doubles
 //! every round until a wait returns nothing but stale packets — see `HANDBACK`.
 //!
 //! And a burst must end with a visit that posts nothing, or the queue never
-//! returns to empty.  Posting one for one holds the depth steady rather than
+//! returns to empty. Posting one for one holds the depth steady rather than
 //! draining it, so whatever depth a burst once reached it keeps, and the
 //! writable packet carrying a Ctrl-C sits on the tail behind all of it while
-//! the child keeps running.  The chain ends where `piper` takes the waker back,
+//! the child keeps running. The chain ends where `piper` takes the waker back,
 //! which is the read that comes up empty — see `DRAIN_AHEAD`.
 //!
 //! A visit that cannot reach the terminal lock reads again without parsing.
 //! Those reads consume no packet, so announcing on each of them posts a parse
-//! buffer's worth of hand-backs for the one packet the visit took.  Painting
+//! buffer's worth of hand-backs for the one packet the visit took. Painting
 //! the grid is what holds that lock, so under load this is the ordinary case
-//! rather than a rare one.  The loop offers its whole parse buffer at the top
+//! rather than a rare one. The loop offers its whole parse buffer at the top
 //! of a visit and what is left of it on every read after — see `VisitBudget`.
 
 use std::io::{self, Read};
@@ -47,16 +47,16 @@ use polling::{Event, PollMode, Poller};
 ///
 /// The read loop reserves the terminal for as long as it runs and stops once
 /// it has parsed `MAX_LOCKED_READ`, but it checks that cap only after parsing
-/// whatever the last read returned.  A read carrying the whole cap therefore
+/// whatever the last read returned. A read carrying the whole cap therefore
 /// ends the visit by itself, which is what holds an uncontended visit to one
-/// announcement.  `take` fills the whole cap even across a refill for the same
+/// announcement. `take` fills the whole cap even across a refill for the same
 /// reason: a short hand-back leaves the visit under the cap, so it reads once
 /// more and announces once more.
 ///
-/// Handing back less does not bound the parse — the cap already does that.  It
+/// Handing back less does not bound the parse — the cap already does that. It
 /// costs the visit a second read, and two packets per visit buy two visits,
 /// which post four, and the backlog doubles until every wait returns a thousand
-/// stale packets.  The loop drains the channel carrying keystrokes once per
+/// stale packets. The loop drains the channel carrying keystrokes once per
 /// wait, and the writable packet that finally carries a Ctrl-C to the child
 /// goes on the tail of that queue, so it waits behind the whole backlog.
 ///
@@ -72,17 +72,17 @@ const PIPE_CAPACITY: usize = READ_BUFFER_SIZE;
 
 /// A backstop on one refill, not a target.
 ///
-/// This has to sit above the ring.  A refill that stops before the ring runs
+/// This has to sit above the ring. A refill that stops before the ring runs
 /// dry never asked `piper` for a byte it could not supply, so `piper` takes no
-/// waker and only this side can announce what is left.  Every visit then
+/// waker and only this side can announce what is left. Every visit then
 /// announces: one packet in, one packet out, and whatever depth the poller's
-/// queue once reached it holds forever.  The writable packet carrying a Ctrl-C
+/// queue once reached it holds forever. The writable packet carrying a Ctrl-C
 /// is posted on the tail of that queue, so it waits behind all of it while the
 /// child keeps running.
 ///
-/// Reaching the empty read is what ends the chain.  The visit that empties the
+/// Reaching the empty read is what ends the chain. The visit that empties the
 /// staging goes quiet, the queue drains to nothing, and `piper` announces the
-/// next byte.  Set below the ring, that never happens under load.
+/// next byte. Set below the ring, that never happens under load.
 ///
 /// So the cap is only here to stop a filler thread that somehow outran a memcpy
 /// from growing the staging without bound.
@@ -106,14 +106,14 @@ struct Staging {
     filled: usize,
     taken: usize,
     /// Whether the last refill ended on a read that returned nothing, which is
-    /// what `UnblockedReader` reports once `piper` has taken the waker.  A
+    /// what `UnblockedReader` reports once `piper` has taken the waker. A
     /// refill that stopped at `DRAIN_AHEAD` instead never asked for a byte
     /// `piper` could not supply, so no waker was installed and nothing but this
     /// side can announce what is left in the ring.
     ///
-    /// The converse does not quite hold.  `piper` drops the waker on a
+    /// The converse does not quite hold. `piper` drops the waker on a
     /// non-empty ring and then, about once in a hundred drains, wakes it and
-    /// reports nothing anyway so a fast reader cannot starve the writer.  That
+    /// reports nothing anyway so a fast reader cannot starve the writer. That
     /// is indistinguishable from an empty ring here, and it has already queued
     /// a packet — so a refill it interrupts mid-staging leaves this side
     /// announcing on top of it, one extra packet in the queue until some visit
@@ -195,12 +195,12 @@ impl Staging {
 ///
 /// A visit starts with the whole parse buffer and reads `buf[unprocessed..]`
 /// after that, so an offer narrower than the widest yet seen is the loop going
-/// round again on a lock it could not take.  Calibrating on the widest offer
+/// round again on a lock it could not take. Calibrating on the widest offer
 /// rather than on a constant keeps this from mirroring a buffer size the read
 /// loop owns.
 ///
 /// The count is per visit rather than per opening read because the read that
-/// has something to announce need not be the first.  An opening read that
+/// has something to announce need not be the first. An opening read that
 /// finds the pipe nearly empty leaves the waker with `piper` and says nothing;
 /// a burst landing before the next read fills the staging to `DRAIN_AHEAD`,
 /// where `piper` holds no waker and this side is all that can speak.
@@ -212,7 +212,7 @@ struct VisitBudget {
 
 impl VisitBudget {
     /// Whether a read offered this much room still has its visit's
-    /// announcement to give.  A read that says nothing keeps it for the next.
+    /// announcement to give. A read that says nothing keeps it for the next.
     fn may_announce(&mut self, offered: usize) -> bool {
         if offered >= self.widest {
             self.widest = offered;
@@ -351,7 +351,7 @@ mod tests {
     }
 
     /// A refill built out of short reads does not land on a multiple of the
-    /// visit cap, so somewhere in it a hand-back runs out mid-visit.  Stopping
+    /// visit cap, so somewhere in it a hand-back runs out mid-visit. Stopping
     /// there leaves the visit under the cap, so it reads again and announces
     /// again: one visit, two packets, and the backlog grows every refill.
     /// Crossing into the next refill instead keeps the visit to one read.
@@ -390,7 +390,7 @@ mod tests {
     }
 
     /// The read with something to announce need not be the one that opened the
-    /// visit.  An opening read that finds the pipe nearly empty leaves the
+    /// visit. An opening read that finds the pipe nearly empty leaves the
     /// waker with `piper` and says nothing; a burst landing before the next
     /// read fills the staging to `DRAIN_AHEAD`, where `piper` holds no waker
     /// and this side is all that can speak for what is staged.
@@ -410,7 +410,7 @@ mod tests {
 
     /// The read loop parses what a read returned before re-checking its own
     /// `MAX_LOCKED_READ` cap, so a take carrying the cap ends the visit by
-    /// itself.  A shorter one costs the visit a second take, and every take
+    /// itself. A shorter one costs the visit a second take, and every take
     /// that leaves bytes behind announces the pipe again — the packets one
     /// visit posts are the visits the next wait runs, so the backlog doubles.
     #[test]
@@ -425,9 +425,9 @@ mod tests {
     }
 
     /// The whole ring arriving at once is the ordinary case under load, not an
-    /// extreme.  A refill has to get through it and reach the read that comes
+    /// extreme. A refill has to get through it and reach the read that comes
     /// up empty, because that is where `piper` takes the waker back and the
-    /// chain of announcements ends.  A cap at or below the ring stops the
+    /// chain of announcements ends. A cap at or below the ring stops the
     /// refill first, every visit announces, and the poller's queue never
     /// returns to empty — which is what leaves a Ctrl-C waiting behind it.
     #[test]
@@ -457,7 +457,7 @@ mod tests {
     }
 
     /// Emptying the pipe leaves `piper` holding the waker, and that is what
-    /// announces the next byte.  Announcing here as well queues a packet the
+    /// announces the next byte. Announcing here as well queues a packet the
     /// loop wakes for and finds nothing behind.
     #[test]
     fn a_drained_pipe_announces_nothing() {
@@ -470,7 +470,7 @@ mod tests {
 
     /// A refill that stopped at `DRAIN_AHEAD` never asked `piper` for a byte it
     /// could not supply, so `piper` holds no waker and the ring may still be
-    /// full.  Handing back the last staged byte has to announce anyway: being
+    /// full. Handing back the last staged byte has to announce anyway: being
     /// wrong costs one wakeup that finds nothing, and staying quiet costs a
     /// pane that stops until the user types.
     #[test]
@@ -488,7 +488,7 @@ mod tests {
     }
 
     /// Every visit takes its cap and announces the remainder once, until the
-    /// drain runs out.  Anything above one packet per visit compounds.
+    /// drain runs out. Anything above one packet per visit compounds.
     #[test]
     fn a_drain_announces_once_per_visit() {
         let staged = 4 * MAX_LOCKED_READ + 100;

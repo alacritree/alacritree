@@ -2,12 +2,12 @@
 //!
 //! Bridges MCP tool calls to a running alacritree instance through the IPC
 //! socket (see `ipc/protocol.rs`), so an LLM can inspect projects/worktrees, drive
-//! terminal sessions, and read their output.  Register it with e.g.
-//! `claude mcp add alacritree -- alacritree mcp`.  An MCP client launches this
+//! terminal sessions, and read their output. Register it with e.g.
+//! `claude mcp add alacritree -- alacritree mcp`. An MCP client launches this
 //! outside any session, so it usually has no `ALACRITREE_SOCKET` to inherit and
 //! finds the running instance by scanning the socket directory.
 //!
-//! The MCP stdio transport is newline-delimited JSON-RPC 2.0.  The handful
+//! The MCP stdio transport is newline-delimited JSON-RPC 2.0. The handful
 //! of methods a tools-only server needs is small enough that speaking the
 //! protocol directly beats pulling an SDK (and its async runtime) into a
 //! crate that is otherwise fully synchronous.
@@ -407,7 +407,7 @@ mod tests {
     }
 
     /// A tool call becomes an `IpcRequest` by using the tool's name as the
-    /// request's serde tag.  Nothing in the type system ties the two together,
+    /// request's serde tag. Nothing in the type system ties the two together,
     /// so a rename on either side fails at runtime, in the model's face.
     #[test]
     fn every_tool_name_is_an_ipc_request_tag() {
@@ -427,7 +427,7 @@ mod tests {
     }
 
     /// `tag_of` is the tests' own opinion of the tags; serde's is the one that
-    /// ships.  If they ever disagree the two tests above are checking a fiction.
+    /// ships. If they ever disagree the two tests above are checking a fiction.
     #[test]
     fn serde_agrees_with_the_expected_tags() {
         for request in every_request() {

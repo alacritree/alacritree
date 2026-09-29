@@ -28,7 +28,7 @@ struct Glide {
     corners: [Corner; 4],
     /// The cell every corner is heading for.
     to: CellPos,
-    /// Scrollback position the stored cells were recorded against.  Scrolling
+    /// Scrollback position the stored cells were recorded against. Scrolling
     /// renumbers every row at once, and sliding the cursor along with a jump
     /// the whole screen made is not an animation of anything.
     display_offset: i32,
@@ -40,13 +40,13 @@ struct Corner {
     to: CellPos,
     at: CellPos,
     started: Instant,
-    /// This corner's share of the configured glide.  Leading corners get less
+    /// This corner's share of the configured glide. Leading corners get less
     /// than the whole and trailing ones more, which is the entire stretch.
     duration: Duration,
 }
 
 impl Animation {
-    /// The cursor's corners for this frame.  `target` is the cell the terminal
+    /// The cursor's corners for this frame. `target` is the cell the terminal
     /// has it in, or `None` while it is hidden or scrolled out of view, which
     /// also clears the glide so its next appearance starts where it appears.
     pub(crate) fn place(
@@ -77,7 +77,7 @@ impl Animation {
         Some(glide.advance(now))
     }
 
-    /// Whether every corner has reached its cell.  A frame that says no has to
+    /// Whether every corner has reached its cell. A frame that says no has to
     /// ask for another one: nothing else wakes egui while the cursor moves on
     /// its own.
     pub(crate) fn settled(&self) -> bool {
@@ -85,7 +85,7 @@ impl Animation {
     }
 }
 
-/// A point inside the cursor's quad, by its fractions across and down.  The
+/// A point inside the cursor's quad, by its fractions across and down. The
 /// quad skews while the cursor moves, so a beam or an underline is cut out of
 /// it rather than measured off the cell.
 pub(crate) fn within(corners: &Corners, u: f32, v: f32) -> CellPos {
@@ -104,7 +104,7 @@ impl Glide {
         Self { corners, to: cell, display_offset }
     }
 
-    /// Send every corner to its share of `target`.  How long each takes falls
+    /// Send every corner to its share of `target`. How long each takes falls
     /// out of how far it points along the move: a corner on the leading edge
     /// is most of the way there already and arrives almost at once, one on the
     /// trailing edge takes nearly twice the configured glide.
@@ -174,7 +174,7 @@ fn unit(v: CellPos) -> CellPos {
     if len == 0.0 { (0.0, 0.0) } else { (v.0 / len, v.1 / len) }
 }
 
-/// How far the cursor jumped, in cells.  The larger of the two axes rather
+/// How far the cursor jumped, in cells. The larger of the two axes rather
 /// than the diagonal, so one threshold reads the same whichever way it moved.
 fn jump_cells(from: CellPos, to: CellPos) -> f32 {
     (to.0 - from.0).abs().max((to.1 - from.1).abs())

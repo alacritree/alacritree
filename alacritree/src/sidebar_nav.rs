@@ -22,7 +22,7 @@ pub enum SidebarRow {
     Project(PathBuf),
     /// Worktree row, keyed by the worktree path.
     Worktree(PathBuf),
-    /// Session row, keyed by its stable session id.  Only present when its
+    /// Session row, keyed by its stable session id. Only present when its
     /// workspace lists sessions in the sidebar.
     Session(SessionId),
     /// A pane a multiplexer owns and no session holds.
@@ -30,7 +30,7 @@ pub enum SidebarRow {
 }
 
 /// One row listed under a workspace: a session alacritree runs, or a
-/// multiplexer's pane nothing is attached to.  The two are one sequence
+/// multiplexer's pane nothing is attached to. The two are one sequence
 /// rather than two blocks because attaching turns the second into the first,
 /// and a pane that changed how it is drawn has not changed where it belongs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,7 +56,7 @@ impl WorkspaceEntry {
 }
 
 /// The rows each workspace currently *displays*, keyed by workspace and in
-/// the order it draws them.  The caller owns both the listing rule
+/// the order it draws them. The caller owns both the listing rule
 /// (threshold, config overrides) and the order, so the cursor model cannot
 /// drift from the paint pass.
 pub(crate) type ListedRows = HashMap<WorkspaceKey, Vec<WorkspaceEntry>>;
@@ -85,7 +85,7 @@ pub(crate) fn visible_rows(projects: &[Project], listed: &ListedRows) -> Vec<Sid
     rows
 }
 
-/// The project whose worktree list contains `path`.  A path two projects both
+/// The project whose worktree list contains `path`. A path two projects both
 /// list resolves to the first in sidebar order: a session records a directory,
 /// not a project, so there is nothing better to go on.
 fn owning_project<'a>(projects: &'a [Project], path: &Path) -> Option<&'a Project> {
@@ -93,7 +93,7 @@ fn owning_project<'a>(projects: &'a [Project], path: &Path) -> Option<&'a Projec
 }
 
 /// The workspaces a session living in `origin` may move through, in sidebar
-/// order.  `order` is the caller's live workspace list — the workspaces it is
+/// order. `order` is the caller's live workspace list — the workspaces it is
 /// willing to switch to, minus any whose delete is already running — so a
 /// reorder can never land a session somewhere the rest of the app refuses to
 /// go.
@@ -102,7 +102,7 @@ fn owning_project<'a>(projects: &'a [Project], path: &Path) -> Option<&'a Projec
 /// are destinations like any other, or the set of them would depend on which
 /// projects happen to be open.
 ///
-/// The result always contains `origin`.  When the scope's list does not, it
+/// The result always contains `origin`. When the scope's list does not, it
 /// collapses to `origin` alone: a detached session, or one in a worktree being
 /// deleted, has no position in a list it is not in, and must still be free to
 /// move inside its own workspace.
@@ -142,12 +142,12 @@ pub(crate) struct StepTarget {
 /// One reorder step for the session sitting at `index` of `origin`.
 ///
 /// `range` comes from [`move_range`] and `lens[i]` is the current session
-/// count of `range[i]`.  `delta` is negative for up and positive for down.
+/// count of `range[i]`. `delta` is negative for up and positive for down.
 ///
 /// A step off either end of a workspace continues into the neighbouring one:
-/// up lands past the last session there, down lands before the first.  An
+/// up lands past the last session there, down lands before the first. An
 /// empty neighbour resolves to position 0 either way, so it needs no case of
-/// its own.  `None` is every refusal — both ends of the range are clamped and
+/// its own. `None` is every refusal — both ends of the range are clamped and
 /// nothing wraps.
 pub(crate) fn step_target(
     range: &[WorkspaceKey],
@@ -178,7 +178,7 @@ pub(crate) fn step_target(
 }
 
 /// The project whose worktree list contains `ws`, or None for home and for a
-/// workspace no listed project owns.  A path two projects both list belongs to
+/// workspace no listed project owns. A path two projects both list belongs to
 /// the first in sidebar order; the session records a directory, not a project,
 /// so nothing better is available.
 pub(crate) fn project_of<'a>(projects: &'a [Project], ws: &WorkspaceKey) -> Option<&'a Path> {
@@ -210,7 +210,7 @@ pub(crate) fn follow_scroll_row(
 
 /// Whether the panel should retarget its scroll to the session on screen
 /// this frame, rather than leave it wherever an explicit cursor move already
-/// pointed it.  `false` whenever the feature is off, an explicit cursor move
+/// pointed it. `false` whenever the feature is off, an explicit cursor move
 /// happened this frame, or the last followed pair already matches — so a
 /// change whose row renders nowhere keeps retrying every frame instead of
 /// resolving once and going quiet.
@@ -237,8 +237,8 @@ pub(crate) fn step(rows: &[SidebarRow], cursor: &SidebarRow, delta: i32) -> Side
 }
 
 /// The row owning `cursor` — the standard tree-view "Left jumps to parent"
-/// idiom.  A worktree's parent is its project header; a session's or herdr
-/// agent's parent is the worktree (or Home) row it's listed under.  `None`
+/// idiom. A worktree's parent is its project header; a session's or herdr
+/// agent's parent is the worktree (or Home) row it's listed under. `None`
 /// for Home and project cursors.
 pub(crate) fn left_target(rows: &[SidebarRow], cursor: &SidebarRow) -> Option<SidebarRow> {
     let pos = rows.iter().position(|r| r == cursor)?;
@@ -256,7 +256,7 @@ pub(crate) fn left_target(rows: &[SidebarRow], cursor: &SidebarRow) -> Option<Si
 }
 
 /// The nearest project header strictly after `cursor` — the PageDown-style
-/// project jump.  `None` when no header follows or the cursor has vanished
+/// project jump. `None` when no header follows or the cursor has vanished
 /// from `rows` (the caller reseats it, as `step` callers do).
 pub(crate) fn next_project(rows: &[SidebarRow], cursor: &SidebarRow) -> Option<SidebarRow> {
     let pos = rows.iter().position(|r| r == cursor)?;
@@ -309,9 +309,9 @@ pub(crate) fn seed(
     SidebarRow::Home
 }
 
-/// What decides whether a row survives an active filter.  The gate (toggle
+/// What decides whether a row survives an active filter. The gate (toggle
 /// and PR dimensions) is separate from the name test because a child match
-/// surfaces a workspace through the gate and never around it.  `name` and
+/// surfaces a workspace through the gate and never around it. `name` and
 /// `child` take `&mut` so a caller may answer from state it carries between
 /// rows; both of today's callers answer from a map resolved before the call.
 pub(crate) struct RowPredicates<'a> {
@@ -327,7 +327,7 @@ pub(crate) struct RowPredicates<'a> {
 
 /// Render-order rows under an active filter. Projects are force-expanded (a
 /// filter that hides its own results is useless); a header survives when it
-/// matches itself or keeps at least one visible worktree.  A workspace that
+/// matches itself or keeps at least one visible worktree. A workspace that
 /// matched by name keeps all its children; one surfaced only because a child
 /// matched keeps just the matching ones.
 pub(crate) fn filtered_rows(
@@ -336,7 +336,7 @@ pub(crate) fn filtered_rows(
     mut preds: RowPredicates<'_>,
 ) -> Vec<SidebarRow> {
     /// The rows a surviving workspace contributes, and whether a child match
-    /// is what surfaced it.  A name match takes every child and leaves that
+    /// is what surfaced it. A name match takes every child and leaves that
     /// flag false, since the workspace is already kept; otherwise only the
     /// matches survive, so searching for a child does not hand back its
     /// siblings.
@@ -606,7 +606,7 @@ pub(crate) mod tests {
         assert_eq!(project_of(&projects, &Some(PathBuf::from("/elsewhere"))), None);
     }
 
-    /// git lets two projects list the same path.  The session records a
+    /// git lets two projects list the same path. The session records a
     /// directory, not a project, so sidebar order is the only tiebreak
     /// available and the first listing owns it.
     #[test]

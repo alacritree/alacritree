@@ -39,7 +39,7 @@ impl TerminalColors {
 }
 
 /// The terminal's own default background, which OSC 11 can move away from the
-/// configured one.  Everything painting behind the grid has to agree on this:
+/// configured one. Everything painting behind the grid has to agree on this:
 /// the background pass draws no quad for a cell already carrying it.
 pub(crate) fn default_background(runtime: &Colors, colors: &TerminalColors) -> Color32 {
     runtime[NamedColor::Background].map_or(colors.bg, rgb_to_color32)
@@ -75,7 +75,7 @@ pub(crate) fn resolve(
     }
 }
 
-/// The color to report for an OSC 4 / 10 / 11 / 12 query.  `None` for a cursor
+/// The color to report for an OSC 4 / 10 / 11 / 12 query. `None` for a cursor
 /// color the app never set: alacritty leaves that query unanswered rather than
 /// naming a color it doesn't have, and the asking app falls back to its own.
 pub(crate) fn query(index: usize, runtime: &Colors, palette: &Palette) -> Option<Rgb> {

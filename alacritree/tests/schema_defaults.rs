@@ -1,10 +1,10 @@
 //! Every config key whose absence resolves to a fixed value must publish that
-//! value as a schema `default`.  The keys that legitimately have none are
+//! value as a schema `default`. The keys that legitimately have none are
 //! listed in `schema-defaults-allowlist.txt`, so adding an `Option<T>` field
 //! by reflex fails the build with the key named.
 //!
 //! `devkit run task test --env ALACRITREE_UPDATE_ALLOWLIST=1` rewrites the
-//! list instead of failing.  Read the diff: a line appearing is a key that
+//! list instead of failing. Read the diff: a line appearing is a key that
 //! lost its default, which is almost always a mistake.
 
 use std::collections::BTreeSet;
@@ -40,7 +40,7 @@ fn resolve<'a>(schema: &'a Value, root: &'a Value) -> &'a Value {
 
 /// A property is a table when it resolves to a schema with its own
 /// `properties` map — its keys are reached through that def's own entry, not
-/// through this one.  An untagged enum with a scalar branch (`RawIconStyle`,
+/// through this one. An untagged enum with a scalar branch (`RawIconStyle`,
 /// `RawShell`) has `anyOf` rather than `properties`, so it stays a leaf: the
 /// key can be written as a bare value and therefore can carry a default.
 fn is_table(schema: &Value, root: &Value) -> bool {
@@ -63,7 +63,7 @@ fn property_maps(def: &Value) -> Vec<&serde_json::Map<String, Value>> {
 }
 
 /// Every leaf property in the document, keyed by the def that declares it, and
-/// whether it carries a default.  Keyed by def rather than by config path
+/// whether it carries a default. Keyed by def rather than by config path
 /// because `Color` is reached by dozens of paths and `RawIconStyle` by
 /// twenty-four; a path-keyed list would be mostly copies of itself.
 fn leaves(root: &Value) -> Vec<(String, bool)> {

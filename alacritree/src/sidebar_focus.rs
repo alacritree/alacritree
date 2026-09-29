@@ -2,7 +2,7 @@
 //!
 //! Every mutation site reporting what it removed proved unbounded — sessions
 //! leave through four paths and worktrees through a background refresh — so
-//! this module infers the repair from what changed instead.  The distinction
+//! this module infers the repair from what changed instead. The distinction
 //! that matters is model versus projection: a row hidden by a filter or a
 //! collapsed project still exists and the cursor climbs to an ancestor it can
 //! return from, while a row gone from the model was deleted and the cursor
@@ -16,13 +16,13 @@ use crate::session::SessionId;
 use crate::sidebar_nav::SidebarRow;
 use crate::workspace::WorkspaceKey;
 
-/// Index into a single snapshot's `nodes`.  Deliberately not stable across
+/// Index into a single snapshot's `nodes`. Deliberately not stable across
 /// snapshots: cross-snapshot matching goes through the row's own path/session
 /// key, because the project list mutates under the cursor and an index would
 /// silently retarget.
 pub type NodeId = usize;
 
-/// A node's place in the tree.  `Detached` exists because a live session whose
+/// A node's place in the tree. `Detached` exists because a live session whose
 /// project was dropped keeps running: it must be in the model so it never
 /// reads as deleted, while never being a sibling of anything and so never a
 /// landing the cursor could slide onto.
@@ -39,7 +39,7 @@ pub struct Node {
     pub parent: Parent,
 }
 
-/// Model membership plus the current projection.  `nodes` holds every
+/// Model membership plus the current projection. `nodes` holds every
 /// project, worktree, and live session regardless of expansion, listing
 /// threshold, or filter; `projected` holds exactly the navigable rows.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -141,13 +141,13 @@ pub enum FollowTarget {
 pub struct Repair {
     pub cursor: Option<SidebarRow>,
     pub anchor: Option<SidebarRow>,
-    /// Only ever `Some` for a removal landing.  The caller drops it unless
+    /// Only ever `Some` for a removal landing. The caller drops it unless
     /// `ui.sidebar_focus` is `"follow"`.
     pub follow: Option<FollowTarget>,
 }
 
 /// The nearest ancestor of `from` that `next` still projects, walking `from`'s
-/// own snapshot so a removed row's chain is still readable.  Root rows have no
+/// own snapshot so a removed row's chain is still readable. Root rows have no
 /// ancestor, so the first projected row — Home whenever it is visible — is the
 /// last resort.
 fn climb(from_tree: &TreeSnapshot, next: &TreeSnapshot, from: NodeId) -> Option<SidebarRow> {
@@ -162,7 +162,7 @@ fn climb(from_tree: &TreeSnapshot, next: &TreeSnapshot, from: NodeId) -> Option<
     next.projected.first().map(|&id| next.row(id).clone())
 }
 
-/// What a removal landing offers the terminal.  A workspace row with no live
+/// What a removal landing offers the terminal. A workspace row with no live
 /// session yields `None`: spawning a shell the user did not ask for is not
 /// this module's job.
 fn follow_target(next: &TreeSnapshot, landing: &SidebarRow) -> Option<FollowTarget> {
@@ -191,7 +191,7 @@ fn follow_target(next: &TreeSnapshot, landing: &SidebarRow) -> Option<FollowTarg
 /// The row under repair is the anchor when one is set — a climb parks the
 /// visible cursor on an ancestor while the user's real position waits in the
 /// anchor, so judging removal by the visible cursor would never notice a
-/// hidden row being deleted.  Cursor, anchor, and terminal resolve together so
+/// hidden row being deleted. Cursor, anchor, and terminal resolve together so
 /// the caller cannot apply them out of order.
 pub fn repair(
     prev: &TreeSnapshot,
@@ -199,7 +199,7 @@ pub fn repair(
     cursor: Option<&SidebarRow>,
     anchor: Option<&SidebarRow>,
 ) -> Repair {
-    // The anchor belongs to one filter episode.  Nothing is filtering, so the
+    // The anchor belongs to one filter episode. Nothing is filtering, so the
     // episode is over however it ended — confirmed, cancelled, or widened.
     let anchor = anchor.filter(|_| next.inputs.is_filtering());
 
@@ -258,7 +258,7 @@ fn repair_visible(
                     Repair { cursor: Some(row), anchor: None, follow }
                 },
                 // The slide target is itself hidden — a removal that also
-                // changed what the filter keeps.  Fall through to the climb.
+                // changed what the filter keeps. Fall through to the climb.
                 None => Repair { cursor: climb(prev, next, removed), anchor: None, follow: None },
             }
         },
@@ -304,24 +304,24 @@ pub struct SessionInput<'a> {
 pub struct UiInputs<'a> {
     pub session_rows_always: bool,
     /// Whether a listed multiplexer pane counts as occupancy for the sessions
-    /// toggle.  Flipping it moves the row set while the toggle bits hold
+    /// toggle. Flipping it moves the row set while the toggle bits hold
     /// still, so the projection has to rebuild when it does.
     pub sessions_filter_counts_detached: bool,
     pub query: &'a str,
     pub toggles: u32,
-    /// Whether the toggles narrow rows this frame.  A search scope that stands
+    /// Whether the toggles narrow rows this frame. A search scope that stands
     /// them down changes the projection while `toggles` itself holds still.
     pub toggles_apply: bool,
-    /// Advances when a PR lookup is banked or invalidated.  Fed as `0` unless a
+    /// Advances when a PR lookup is banked or invalidated. Fed as `0` unless a
     /// PR filter is active, so a completion cannot invalidate a projection it
     /// could not have changed.
     pub pr_generation: u64,
-    /// The workspace whose live branch `active_branch` describes.  Without it a
+    /// The workspace whose live branch `active_branch` describes. Without it a
     /// switch between two worktrees whose caches hold the same branch string
     /// moves every PR lookup key while nothing observed changes.
     pub active_workspace: Option<&'a Path>,
     pub active_branch: Option<&'a str>,
-    /// Advances when a multiplexer poll changes something a row draws.  Churn
+    /// Advances when a multiplexer poll changes something a row draws. Churn
     /// no row shows deliberately does not move it, so an idle agent repainting
     /// does not rebuild the tree.
     pub panes_generation: u64,
@@ -332,7 +332,7 @@ thread_local! {
     static VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// Records one examined record.  Compiled out of release builds entirely —
+/// Records one examined record. Compiled out of release builds entirely —
 /// the counter exists so the linearity of `matches` can be asserted without a
 /// wall-clock threshold, which on a shared runner is either flaky or blind.
 #[inline(always)]
@@ -368,7 +368,7 @@ struct WorktreeInput {
 }
 
 /// A [`WorktreeInput`] and a live [`Worktree`] reduced to the same borrowed
-/// shape.  The compare path runs every frame and must not allocate, so the two
+/// shape. The compare path runs every frame and must not allocate, so the two
 /// are matched through this rather than by cloning one into the other's type —
 /// and a field added to `WorktreeInput` without a view of it stops compiling
 /// instead of silently dropping out of the comparison.
@@ -397,7 +397,7 @@ impl<'a> From<&'a Checkout> for WorktreeView<'a> {
     }
 }
 
-/// Everything the snapshot is a function of.  Captured on rebuild, compared
+/// Everything the snapshot is a function of. Captured on rebuild, compared
 /// borrowed on every other frame so the steady state allocates nothing.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ObservedInputs {
@@ -454,13 +454,13 @@ impl ObservedInputs {
         }
     }
 
-    /// Whether a filter is narrowing the tree.  The anchor exists only for the
+    /// Whether a filter is narrowing the tree. The anchor exists only for the
     /// duration of one filter episode, so this is what ends it.
     pub fn is_filtering(&self) -> bool {
         !self.query.is_empty() || self.toggles != 0
     }
 
-    /// Whether every observed input still holds.  Allocation-free: this runs
+    /// Whether every observed input still holds. Allocation-free: this runs
     /// on every frame the sidebar is live.
     pub fn matches<'a>(
         &self,
@@ -627,7 +627,7 @@ mod tests {
 
     /// `capture` banks every input and `matches` compares them, so an input
     /// one of them learns about and the other does not makes `matches` answer
-    /// "unchanged" forever, and the sidebar cursor stops repairing.  Vary each
+    /// "unchanged" forever, and the sidebar cursor stops repairing. Vary each
     /// field on its own and the pair has to disagree about it.
     #[test]
     fn matches_compares_every_input_capture_banks() {
@@ -1004,7 +1004,7 @@ mod tests {
     }
 
     /// Inputs standing for "a query is narrowing the tree", so the anchor's
-    /// filter episode is open.  `ObservedInputs::default()` is *not* filtering,
+    /// filter episode is open. `ObservedInputs::default()` is *not* filtering,
     /// which would retire the anchor on sight.
     fn filtering() -> ObservedInputs {
         ObservedInputs::capture(&[], std::iter::empty(), ui("wt", 0))
@@ -1137,7 +1137,7 @@ mod tests {
 
     #[test]
     fn ending_the_filter_episode_retires_the_anchor() {
-        // Confirm/cancel/Shift+Esc all clear the query.  The confirmed row here is
+        // Confirm/cancel/Shift+Esc all clear the query. The confirmed row here is
         // the same one the climb already chose, so nothing observable changed —
         // only the episode ending can retire the anchor.
         let prev = reference_tree_filtered();

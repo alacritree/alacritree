@@ -3,7 +3,7 @@
 
 use super::*;
 
-/// Every dialog's pending state.  `None` (or empty) means that dialog is
+/// Every dialog's pending state. `None` (or empty) means that dialog is
 /// closed; `update` paints whichever are open.
 #[derive(Default)]
 pub(super) struct Modals {
@@ -23,11 +23,11 @@ pub(super) struct Modals {
     /// off-thread and are adopted in `poll_pending_creates`.
     pub(super) pending_creates: Vec<BackgroundCreate>,
     pub(super) pending_rename: Option<RenameState>,
-    /// The base-branch picker modal.  Transient: never persisted.
+    /// The base-branch picker modal. Transient: never persisted.
     pub(super) pending_base_branch: Option<BaseBranchPicker>,
     pub(super) pending_project_remove: Option<ProjectRemoveState>,
     pub(super) pending_session_close: Option<SessionId>,
-    /// The sessions a whole-set detach is waiting to be confirmed for.  The
+    /// The sessions a whole-set detach is waiting to be confirmed for. The
     /// set is fixed when the question is asked, so the dialog detaches what
     /// it counted rather than whatever is attached by the time it is
     /// answered.
@@ -273,7 +273,7 @@ impl AlacritreeApp {
         }
     }
 
-    /// The one question a whole-set detach asks.  Every session in the set is
+    /// The one question a whole-set detach asks. Every session in the set is
     /// managed, so the busy warning a close carries has nothing to warn
     /// about: the panes keep running and their rows come back.
     pub(super) fn show_detach_all_dialog(&mut self, ctx: &Context) {
@@ -604,7 +604,7 @@ impl AlacritreeApp {
 
     /// Adopt minimized creates once their worker finishes: pop up any failure
     /// (its modal is long gone) and refresh the project so the new worktree
-    /// replaces its sidebar placeholder.  A successful create is deliberately
+    /// replaces its sidebar placeholder. A successful create is deliberately
     /// not activated: the user minimized to work elsewhere, so don't yank them
     /// into the new worktree.
     pub(super) fn poll_pending_creates(&mut self, ctx: &Context) {
@@ -1020,7 +1020,7 @@ impl AlacritreeApp {
 
     /// Renders the live progress view and returns `true` when the user asks to
     /// minimize (Enter, Escape, or a click outside), sending the create to the
-    /// background so they can keep working.  The git operation can't be
+    /// background so they can keep working. The git operation can't be
     /// cancelled mid-flight, so every dismiss path minimizes rather than aborts.
     fn show_create_running(
         &self,
@@ -1245,7 +1245,7 @@ pub(super) enum CreateState {
         steps: Vec<String>,
         rx: Receiver<Progress>,
         /// Kept alive so dropping it doesn't cancel the still-running create
-        /// on the pool.  `rx` carries the result, so the handle is polled
+        /// on the pool. `rx` carries the result, so the handle is polled
         /// only for the failure latch a panicked create reports through.
         job: jobs::Job<()>,
     },
@@ -1277,7 +1277,7 @@ pub(super) struct RenameState {
     pub(super) label: String,
 }
 
-/// The "remove project" confirmation modal.  Keyed by root, like the rename
+/// The "remove project" confirmation modal. Keyed by root, like the rename
 /// dialog, so a reorder or IPC removal under the modal can't retarget it.
 pub(super) struct ProjectRemoveState {
     pub(super) root: PathBuf,
@@ -1306,10 +1306,10 @@ pub(super) fn offers_force(error: &wt::WorktreeError) -> bool {
 
 /// Whether the delete confirm may execute.
 ///
-/// A removal is only safe to run once the dirty count is resolved.  The
+/// A removal is only safe to run once the dirty count is resolved. The
 /// sessions living in the worktree are torn down before `git worktree
 /// remove` runs, so an unforced attempt that git refuses as dirty has
-/// already cost the user their shells by the time the refusal arrives.  A
+/// already cost the user their shells by the time the refusal arrives. A
 /// resolved count presets `--force`, which git will not refuse for
 /// dirtiness; a forced retry has already been through that refusal.
 fn delete_confirm_ready(counts: Option<&Dirty>, force: bool) -> bool {
@@ -1317,7 +1317,7 @@ fn delete_confirm_ready(counts: Option<&Dirty>, force: bool) -> bool {
 }
 
 /// Fold a failure into the single-slot error dialog rather than replacing
-/// what it holds.  One frame can finish several background deletes, and the
+/// what it holds. One frame can finish several background deletes, and the
 /// dialog shows one message: replacing it would leave only the last
 /// failure, with the earlier explanations gone before the user ever read
 /// them.
@@ -1384,11 +1384,11 @@ pub(super) fn filter_branches(branches: &[String], query: &str) -> Vec<String> {
     branches.iter().filter(|b| b.to_lowercase().contains(&query)).cloned().collect()
 }
 
-/// Where the picker cursor lands after this frame's filter changes.  Row 0 is
+/// Where the picker cursor lands after this frame's filter changes. Row 0 is
 /// always Auto, so reseeding a query edit to 0 would apply Auto on the primary
-/// "type a branch name, press Enter" flow.  A non-empty query instead seeds
+/// "type a branch name, press Enter" flow. A non-empty query instead seeds
 /// the first branch row (1), clamped to 0 when nothing matches; an empty
-/// query seeds Auto.  With no query change, the previous cursor is kept,
+/// query seeds Auto. With no query change, the previous cursor is kept,
 /// clamped to the (possibly shrunk) filtered length.
 pub(super) fn picker_cursor(
     query_changed: bool,
