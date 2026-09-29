@@ -526,6 +526,9 @@ pub trait Handler {
     /// Identify the terminal (should write back to the pty stream).
     fn identify_terminal(&mut self, _intermediate: Option<char>) {}
 
+    /// Report the terminal's name and version (XTVERSION).
+    fn report_version(&mut self) {}
+
     /// Report device status.
     fn device_status(&mut self, _: usize) {}
 
@@ -1730,6 +1733,7 @@ where
                 let mode = next_param_or(0);
                 handler.report_private_mode(PrivateMode::new(mode));
             },
+            ('q', [b'>']) if next_param_or(0) == 0 => handler.report_version(),
             ('q', [b' ']) => {
                 // DECSCUSR (CSI Ps SP q) -- Set Cursor Style.
                 let cursor_style_id = next_param_or(0);

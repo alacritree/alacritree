@@ -356,6 +356,9 @@ pub struct Config {
 
     /// OSC52 support mode.
     pub osc52: Osc52,
+
+    /// Name and version reported to XTVERSION, such as `alacritty 0.15.0`.
+    pub version_report: String,
 }
 
 impl Default for Config {
@@ -367,6 +370,7 @@ impl Default for Config {
             vi_mode_cursor_style: Default::default(),
             kitty_keyboard: Default::default(),
             osc52: Default::default(),
+            version_report: format!("alacritty {}", env!("CARGO_PKG_VERSION")),
         }
     }
 }
@@ -1327,6 +1331,13 @@ impl<T: EventListener> Handler for Term<T> {
             },
             _ => debug!("Unsupported device attributes intermediate"),
         }
+    }
+
+    #[inline]
+    fn report_version(&mut self) {
+        trace!("Reporting terminal version");
+        let text = format!("\x1bP>|{}\x1b\\", self.config.version_report);
+        self.event_proxy.send_event(Event::PtyWrite(text));
     }
 
     #[inline]

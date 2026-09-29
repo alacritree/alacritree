@@ -685,6 +685,7 @@ pub(crate) fn term_config(config: &Config) -> TermConfig {
         // to enable the protocol and modified keys stay legacy.  alacritty
         // enables it unconditionally too (config/ui_config.rs `term_options`).
         kitty_keyboard: true,
+        version_report: concat!("alacritree ", env!("CARGO_PKG_VERSION")).to_owned(),
         ..TermConfig::default()
     }
 }
@@ -2944,6 +2945,29 @@ pub(crate) mod tests {
             },
             _ => None,
         })
+    }
+
+    /// Programs ask XTVERSION before DA1 and read the name from whichever
+    /// reply comes first, so the order the queries arrived in is the order
+    /// the replies leave in.
+    #[test]
+    fn xtversion_names_alacritree_ahead_of_the_da1_reply() {
+        let collector = Collector::default();
+        let size = TermSize::new(80, 24);
+        let mut term = Term::new(term_config(&Config::default()), &size, &collector);
+
+        Processor::<StdSyncHandler>::new().advance(&mut term, b"\x1b[>0q\x1b[c");
+
+        let events = collector.0.lock().unwrap();
+        let replies: Vec<&str> = events
+            .iter()
+            .filter_map(|event| match event {
+                TermEvent::PtyWrite(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        let name = format!("\x1bP>|alacritree {}\x1b\\", env!("CARGO_PKG_VERSION"));
+        assert_eq!(replies, [name.as_str(), "\x1b[?6c"]);
     }
 
     #[test]
