@@ -1,4 +1,5 @@
 use alacritree_common::jobs;
+use alacritree_graphics::Viewport;
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Line, Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionRange, SelectionType};
@@ -90,7 +91,9 @@ pub(crate) fn show(
     let inner_h = (avail.y - 2.0 * pad_y).max(cell_h);
     let cols = (inner_w / cell_w).floor().max(1.0) as usize;
     let rows = (inner_h / cell_h).floor().max(1.0) as usize;
-    session.resize(TermSize::new(cols, rows), (cell_w, cell_h));
+    // The cell was floored in pixel space above, so this is a whole number
+    // of device pixels, which is what programs size images in.
+    session.resize(TermSize::new(cols, rows), ((cell_w * ppp).round(), (cell_h * ppp).round()));
 
     if pad_x > 0.0 || pad_y > 0.0 {
         ui.add_space(pad_y);
@@ -176,13 +179,18 @@ pub(crate) fn show(
         },
         now,
     );
-    snapshot.capture(
-        &mut session.term.lock(),
-        config,
-        session.id,
-        peek.link.as_ref().map(|l| &l.bounds),
-        cursor_shape,
-    );
+    {
+        let mut term = session.term.lock();
+        let switched = snapshot.context.session != Some(session.id);
+        snapshot.capture(
+            &mut term,
+            config,
+            session.id,
+            peek.link.as_ref().map(|l| &l.bounds),
+            cursor_shape,
+        );
+        capture_images(&mut term, gpu, snapshot.display_offset, switched);
+    }
     // Between the capture and the paint that reads it: the glide is this
     // session's, and it needs the cell the capture just recorded.
     let smear = session.cursor.place(
@@ -1203,6 +1211,30 @@ impl GridSnapshot {
             color,
             glyph,
         });
+    }
+}
+
+/// Bring the grid's image frame up to date with the terminal's placements.
+///
+/// Runs under the capture's lock and costs one comparison while nothing
+/// moved.  The frame belongs to whichever session filled it last, so a
+/// session coming on screen rebuilds it whatever its own record says.
+fn capture_images(
+    term: &mut Term<EventProxy<impl Repaint>>,
+    gpu: &GpuGrid,
+    display_offset: i32,
+    switched: bool,
+) {
+    let viewport = Viewport {
+        display_offset: display_offset as usize,
+        rows: term.screen_lines(),
+        columns: term.columns(),
+    };
+    let images = &mut gpu.state.lock().expect("grid state").images;
+    if switched {
+        term.graphics_mut().build_frame(images, viewport);
+    } else {
+        term.graphics_mut().update_frame(images, viewport);
     }
 }
 
