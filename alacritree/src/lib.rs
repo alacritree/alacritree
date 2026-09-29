@@ -47,7 +47,7 @@ pub(crate) mod mouse;
 pub(crate) mod mouse_hide;
 pub(crate) mod multiplexer;
 pub(crate) mod notify;
-pub(crate) mod osc_tap;
+pub(crate) mod osc;
 pub(crate) mod panel_filter;
 pub(crate) mod paste;
 pub(crate) mod path_style;
@@ -56,7 +56,6 @@ pub(crate) mod process_probe;
 pub mod projects;
 #[cfg(windows)]
 pub(crate) mod pty_rearm;
-pub(crate) mod pty_tee;
 pub(crate) mod repaint;
 pub(crate) mod row_label;
 pub(crate) mod scratchpad;

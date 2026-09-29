@@ -95,7 +95,6 @@ dependencies = [
  "interprocess",
  "libc",
  "log",
- "memchr",
  "memmap2",
  "notify-rust",
  "nucleo-matcher",

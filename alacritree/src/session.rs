@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use alacritree_common::wsl_helper::{self, WslProbe};
@@ -21,7 +21,7 @@ use crate::clipboard::Target;
 use crate::config::{Config, HoldExitedSessions, Palette};
 use crate::process_probe::{self, ProbeHandle};
 use crate::repaint::Repaint;
-use crate::{colors, osc_tap, scratchpad, wsl_spare};
+use crate::{colors, osc, scratchpad, wsl_spare};
 
 #[derive(Clone)]
 pub(crate) struct EventProxy<R> {
@@ -30,16 +30,53 @@ pub(crate) struct EventProxy<R> {
     /// Whether this session's grid is the one on screen.  Read from the PTY
     /// thread on every event, written by the UI thread once per frame.
     visible: Arc<AtomicBool>,
+    /// `None` when no `[vt]` key is on, and OSC events are then dropped.
+    osc: Option<Arc<Mutex<OscRoute>>>,
+}
+
+/// Runs on the PTY thread under the terminal lock, which is why it only
+/// classifies.  Resolving a WSL path waits for `drain_events`.
+struct OscRoute {
+    filter: osc::OscFilter,
+    sender: mpsc::Sender<osc::OscEvent>,
 }
 
 impl<R: Repaint> EventProxy<R> {
     pub(crate) fn new(repaint: R) -> (Self, mpsc::Receiver<TermEvent>) {
         let (sender, receiver) = mpsc::channel();
-        (Self { repaint, sender, visible: Arc::new(AtomicBool::new(true)) }, receiver)
+        (Self { repaint, sender, visible: Arc::new(AtomicBool::new(true)), osc: None }, receiver)
+    }
+
+    /// Classifies OSC events through `filter`, for every clone made after
+    /// this, and hands back what it yields.
+    pub(crate) fn with_osc(
+        mut self,
+        filter: osc::OscFilter,
+    ) -> (Self, mpsc::Receiver<osc::OscEvent>) {
+        let (sender, receiver) = mpsc::channel();
+        self.osc = Some(Arc::new(Mutex::new(OscRoute { filter, sender })));
+        (self, receiver)
     }
 
     pub(crate) fn set_visible(&self, visible: bool) {
         self.visible.store(visible, Ordering::Relaxed);
+    }
+
+    /// Wakes whether or not the session is on screen: the sidebar paints a
+    /// hidden session's progress, and a notification toasts from one.
+    fn route_osc(&self, event: TermEvent) {
+        let Some(route) = &self.osc else { return };
+        let Ok(mut route) = route.lock() else { return };
+        let event = match event {
+            TermEvent::UnhandledOsc { params, .. } => route.filter.unhandled(&params),
+            TermEvent::MouseCursorIcon(icon) => route.filter.pointer_shape(icon),
+            _ => None,
+        };
+        if let Some(event) = event
+            && route.sender.send(event).is_ok()
+        {
+            self.repaint.wake();
+        }
     }
 }
 
@@ -72,6 +109,10 @@ const SPINNER_COALESCE: Duration = Duration::from_millis(120);
 
 impl<R: Repaint> EventListener for EventProxy<R> {
     fn send_event(&self, event: TermEvent) {
+        if matches!(event, TermEvent::UnhandledOsc { .. } | TermEvent::MouseCursorIcon(_)) {
+            self.route_osc(event);
+            return;
+        }
         // A hidden session's grid is not on screen, so a repaint for it would
         // redraw the *visible* session to the same pixels.  Nothing then
         // drains the channel either, which is why the payload-free events must
@@ -327,8 +368,8 @@ pub(crate) struct Session<R: Repaint> {
     pub cell_size: (f32, f32),
     pub term: Arc<FairMutex<Term<EventProxy<R>>>>,
     pub events: mpsc::Receiver<TermEvent>,
-    pub osc_events: Option<mpsc::Receiver<osc_tap::OscEvent>>,
-    pub progress: Option<osc_tap::Progress>,
+    pub osc_events: Option<mpsc::Receiver<osc::OscEvent>>,
+    pub progress: Option<osc::Progress>,
     pub pointer_shape: Option<egui::CursorIcon>,
     /// Most recent notification body, kept whether or not it toasted.
     pub last_notification: Option<String>,
@@ -712,7 +753,6 @@ pub(crate) struct OpenRequest<R> {
     boost: bool,
     reap: bool,
     spare: Option<wsl_spare::Launch>,
-    tap: Option<crate::pty_tee::TapHandle>,
 }
 
 /// The half of a session that only exists once its PTY does.  Applied by
@@ -755,18 +795,8 @@ impl Drop for Attachment {
 /// it must be callable from a thread that holds no `Session`.
 pub(crate) fn open<R: Repaint>(request: OpenRequest<R>) -> std::io::Result<Attachment> {
     let started = std::time::Instant::now();
-    let OpenRequest {
-        id,
-        window_id,
-        pty_options,
-        window_size,
-        term,
-        proxy,
-        boost,
-        reap,
-        spare,
-        tap,
-    } = request;
+    let OpenRequest { id, window_id, pty_options, window_size, term, proxy, boost, reap, spare } =
+        request;
 
     ensure_working_directory(pty_options.working_directory.as_deref())?;
 
@@ -802,8 +832,6 @@ pub(crate) fn open<R: Repaint>(request: OpenRequest<R>) -> std::io::Result<Attac
 
     #[cfg(windows)]
     let pty = crate::pty_rearm::RearmingPty::new(pty);
-
-    let pty = crate::pty_tee::TeePty::new(pty, tap);
 
     let event_loop = EventLoop::new(term, proxy, pty, pty_options.drain_on_exit, false)?;
     let sender = event_loop.channel();
@@ -1056,20 +1084,23 @@ impl<R: Repaint> Session<R> {
         };
 
         let shell_platform = if reported_cwd_distro.is_some() || wsl_probe.is_some() || cfg!(unix) {
-            osc_tap::ShellPlatform::Unix
+            osc::ShellPlatform::Unix
         } else {
-            osc_tap::ShellPlatform::Windows
+            osc::ShellPlatform::Windows
         };
-        let policy = osc_tap::TapPolicy {
+        let policy = osc::OscPolicy {
             vt: config.vt,
-            hostname: osc_tap::local_hostname().to_string(),
+            hostname: osc::local_hostname().to_string(),
             shell: shell_platform,
         };
-        let (tap, osc_events) = match osc_tap::spawn(policy, repaint.clone()) {
-            Some((tap, receiver)) => (Some(tap), Some(receiver)),
-            None => (None, None),
-        };
         let (proxy, events) = EventProxy::new(repaint);
+        let (proxy, osc_events) = match osc::OscFilter::new(policy) {
+            Some(filter) => {
+                let (proxy, receiver) = proxy.with_osc(filter);
+                (proxy, Some(receiver))
+            },
+            None => (proxy, None),
+        };
 
         let term = Term::new(term_config(config), &size, proxy.clone());
         let term = Arc::new(FairMutex::new(term));
@@ -1152,7 +1183,6 @@ impl<R: Repaint> Session<R> {
             boost: config.ui.focus_priority_boost,
             reap: config.ui.reap_descendants_on_close,
             spare,
-            tap,
         };
 
         (session, request)
@@ -1270,17 +1300,17 @@ impl<R: Repaint> Session<R> {
         if let Some(receiver) = self.osc_events.take() {
             while let Ok(event) = receiver.try_recv() {
                 match event {
-                    osc_tap::OscEvent::Cwd(path) => {
+                    osc::OscEvent::Cwd(path) => {
                         let distro = self.reported_cwd_distro.as_deref();
                         self.reported_cwd = path.map(|path| resolve_reported_cwd(&path, distro));
                     },
-                    osc_tap::OscEvent::Notify(body) => {
+                    osc::OscEvent::Notify(body) => {
                         let body = truncate_notification(body);
                         self.last_notification = Some(body.clone());
                         outcome.notification = Some(body);
                     },
-                    osc_tap::OscEvent::Progress(progress) => self.progress = Some(progress),
-                    osc_tap::OscEvent::PointerShape(icon) => self.pointer_shape = Some(icon),
+                    osc::OscEvent::Progress(progress) => self.progress = Some(progress),
+                    osc::OscEvent::PointerShape(icon) => self.pointer_shape = Some(icon),
                 }
             }
             self.osc_events = Some(receiver);
@@ -1591,6 +1621,7 @@ pub(crate) mod tests {
     use std::sync::Mutex;
 
     use alacritty_terminal::Term;
+    use alacritty_terminal::vte::ansi::cursor_icon::CursorIcon;
 
     use super::*;
     use crate::repaint::Recorder;
@@ -1615,6 +1646,58 @@ pub(crate) mod tests {
             0,
             "output from an off-screen session repainted the visible grid"
         );
+    }
+
+    fn all_on_policy() -> osc::OscPolicy {
+        osc::OscPolicy {
+            vt: crate::config::VtConfig {
+                report_cwd: true,
+                notify: true,
+                progress: true,
+                pointer_shape: true,
+            },
+            hostname: String::new(),
+            shell: osc::ShellPlatform::Unix,
+        }
+    }
+
+    /// Shells send OSC 133 on every prompt, and with no `[vt]` key on
+    /// nothing reads it.
+    #[test]
+    fn an_uninterpreted_osc_with_no_vt_key_on_is_dropped_without_a_wake() {
+        let repaint = Recorder::default();
+        let (proxy, events) = EventProxy::new(repaint.clone());
+
+        proxy.send_event(TermEvent::UnhandledOsc {
+            params: vec![b"133".to_vec(), b"A".to_vec()],
+            bell_terminated: true,
+        });
+        proxy.send_event(TermEvent::MouseCursorIcon(CursorIcon::Pointer));
+
+        assert!(events.try_recv().is_err());
+        assert_eq!(repaint.wakes(), 0);
+    }
+
+    /// The sidebar paints a hidden session's progress, so a change wakes the
+    /// loop and a repeat of the value it already shows does not.
+    #[test]
+    fn a_hidden_session_wakes_once_per_changed_progress() {
+        let repaint = Recorder::default();
+        let (proxy, osc_events) = EventProxy::new(repaint.clone())
+            .0
+            .with_osc(osc::OscFilter::new(all_on_policy()).unwrap());
+        proxy.set_visible(false);
+        let progress = |value: &str| TermEvent::UnhandledOsc {
+            params: vec![b"9".to_vec(), b"4".to_vec(), b"1".to_vec(), value.as_bytes().to_vec()],
+            bell_terminated: true,
+        };
+
+        proxy.send_event(progress("50"));
+        proxy.send_event(progress("50"));
+        proxy.send_event(progress("60"));
+
+        assert_eq!(osc_events.try_iter().count(), 2);
+        assert_eq!(repaint.wakes(), 2);
     }
 
     #[test]
@@ -1862,7 +1945,7 @@ pub(crate) mod tests {
         assert_eq!(session.reported_cwd_distro.as_deref(), None);
         let (sender, receiver) = mpsc::channel();
         session.osc_events = Some(receiver);
-        sender.send(osc_tap::OscEvent::Cwd(Some("/home/dev/src".into()))).unwrap();
+        sender.send(osc::OscEvent::Cwd(Some("/home/dev/src".into()))).unwrap();
 
         session.drain_events(&Palette::default());
 
@@ -1913,7 +1996,7 @@ pub(crate) mod tests {
         session.reported_cwd_distro = Some("Ubuntu".to_string());
         let (sender, receiver) = mpsc::channel();
         session.osc_events = Some(receiver);
-        sender.send(osc_tap::OscEvent::Cwd(Some("/home/dev/src".to_string()))).unwrap();
+        sender.send(osc::OscEvent::Cwd(Some("/home/dev/src".to_string()))).unwrap();
 
         session.drain_events(&Palette::default());
 
@@ -1924,11 +2007,15 @@ pub(crate) mod tests {
         assert_eq!(session.working_directory, None);
     }
 
+    fn feed(session: &Session<Recorder>, bytes: &str) {
+        Processor::<StdSyncHandler>::new().advance(&mut *session.term.lock(), bytes.as_bytes());
+    }
+
     #[test]
-    fn pointer_shape_osc_bytes_update_the_session_through_the_tap() {
+    fn pointer_shape_osc_updates_the_session() {
         let mut config = Config::default();
         config.vt.pointer_shape = true;
-        let (mut session, mut request) = Session::pending_shell(
+        let (mut session, _) = Session::pending_shell(
             Recorder::default(),
             &config,
             None,
@@ -1943,20 +2030,13 @@ pub(crate) mod tests {
             ("\x1b]22;crosshair\x07", egui::CursorIcon::Crosshair),
             ("\x1b]22;wait\x1b\\", egui::CursorIcon::Wait),
             ("\x1b]22;default\x07", egui::CursorIcon::Default),
+            // vte reads only the CSS names, so an X11 alias changes nothing.
+            ("\x1b]22;hand2\x07", egui::CursorIcon::Default),
         ] {
-            request.tap.as_mut().unwrap().offer(bytes.as_bytes());
-            let deadline = Instant::now() + Duration::from_secs(2);
-            loop {
-                let outcome = session.drain_events(&config.palette);
-                assert!(outcome.notification.is_none());
-                if session.pointer_shape == Some(expected) {
-                    break;
-                }
-                assert!(Instant::now() < deadline, "pointer shape was not drained: {bytes:?}");
-                std::thread::sleep(Duration::from_millis(1));
-            }
-            session.drain_events(&config.palette);
-            assert_eq!(session.pointer_shape, Some(expected));
+            feed(&session, bytes);
+            let outcome = session.drain_events(&config.palette);
+            assert!(outcome.notification.is_none());
+            assert_eq!(session.pointer_shape, Some(expected), "{bytes:?}");
         }
         assert_eq!(session.reported_cwd, None);
         assert_eq!(session.progress, None);
@@ -1966,10 +2046,10 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn disabled_pointer_shape_does_not_create_a_tap() {
+    fn a_session_with_no_vt_key_keeps_no_filter() {
         let config = Config::default();
         assert!(!config.vt.any_enabled());
-        let (session, request) = Session::pending_shell(
+        let (mut session, _) = Session::pending_shell(
             Recorder::default(),
             &config,
             None,
@@ -1979,18 +2059,21 @@ pub(crate) mod tests {
             None,
             None,
         );
-        assert!(request.tap.is_none());
         assert!(session.osc_events.is_none());
+
+        feed(&session, "\x1b]22;pointer\x07\x1b]9;4;1;50\x07");
+        session.drain_events(&config.palette);
         assert_eq!(session.pointer_shape, None);
+        assert_eq!(session.progress, None);
     }
 
     #[test]
-    fn progress_osc_bytes_update_the_session_through_the_tap() {
-        use osc_tap::Progress;
+    fn progress_osc_updates_the_session() {
+        use osc::Progress;
 
         let mut config = Config::default();
         config.vt.progress = true;
-        let (mut session, mut request) = Session::pending_shell(
+        let (mut session, _) = Session::pending_shell(
             Recorder::default(),
             &config,
             None,
@@ -2008,28 +2091,19 @@ pub(crate) mod tests {
             ("\x1b]9;4;3\x07", Progress::Indeterminate),
             ("\x1b]9;4;0\x07", Progress::Clear),
         ] {
-            request.tap.as_mut().unwrap().offer(bytes.as_bytes());
-            let deadline = Instant::now() + Duration::from_secs(2);
-            loop {
-                let outcome = session.drain_events(&config.palette);
-                assert!(outcome.notification.is_none());
-                if session.progress == Some(expected) {
-                    break;
-                }
-                assert!(Instant::now() < deadline, "progress report was not drained: {bytes:?}");
-                std::thread::sleep(Duration::from_millis(1));
-            }
-            session.drain_events(&config.palette);
-            assert_eq!(session.progress, Some(expected));
+            feed(&session, bytes);
+            let outcome = session.drain_events(&config.palette);
+            assert!(outcome.notification.is_none());
+            assert_eq!(session.progress, Some(expected), "{bytes:?}");
         }
     }
 
     #[test]
-    fn reported_cwd_osc_bytes_reach_a_wsl_session_without_a_probe() {
+    fn reported_cwd_osc_reaches_a_wsl_session_without_a_probe() {
         let mut config = Config::default();
         config.vt.report_cwd = true;
         let workspace = Some(PathBuf::from("C:/workspace"));
-        let (mut session, mut request) = Session::pending_shell(
+        let (mut session, _) = Session::pending_shell(
             Recorder::default(),
             &config,
             workspace.clone(),
@@ -2050,21 +2124,14 @@ pub(crate) mod tests {
         ] {
             let expected =
                 expected.map(|path| alacritree_common::wsl::linux_to_windows(path, "Ubuntu"));
-            request.tap.as_mut().unwrap().offer(bytes.as_bytes());
-            let deadline = Instant::now() + Duration::from_secs(2);
-            loop {
-                session.drain_events(&Palette::default());
-                if session.reported_cwd == expected {
-                    break;
-                }
-                assert!(Instant::now() < deadline, "cwd report was not drained: {bytes:?}");
-                std::thread::sleep(Duration::from_millis(1));
-            }
+            feed(&session, bytes);
+            session.drain_events(&Palette::default());
+            assert_eq!(session.reported_cwd, expected, "{bytes:?}");
             assert_eq!(session.working_directory, workspace);
         }
     }
 
-    pub(crate) fn assert_wsl_reported_cwd_through_tap(
+    pub(crate) fn assert_wsl_reported_cwd(
         config: &Config,
         shell: Option<ShellCommand>,
         probe: Option<WslProbe>,
@@ -2073,7 +2140,7 @@ pub(crate) mod tests {
     ) {
         let workspace = Some(PathBuf::from("C:/workspace"));
         let expected_shell_distro = probe.as_ref().map(|probe| probe.distro.clone());
-        let (mut session, mut request) = Session::pending_shell(
+        let (mut session, request) = Session::pending_shell(
             Recorder::default(),
             config,
             workspace.clone(),
@@ -2095,21 +2162,9 @@ pub(crate) mod tests {
             ("\x1b]9;9;/home/dev/other\x1b\\", Some(r"\\wsl.localhost\Ubuntu\home\dev\other")),
             ("\x1b]7;\x07", None),
         ] {
-            let expected = expected.map(PathBuf::from);
-            request.tap.as_mut().unwrap().offer(bytes.as_bytes());
-            let deadline = Instant::now() + Duration::from_secs(2);
-            loop {
-                session.drain_events(&Palette::default());
-                if session.reported_cwd == expected {
-                    break;
-                }
-                assert!(
-                    Instant::now() < deadline,
-                    "cwd report was not drained: {bytes:?}, got {:?}",
-                    session.reported_cwd
-                );
-                std::thread::sleep(Duration::from_millis(1));
-            }
+            feed(&session, bytes);
+            session.drain_events(&Palette::default());
+            assert_eq!(session.reported_cwd, expected.map(PathBuf::from), "{bytes:?}");
             assert_eq!(session.working_directory, workspace);
         }
         assert_eq!(session.reported_cwd_distro.as_deref(), Some("Ubuntu"));
@@ -2130,7 +2185,7 @@ pub(crate) mod tests {
             (format!("{}éz", "a".repeat(510)), format!("{}é", "a".repeat(510))),
             ("🦀".repeat(129), "🦀".repeat(128)),
         ] {
-            sender.send(osc_tap::OscEvent::Notify(body)).unwrap();
+            sender.send(osc::OscEvent::Notify(body)).unwrap();
             let outcome = session.drain_events(&Palette::default());
             assert_eq!(outcome.notification.as_deref(), Some(expected.as_str()));
             assert_eq!(session.last_notification.as_deref(), Some(expected.as_str()));
@@ -2142,7 +2197,7 @@ pub(crate) mod tests {
     #[test]
     fn child_exit_clears_osc_visual_state_without_clearing_other_state() {
         let mut session = pty_less_probe(SessionKind::Shell, "shell");
-        session.progress = Some(osc_tap::Progress::Set(42));
+        session.progress = Some(osc::Progress::Set(42));
         session.pointer_shape = Some(egui::CursorIcon::Wait);
         session.last_notification = Some("build failed".to_string());
         session.needs_attention = true;

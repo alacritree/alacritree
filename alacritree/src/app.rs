@@ -42,7 +42,7 @@ use crate::git_nav::{self, GitSection, SectionCount};
 use crate::in_flight::{Finished, InFlight};
 use crate::modal_gate::{ModalGate, ModalKind};
 use crate::multiplexer::Multiplexers;
-use crate::osc_tap::Progress as OscProgress;
+use crate::osc::Progress as OscProgress;
 use crate::panel_filter::{self, PanelFilter};
 use crate::path_style::PathStyle;
 use crate::pr_status::{self, PrCache};
@@ -4764,7 +4764,7 @@ mod tests {
 
         use super::*;
         use crate::notify::TOASTS;
-        use crate::osc_tap::OscEvent;
+        use crate::osc::OscEvent;
 
         enum Visibility {
             VisibleAndFocused,
@@ -4779,7 +4779,7 @@ mod tests {
         }
 
         /// `test_app` with toasts on, no grace window, and an OSC channel the
-        /// test writes into instead of a tap thread.
+        /// test writes into instead of a terminal parse.
         fn notification_app() -> NotificationApp {
             TOASTS.with_borrow_mut(Vec::clear);
             let mut app = test_app();
@@ -9284,7 +9284,7 @@ mod tests {
     /// its bottom edge, painted behind the row's text.
     #[test]
     fn progress_drains_into_the_session_row_as_a_bar() {
-        use crate::osc_tap::OscEvent;
+        use crate::osc::OscEvent;
 
         let mut app = test_app();
         app.session_rows_always = true;
@@ -9485,13 +9485,7 @@ mod tests {
         config.vt.report_cwd = true;
         let (shell, probe, distro) = profile_session_shell(&profile, false);
         assert!(probe.is_none());
-        session::tests::assert_wsl_reported_cwd_through_tap(
-            &config,
-            shell,
-            probe,
-            distro,
-            &profile.args,
-        );
+        session::tests::assert_wsl_reported_cwd(&config, shell, probe, distro, &profile.args);
     }
 
     #[test]
@@ -9505,13 +9499,7 @@ mod tests {
         });
         let (shell, probe, distro) = config_session_shell(&config, false);
         assert!(shell.is_none() && probe.is_none());
-        session::tests::assert_wsl_reported_cwd_through_tap(
-            &config,
-            shell,
-            probe,
-            distro,
-            &profile.args,
-        );
+        session::tests::assert_wsl_reported_cwd(&config, shell, probe, distro, &profile.args);
     }
 
     /// A sibling opened in a reported directory takes its shell from where it
