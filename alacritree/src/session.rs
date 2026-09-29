@@ -703,14 +703,24 @@ fn pty_working_directory(explicit: Option<PathBuf>, config: &Config) -> Option<P
 /// / the MCP tools.
 pub(crate) const SESSION_ID_ENV: &str = "ALACRITREE_SESSION_ID";
 
+/// Name and version a program reads to identify the terminal it runs in,
+/// the convention WezTerm and Ghostty follow. Programs such as Codex choose
+/// an image protocol from `TERM_PROGRAM`.
+pub(crate) const TERM_PROGRAM_ENV: [(&str, &str); 2] =
+    [("TERM_PROGRAM", "alacritree"), ("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"))];
+
 /// The environment a session's PTY starts with: the user's `[env]` table,
-/// the diff-pane `LESS` default, and the session's own id.
+/// [`TERM_PROGRAM_ENV`], the diff-pane `LESS` default, and the session's own
+/// id.
 fn session_env(
     config_env: &HashMap<String, String>,
     kind: &SessionKind,
     id: SessionId,
 ) -> HashMap<String, String> {
     let mut env = config_env.clone();
+    for (name, value) in TERM_PROGRAM_ENV {
+        env.entry(name.to_string()).or_insert_with(|| value.to_string());
+    }
     if matches!(kind, SessionKind::Diff { .. }) {
         // git hands its pager `LESS=FRX`; both of those defaults hurt a diff
         // tab. `F` (quit-if-one-screen) makes delta's `less` exit the instant
@@ -3166,6 +3176,54 @@ pub(crate) mod tests {
         assert_eq!(env.get("ALACRITREE_SESSION_ID").map(String::as_str), Some("7"));
     }
 
+    /// Programs pick a graphics protocol from `TERM_PROGRAM` before sending
+    /// any image, so the shell in a real pane has to see it.
+    #[test]
+    fn a_pane_sees_alacritree_as_its_term_program() {
+        #[cfg(windows)]
+        let (program, args) = ("cmd.exe".to_string(), vec![
+            "/q".into(),
+            "/k".into(),
+            "echo [%TERM_PROGRAM%] [%TERM_PROGRAM_VERSION%]".into(),
+        ]);
+        #[cfg(not(windows))]
+        let (program, args) = ("sh".to_string(), vec![
+            "-c".into(),
+            r#"echo "[$TERM_PROGRAM] [$TERM_PROGRAM_VERSION]"; sleep 5"#.into(),
+        ]);
+        let session = Session::spawn_command(
+            Recorder::default(),
+            &Config::default(),
+            std::env::current_dir().ok(),
+            TermSize::new(80, 24),
+            (8.0, 16.0),
+            program,
+            args,
+            "probe".to_string(),
+            SessionKind::Shell,
+        )
+        .expect("spawn the pane");
+
+        let expected = format!("[alacritree] [{}]", env!("CARGO_PKG_VERSION"));
+        assert!(
+            grid_contains(&session, &expected, Duration::from_secs(20)),
+            "the pane never printed {expected}"
+        );
+    }
+
+    /// `[env]` overrides what alacritree advertises, as it overrides `TERM`.
+    #[test]
+    fn a_user_env_entry_overrides_the_term_program() {
+        let mut user = std::collections::HashMap::new();
+        user.insert("TERM_PROGRAM".to_string(), "WezTerm".to_string());
+        let env = session_env(&user, &SessionKind::Shell, 7);
+        assert_eq!(env.get("TERM_PROGRAM").map(String::as_str), Some("WezTerm"));
+        assert_eq!(
+            env.get("TERM_PROGRAM_VERSION").map(String::as_str),
+            Some(env!("CARGO_PKG_VERSION"))
+        );
+    }
+
     #[test]
     fn an_open_request_can_move_to_the_thread_that_opens_the_pty() {
         fn assert_send<T: Send>() {}
@@ -3175,7 +3233,6 @@ pub(crate) mod tests {
     /// Poll the grid until `needle` appears, or fail saying what was there
     /// instead.  A deadline rather than a sleep: the shells these tests drive
     /// take wildly different times to come up on a loaded runner.
-    #[cfg(windows)]
     fn grid_contains(session: &Session<impl Repaint>, needle: &str, patience: Duration) -> bool {
         let deadline = Instant::now() + patience;
         while Instant::now() < deadline {
