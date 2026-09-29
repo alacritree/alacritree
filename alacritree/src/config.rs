@@ -187,7 +187,7 @@ pub struct VtConfig {
 }
 
 impl VtConfig {
-    /// Whether any sequence is wanted.  A session with none keeps no OSC
+    /// Whether any sequence is wanted. A session with none keeps no OSC
     /// filter.
     pub fn any_enabled(&self) -> bool {
         self.report_cwd || self.notify || self.progress || self.pointer_shape

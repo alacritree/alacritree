@@ -35,7 +35,7 @@ pub(crate) struct EventProxy<R> {
 }
 
 /// Runs on the PTY thread under the terminal lock, which is why it only
-/// classifies.  Resolving a WSL path waits for `drain_events`.
+/// classifies. Resolving a WSL path waits for `drain_events`.
 struct OscRoute {
     filter: osc::OscFilter,
     sender: mpsc::Sender<osc::OscEvent>,
@@ -2090,6 +2090,8 @@ pub(crate) mod tests {
             ("\x1b]9;4;4;75\x07", Progress::Paused(75)),
             ("\x1b]9;4;3\x07", Progress::Indeterminate),
             ("\x1b]9;4;0\x07", Progress::Clear),
+            // CAN cancels the sequence, and vte still dispatches it.
+            ("\x1b]9;4;1;10\x18", Progress::Set(10)),
         ] {
             feed(&session, bytes);
             let outcome = session.drain_events(&config.palette);
