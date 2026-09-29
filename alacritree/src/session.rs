@@ -710,9 +710,11 @@ pub(crate) const TERM_PROGRAM_ENV: [(&str, &str); 2] =
     [("TERM_PROGRAM", "alacritree"), ("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"))];
 
 /// Variables other terminals set to name themselves, the ones yazi's brand
-/// detection reads. alacritree started from one of them inherits its name,
-/// and a program in a pane would take the host's image protocol for
-/// alacritree's: `WT_SESSION` makes yazi pick sixel.
+/// detection reads. yazi spells Windows Terminal's as `WT_Session`, which
+/// matches only on Windows, where variable names ignore case. alacritree
+/// started from one of these terminals inherits its name, and a program in a
+/// pane would take the host's image protocol for alacritree's. Under
+/// `WT_SESSION`, yazi picks sixel.
 const HOST_TERMINAL_ENV: [&str; 9] = [
     "KITTY_WINDOW_ID",
     "KONSOLE_VERSION",
@@ -3240,10 +3242,27 @@ pub(crate) mod tests {
     /// identity, and a pane must not pass it on.
     #[test]
     fn a_pane_does_not_inherit_the_host_terminals_identity() {
-        // SAFETY: nextest runs each test in its own process.
-        unsafe {
-            std::env::set_var("WT_SESSION", "host");
-            std::env::set_var("KITTY_WINDOW_ID", "host");
+        // `forget_host_terminal` edits the process environment, which other
+        // tests on other threads read. The test binary runs again with only
+        // this test, started the way a host terminal starts alacritree.
+        const HOSTED: &str = "ALACRITREE_TEST_HOSTED";
+        if std::env::var_os(HOSTED).is_none() {
+            let (_, path) = module_path!().split_once("::").expect("crate-qualified path");
+            let name = format!("{path}::a_pane_does_not_inherit_the_host_terminals_identity");
+            let run = std::process::Command::new(std::env::current_exe().expect("test binary"))
+                .args(["--exact", &name, "--nocapture"])
+                .env(HOSTED, "1")
+                .env("WT_SESSION", "host")
+                .env("KITTY_WINDOW_ID", "host")
+                .output()
+                .expect("run the hosted test");
+            let stdout = String::from_utf8_lossy(&run.stdout);
+            assert!(
+                run.status.success() && stdout.contains("1 passed"),
+                "hosted run failed:\n{stdout}\n{}",
+                String::from_utf8_lossy(&run.stderr)
+            );
+            return;
         }
         forget_host_terminal();
 
