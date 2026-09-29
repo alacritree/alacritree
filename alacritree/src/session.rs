@@ -2024,8 +2024,11 @@ pub(crate) mod tests {
             ("\x1b]22;crosshair\x07", egui::CursorIcon::Crosshair),
             ("\x1b]22;wait\x1b\\", egui::CursorIcon::Wait),
             ("\x1b]22;default\x07", egui::CursorIcon::Default),
-            // vte reads only the CSS names, so an X11 alias changes nothing.
-            ("\x1b]22;hand2\x07", egui::CursorIcon::Default),
+            // xterm's X11 cursor names, which vte leaves uninterpreted.
+            ("\x1b]22;hand2\x07", egui::CursorIcon::PointingHand),
+            ("\x1b]22;xterm\x1b\\", egui::CursorIcon::Text),
+            // A name neither parser knows leaves the pointer as it was.
+            ("\x1b]22;no-such-cursor\x07", egui::CursorIcon::Text),
         ] {
             feed(&session, bytes);
             let outcome = session.drain_events(&config.palette);

@@ -1460,7 +1460,10 @@ where
                 let shape = String::from_utf8_lossy(params[1]);
                 match CursorIcon::from_str(&shape) {
                     Ok(cursor_icon) => self.handler.set_mouse_cursor_icon(cursor_icon),
-                    Err(_) => debug!("[osc 22] unrecognized cursor icon shape: {shape:?}"),
+                    Err(_) => {
+                        debug!("[osc 22] unrecognized cursor icon shape: {shape:?}");
+                        self.handler.unhandled_osc(params, bell_terminated);
+                    },
                 }
             },
 
@@ -2140,6 +2143,9 @@ mod tests {
         )]);
         // A sequence vte interprets never reaches the hook.
         assert!(record(b"\x1b]0;title\x07").is_empty());
+        assert!(record(b"\x1b]22;pointer\x07").is_empty());
+        // A pointer name outside the CSS set is left to the handler.
+        assert_eq!(record(b"\x1b]22;hand2\x07"), vec![(vec![b"22".to_vec(), b"hand2".to_vec()], true)]);
     }
 
     #[test]

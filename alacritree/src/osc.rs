@@ -86,8 +86,34 @@ fn classify_inner(params: &[&[u8]], policy: &OscPolicy) -> Option<OscEvent> {
             let body = rejoin(params, 3).filter(|b| !b.is_empty())?;
             Some(OscEvent::Notify(body))
         },
+        b"22" => {
+            if !policy.vt.pointer_shape {
+                return None;
+            }
+            x11_cursor(params.get(1).copied()?).map(OscEvent::PointerShape)
+        },
         _ => None,
     }
+}
+
+/// xterm's OSC 22 names come from X11's `cursorfont.h`, and kitty's spec
+/// keeps them as aliases for its CSS names. `vte` parses the CSS names
+/// itself and passes these on. An unknown name leaves the pointer alone:
+/// not understanding a request is not a request to reset.
+fn x11_cursor(name: &[u8]) -> Option<egui::CursorIcon> {
+    Some(match name {
+        b"left_ptr" | b"arrow" => egui::CursorIcon::Default,
+        b"hand" | b"hand1" | b"hand2" => egui::CursorIcon::PointingHand,
+        b"xterm" | b"ibeam" => egui::CursorIcon::Text,
+        b"cross" | b"tcross" => egui::CursorIcon::Crosshair,
+        b"watch" => egui::CursorIcon::Wait,
+        b"question_arrow" => egui::CursorIcon::Help,
+        b"fleur" => egui::CursorIcon::Move,
+        b"crossed_circle" => egui::CursorIcon::NotAllowed,
+        b"sb_h_double_arrow" => egui::CursorIcon::ResizeHorizontal,
+        b"sb_v_double_arrow" => egui::CursorIcon::ResizeVertical,
+        _ => return None,
+    })
 }
 
 /// OSC 9 carries two unrelated protocols. A digit-run first field selects
