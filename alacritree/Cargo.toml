@@ -22,6 +22,7 @@ alacritree_common.workspace = true
 alacritree_diff_viewer.workspace = true
 alacritree_doppler.workspace = true
 alacritree_forge.workspace = true
+alacritree_graphics.workspace = true
 alacritree_gh.workspace = true
 alacritree_git.workspace = true
 alacritree_herdr.workspace = true

@@ -70,6 +70,7 @@ dependencies = [
  "alacritree_forge",
  "alacritree_gh",
  "alacritree_git",
+ "alacritree_graphics",
  "alacritree_herdr",
  "alacritree_multiplexer",
  "alacritree_tasks",
@@ -234,6 +235,10 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.17",
 ]
+
+[[package]]
+name = "alacritree_graphics"
+version = "0.0.0"
 
 [[package]]
 name = "alacritree_herdr"

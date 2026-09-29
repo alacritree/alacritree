@@ -1,0 +1,10 @@
+[package]
+name = "alacritree_graphics"
+version = "0.0.0"
+license = "Apache-2.0"
+description = "The kitty graphics protocol: commands, image store and placements"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
