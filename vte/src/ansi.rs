@@ -697,6 +697,14 @@ pub trait Handler {
     /// Report text area size in characters.
     fn text_area_size_chars(&mut self) {}
 
+    /// Report the size of one cell in pixels.
+    fn cell_size_pixels(&mut self) {}
+
+    /// Handle an application program command, such as a kitty graphics
+    /// command.  `payload` is everything between `ESC _` and the string
+    /// terminator.
+    fn apc(&mut self, _payload: &[u8]) {}
+
     /// Set hyperlink.
     fn set_hyperlink(&mut self, _: Option<Hyperlink>) {}
 
@@ -1329,6 +1337,11 @@ where
     }
 
     #[inline]
+    fn apc_dispatch(&mut self, bytes: &[u8]) {
+        self.handler.apc(bytes);
+    }
+
+    #[inline]
     fn osc_dispatch(&mut self, params: &[&[u8]], bell_terminated: bool) {
         let terminator = if bell_terminated { "\x07" } else { "\x1b\\" };
 
@@ -1747,6 +1760,7 @@ where
             ('T', []) => handler.scroll_down(next_param_or(1) as usize),
             ('t', []) => match next_param_or(1) as usize {
                 14 => handler.text_area_size_pixels(),
+                16 => handler.cell_size_pixels(),
                 18 => handler.text_area_size_chars(),
                 22 => handler.push_title(),
                 23 => handler.pop_title(),

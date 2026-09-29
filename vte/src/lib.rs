@@ -44,6 +44,10 @@ pub use params::{Params, ParamsIter};
 const MAX_INTERMEDIATES: usize = 2;
 const MAX_OSC_PARAMS: usize = 16;
 const MAX_OSC_RAW: usize = 1024;
+/// Longest APC string passed to [`Perform::apc_dispatch`], kitty's limit for
+/// one escape code.  A longer one is dropped whole.
+#[cfg(feature = "std")]
+const MAX_APC_LEN: usize = 256 * 1024;
 
 /// Parser for raw _VTE_ protocol which delegates actions to a [`Perform`]
 ///
@@ -64,6 +68,12 @@ pub struct Parser<const OSC_RAW_BUF_SIZE: usize = MAX_OSC_RAW> {
     osc_raw: Vec<u8>,
     osc_params: [(usize, usize); MAX_OSC_PARAMS],
     osc_num_params: usize,
+    /// The APC string being collected, reused from one string to the next.
+    #[cfg(feature = "std")]
+    apc: Vec<u8>,
+    /// The APC string being collected passed [`MAX_APC_LEN`].
+    #[cfg(feature = "std")]
+    apc_overflow: bool,
     ignoring: bool,
     partial_utf8: [u8; 4],
     partial_utf8_len: usize,
@@ -117,6 +127,8 @@ impl<const OSC_RAW_BUF_SIZE: usize> Parser<OSC_RAW_BUF_SIZE> {
         while i != bytes.len() {
             match self.state {
                 State::Ground => i += self.advance_ground(performer, &bytes[i..]),
+                #[cfg(feature = "std")]
+                State::ApcString => i += self.advance_apc(performer, &bytes[i..]),
                 _ => {
                     // Inlining it results in worse codegen.
                     let byte = bytes[i];
@@ -152,6 +164,8 @@ impl<const OSC_RAW_BUF_SIZE: usize> Parser<OSC_RAW_BUF_SIZE> {
         while i != bytes.len() && !performer.terminated() {
             match self.state {
                 State::Ground => i += self.advance_ground(performer, &bytes[i..]),
+                #[cfg(feature = "std")]
+                State::ApcString => i += self.advance_apc(performer, &bytes[i..]),
                 _ => {
                     // Inlining it results in worse codegen.
                     let byte = bytes[i];
@@ -180,6 +194,8 @@ impl<const OSC_RAW_BUF_SIZE: usize> Parser<OSC_RAW_BUF_SIZE> {
             State::EscapeIntermediate => self.advance_esc_intermediate(performer, byte),
             State::OscString => self.advance_osc_string(performer, byte),
             State::SosPmApcString => self.anywhere(performer, byte),
+            #[cfg(feature = "std")]
+            State::ApcString => unreachable!(),
             State::Ground => unreachable!(),
         }
     }
@@ -374,6 +390,15 @@ impl<const OSC_RAW_BUF_SIZE: usize> Parser<OSC_RAW_BUF_SIZE> {
                 self.osc_num_params = 0;
                 self.state = State::OscString
             },
+            #[cfg(feature = "std")]
+            0x5E => self.state = State::SosPmApcString,
+            #[cfg(feature = "std")]
+            0x5F => {
+                self.apc.clear();
+                self.apc_overflow = false;
+                self.state = State::ApcString
+            },
+            #[cfg(not(feature = "std"))]
             0x5E..=0x5F => self.state = State::SosPmApcString,
             0x60..=0x7E => {
                 performer.esc_dispatch(self.intermediates(), self.ignoring, byte);
@@ -665,6 +690,45 @@ impl<const OSC_RAW_BUF_SIZE: usize> Parser<OSC_RAW_BUF_SIZE> {
         }
     }
 
+    /// Collect APC string bytes up to the next ESC, CAN or SUB.
+    ///
+    /// ESC ends the string and dispatches it, the way it ends an OSC.  CAN and
+    /// SUB cancel it.  Every other byte, C0 controls included, belongs to the
+    /// string.
+    #[cfg(feature = "std")]
+    #[inline]
+    fn advance_apc<P: Perform>(&mut self, performer: &mut P, bytes: &[u8]) -> usize {
+        let end = memchr::memchr3(0x1B, 0x18, 0x1A, bytes).unwrap_or(bytes.len());
+
+        if !self.apc_overflow {
+            if self.apc.len() + end > MAX_APC_LEN {
+                self.apc_overflow = true;
+                self.apc.clear();
+            } else {
+                self.apc.extend_from_slice(&bytes[..end]);
+            }
+        }
+
+        let byte = match bytes.get(end) {
+            Some(&byte) => byte,
+            None => return end,
+        };
+
+        if byte == 0x1B {
+            if !self.apc_overflow {
+                performer.apc_dispatch(&self.apc);
+            }
+            self.reset_params();
+            self.state = State::Escape;
+        } else {
+            performer.execute(byte);
+            self.state = State::Ground;
+        }
+        self.apc.clear();
+
+        end + 1
+    }
+
     /// Advance the parser while processing a partial utf8 codepoint.
     #[inline]
     fn advance_partial_utf8<P: Perform>(&mut self, performer: &mut P, bytes: &[u8]) -> usize {
@@ -744,6 +808,8 @@ enum State {
     EscapeIntermediate,
     OscString,
     SosPmApcString,
+    #[cfg(feature = "std")]
+    ApcString,
     #[default]
     Ground,
 }
@@ -790,6 +856,12 @@ pub trait Perform {
 
     /// Dispatch an operating system command.
     fn osc_dispatch(&mut self, _params: &[&[u8]], _bell_terminated: bool) {}
+
+    /// Dispatch an application program command: everything between `ESC _`
+    /// and the string terminator.
+    ///
+    /// A string longer than 256 KiB is dropped without a call.
+    fn apc_dispatch(&mut self, _bytes: &[u8]) {}
 
     /// A final character has arrived for a CSI sequence
     ///
@@ -857,6 +929,7 @@ mod tests {
         Print(char),
         Execute(u8),
         DcsUnhook,
+        Apc(Vec<u8>),
     }
 
     impl Perform for Dispatcher {
@@ -897,6 +970,77 @@ mod tests {
         fn execute(&mut self, byte: u8) {
             self.dispatched.push(Sequence::Execute(byte));
         }
+
+        fn apc_dispatch(&mut self, bytes: &[u8]) {
+            self.dispatched.push(Sequence::Apc(bytes.to_vec()));
+        }
+    }
+
+    #[test]
+    fn apc_is_dispatched_whole_at_its_terminator() {
+        let mut dispatcher = Dispatcher::default();
+        let mut parser = Parser::new();
+
+        parser.advance(&mut dispatcher, b"a\x1b_Gi=1,a=q;");
+        parser.advance(&mut dispatcher, b"AAAA\x1b\\b");
+
+        assert_eq!(dispatcher.dispatched, [
+            Sequence::Print('a'),
+            Sequence::Apc(b"Gi=1,a=q;AAAA".to_vec()),
+            Sequence::Esc(vec![], false, b'\\'),
+            Sequence::Print('b'),
+        ]);
+    }
+
+    #[test]
+    fn sos_and_pm_are_still_ignored() {
+        let mut dispatcher = Dispatcher::default();
+        let mut parser = Parser::new();
+
+        parser.advance(&mut dispatcher, b"\x1bXsos\x1b\\\x1b^pm\x1b\\");
+
+        assert_eq!(dispatcher.dispatched, [
+            Sequence::Esc(vec![], false, b'\\'),
+            Sequence::Esc(vec![], false, b'\\'),
+        ]);
+    }
+
+    #[test]
+    fn cancelled_apc_is_not_dispatched() {
+        let mut dispatcher = Dispatcher::default();
+        let mut parser = Parser::new();
+
+        parser.advance(&mut dispatcher, b"\x1b_Ga=q\x18x\x1b_\x1b\\");
+
+        assert_eq!(dispatcher.dispatched, [
+            Sequence::Execute(0x18),
+            Sequence::Print('x'),
+            Sequence::Apc(vec![]),
+            Sequence::Esc(vec![], false, b'\\'),
+        ]);
+    }
+
+    #[test]
+    fn apc_over_the_limit_is_dropped_and_the_next_one_is_not() {
+        let mut dispatcher = Dispatcher::default();
+        let mut parser = Parser::new();
+        let at_limit = vec![b'A'; MAX_APC_LEN];
+
+        parser.advance(&mut dispatcher, b"\x1b_");
+        parser.advance(&mut dispatcher, &at_limit);
+        parser.advance(&mut dispatcher, b"\x1b\\\x1b_");
+        parser.advance(&mut dispatcher, &at_limit);
+        parser.advance(&mut dispatcher, b"A\x1b\\\x1b_G\x1b\\");
+
+        let apcs: Vec<_> = dispatcher
+            .dispatched
+            .iter()
+            .filter_map(|sequence| match sequence {
+                Sequence::Apc(bytes) => Some(bytes.len()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(apcs, [MAX_APC_LEN, 1]);
     }
 
     #[test]
