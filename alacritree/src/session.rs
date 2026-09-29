@@ -364,6 +364,8 @@ pub(crate) struct Session<R: Repaint> {
     pub reported_cwd: Option<PathBuf>,
     pub kind: SessionKind,
     pub size: TermSize,
+    /// One cell in device pixels, which is what the PTY, `CSI 14 t`,
+    /// `CSI 16 t` and the terminal's images are told.
     pub cell_size: (f32, f32),
     pub term: Arc<FairMutex<Term<EventProxy<R>>>>,
     pub events: mpsc::Receiver<TermEvent>,
@@ -515,7 +517,7 @@ fn color_query_reply(
     Some(format(rgb).into_bytes())
 }
 
-/// Bytes answering a CSI 14 t text-area-size query.  Fed the same geometry the
+/// Bytes answering a CSI 14 t or 16 t size query.  Fed the same geometry the
 /// PTY was last resized with, so the pixel answer can't drift from the cell
 /// grid the child already knows about.
 fn text_area_size_reply(
@@ -645,6 +647,28 @@ fn session_activity(
     } else {
         SessionActivity::Shell
     }
+}
+
+/// A session's terminal, with its images sized in `cell_size` device pixels
+/// and their decodes waking the pane the way PTY output does.
+fn new_term<R: Repaint>(
+    config: &Config,
+    size: &TermSize,
+    cell_size: (f32, f32),
+    proxy: &EventProxy<R>,
+) -> Arc<FairMutex<Term<EventProxy<R>>>> {
+    let mut term = Term::new(term_config(config), size, proxy.clone());
+    let graphics = term.graphics_mut();
+    let (width, height) = cell_pixels(cell_size);
+    graphics.set_cell_pixels(width, height);
+    let proxy = proxy.clone();
+    graphics.set_waker(move || proxy.send_event(TermEvent::Wakeup));
+    Arc::new(FairMutex::new(term))
+}
+
+/// Whole device pixels of one cell, never zero.
+fn cell_pixels((width, height): (f32, f32)) -> (u32, u32) {
+    (width.max(1.0) as u32, height.max(1.0) as u32)
 }
 
 /// Terminal options derived from the user config.
@@ -908,7 +932,7 @@ impl<R: Repaint> Session<R> {
     ) -> std::io::Result<Self> {
         let editor = scratchpad::Editor::open(path.clone())?;
         let (proxy, events) = EventProxy::new(repaint);
-        let term = Arc::new(FairMutex::new(Term::new(term_config(config), &size, proxy.clone())));
+        let term = new_term(config, &size, cell_size, &proxy);
         Ok(Self {
             id: next_session_id(),
             title: "scratchpad".to_string(),
@@ -955,7 +979,7 @@ impl<R: Repaint> Session<R> {
         view: crate::tasks::view::TasksView,
     ) -> Self {
         let (proxy, events) = EventProxy::new(repaint);
-        let term = Arc::new(FairMutex::new(Term::new(term_config(config), &size, proxy.clone())));
+        let term = new_term(config, &size, cell_size, &proxy);
         Self {
             id: next_session_id(),
             title: "tasks".to_string(),
@@ -1138,8 +1162,7 @@ impl<R: Repaint> Session<R> {
             None => (proxy, None),
         };
 
-        let term = Term::new(term_config(config), &size, proxy.clone());
-        let term = Arc::new(FairMutex::new(term));
+        let term = new_term(config, &size, cell_size, &proxy);
 
         let id = next_session_id();
         let env = session_env(&config.env, &kind, id);
@@ -1314,7 +1337,7 @@ impl<R: Repaint> Session<R> {
                         self.write(bytes);
                     }
                 },
-                // CSI 14 t.  Image protocols and TUIs that size themselves in
+                // CSI 14 t and 16 t.  Image protocols and TUIs that size themselves in
                 // pixels block on this the same way the color queries do.
                 TermEvent::TextAreaSizeRequest(format) => {
                     let reply = text_area_size_reply(format.as_ref(), self.size, self.cell_size);
@@ -1370,7 +1393,11 @@ impl<R: Repaint> Session<R> {
         // Upstream resizes the PTY first and the terminal second; here the
         // order is reversed so the grid tracks the pane whether or not a PTY
         // exists yet.
-        self.term.lock().resize(size);
+        let mut term = self.term.lock();
+        term.resize(size);
+        let (width, height) = cell_pixels(cell_size);
+        term.graphics_mut().set_cell_pixels(width, height);
+        drop(term);
         let Some(sender) = &self.sender else {
             return;
         };
