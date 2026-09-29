@@ -450,6 +450,27 @@ other platforms the sidebar cannot be targeted and no tint is drawn. Drops
 still reach the terminal or the scratchpad there, chosen by which tab is
 active.
 
+### Images
+
+Alacritree draws images sent with the kitty graphics protocol. A program decides whether to send any before it sends the first one, and each program decides differently. Every pane carries `TERM_PROGRAM=alacritree` and `TERM_PROGRAM_VERSION` for programs that go by the environment, and alacritree answers the kitty `a=q` query for programs that ask. `TERM` is left alone, because a kitty or Ghostty value would claim capabilities alacritree does not have. `[env]` can override both variables, as it overrides `TERM`.
+
+Where the program runs changes what reaches it:
+
+- **Linux.** Replies reach the program, and the PTY reports the pane's size in pixels.
+- **WSL on Windows.** Replies to the program's queries reach it unchanged. The pseudoconsole carries no pixel size, so the program reads 0 for the pane's width and height in pixels.
+- **Native Windows programs.** Image output reaches alacritree unchanged. A reply reaches the program only if it has put its console input in VT mode (`ENABLE_VIRTUAL_TERMINAL_INPUT`). Otherwise the pseudoconsole drops the kitty reply, turns its closing `ESC \` into an Alt+`\` key press, and drops pixel-size replies as well. A program that queries before drawing sees no answer there.
+
+| Program | How it decides | Linux | WSL | Native Windows | What helps |
+|---|---|---|---|---|---|
+| `kitten icat` | kitty `a=q` query, and the pane's pixel size | yes | with `--use-window-size` | not covered | In WSL, pass the pane's size, `--use-window-size cols,rows,width_px,height_px`, since the pixel size reads 0. `--transfer-mode=stream` skips the query. |
+| yazi | kitty `a=q` query | yes | yes | yes | Nothing. It asks for the cell size with `CSI 16 t` where the pixel size reads 0. `yazi --debug` prints what it detected. |
+| zellij | kitty `a=q` query at client startup | yes | yes | yes | `support_kitty_graphics_protocol true` in `config.kdl`, which is the default. zellij redraws its panes' images in alacritree. |
+| herdr | its own config, no query | yes | yes | yes, at an assumed cell size | `[terminal] kitty_graphics = true`, which is the default. Natively on Windows it cannot learn the cell size and assumes 8x16 pixels. |
+| Codex | a list of terminal names in `TERM` and `TERM_PROGRAM` | needs a Codex release that lists alacritree | same | same | No override. Only its pets use images, and never inside tmux or zellij. |
+| Claude Code | `XTVERSION` must name kitty or Ghostty | with the variable | with the variable | with the variable | `CLAUDE_CODE_FORCE_TERMINAL_IMAGES=1`, set in `[env]`. It draws through kitty Unicode placeholders. |
+
+A program inside zellij asks zellij, which answers from its own kitty support. Codex refuses to draw inside zellij or tmux. alacritree started from another terminal drops the variables that terminal sets to name itself, such as `WT_SESSION` and `KITTY_WINDOW_ID`, so a program in a pane does not mistake alacritree for its host. Without that, yazi picks sixel under an inherited `WT_SESSION`.
+
 ## Input and key bindings
 
 Input handling is layered:
