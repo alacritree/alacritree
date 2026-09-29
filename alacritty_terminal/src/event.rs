@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use crate::term::ClipboardType;
 use crate::vte::ansi::Rgb;
+use crate::vte::ansi::cursor_icon::CursorIcon;
 
 /// Terminal event.
 ///
@@ -56,6 +57,12 @@ pub enum Event {
 
     /// Child process exited.
     ChildExit(ExitStatus),
+
+    /// An OSC sequence the parser does not interpret, split on `;`.
+    UnhandledOsc { params: Vec<Vec<u8>>, bell_terminated: bool },
+
+    /// OSC 22, the mouse pointer the application asked for.
+    MouseCursorIcon(CursorIcon),
 }
 
 impl Debug for Event {
@@ -74,6 +81,11 @@ impl Debug for Event {
             Event::Bell => write!(f, "Bell"),
             Event::Exit => write!(f, "Exit"),
             Event::ChildExit(status) => write!(f, "ChildExit({status:?})"),
+            Event::UnhandledOsc { params, bell_terminated } => {
+                let params: Vec<_> = params.iter().map(|param| String::from_utf8_lossy(param)).collect();
+                write!(f, "UnhandledOsc({params:?}, bell_terminated: {bell_terminated})")
+            },
+            Event::MouseCursorIcon(icon) => write!(f, "MouseCursorIcon({icon:?})"),
         }
     }
 }

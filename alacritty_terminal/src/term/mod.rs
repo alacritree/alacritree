@@ -1871,6 +1871,17 @@ impl<T: EventListener> Handler for Term<T> {
     }
 
     #[inline]
+    fn set_mouse_cursor_icon(&mut self, icon: ansi::cursor_icon::CursorIcon) {
+        self.event_proxy.send_event(Event::MouseCursorIcon(icon));
+    }
+
+    #[inline]
+    fn unhandled_osc(&mut self, params: &[&[u8]], bell_terminated: bool) {
+        let params = params.iter().map(|param| param.to_vec()).collect();
+        self.event_proxy.send_event(Event::UnhandledOsc { params, bell_terminated });
+    }
+
+    #[inline]
     fn set_hyperlink(&mut self, hyperlink: Option<Hyperlink>) {
         trace!("Setting hyperlink: {hyperlink:?}");
         self.grid.cursor.template.set_hyperlink(hyperlink.map(|e| e.into()));
@@ -2517,6 +2528,41 @@ mod tests {
     use crate::term::cell::{Cell, Flags};
     use crate::term::test::TermSize;
     use crate::vte::ansi::{self, CharsetIndex, Handler, StandardCharset};
+
+    #[derive(Clone, Default)]
+    struct Recorder(Arc<std::sync::Mutex<Vec<Event>>>);
+
+    impl EventListener for Recorder {
+        fn send_event(&self, event: Event) {
+            self.0.lock().unwrap().push(event);
+        }
+    }
+
+    fn events(bytes: &[u8]) -> Vec<Event> {
+        let recorder = Recorder::default();
+        let mut term = Term::new(Config::default(), &TermSize::new(5, 10), recorder.clone());
+        ansi::Processor::<ansi::StdSyncHandler>::new().advance(&mut term, bytes);
+        mem::take(&mut *recorder.0.lock().unwrap())
+    }
+
+    #[test]
+    fn uninterpreted_osc_and_pointer_shape_reach_the_listener() {
+        assert!(matches!(
+            events(b"\x1b]7;file:///tmp\x07").as_slice(),
+            [Event::UnhandledOsc { params, bell_terminated: true }]
+                if params == &[b"7".to_vec(), b"file:///tmp".to_vec()]
+        ));
+        // CAN ends the sequence without a terminator.
+        assert!(matches!(events(b"\x1b]7;file:///tmp\x18").as_slice(), [Event::UnhandledOsc {
+            bell_terminated: false,
+            ..
+        }]));
+        assert!(matches!(
+            events(b"\x1b]22;pointer\x1b\\").as_slice(),
+            [Event::MouseCursorIcon(ansi::cursor_icon::CursorIcon::Pointer)]
+        ));
+        assert!(!events(b"\x1b]0;t\x07").iter().any(|e| matches!(e, Event::UnhandledOsc { .. })));
+    }
 
     #[test]
     fn scroll_display_page_up() {
