@@ -731,6 +731,7 @@ impl AlacritreeApp {
         ));
 
         alacritty_terminal::tty::setup_env();
+        crate::session::forget_host_terminal();
 
         (font_chain, face_metrics)
     }
