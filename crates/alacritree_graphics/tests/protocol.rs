@@ -122,6 +122,24 @@ fn a_temporary_file_is_deleted_even_when_its_image_goes_before_the_decode() {
     assert!(!file.0.exists(), "{} was left behind", file.path());
 }
 
+/// The name marks a file the client made for the transfer, but only a
+/// temporary directory holds files a remote client may have alacritree
+/// delete, so one elsewhere is read and kept.
+#[test]
+fn a_temporary_transfer_outside_the_temporary_directory_is_not_deleted() {
+    let mut pane = Pane::new(10, 5);
+    let path = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("tty-graphics-protocol-kept-{}", std::process::id()));
+    std::fs::write(&path, [0; 3]).unwrap();
+
+    let reply = pane.send("a=t,t=t,i=41,f=24,s=1,v=1", path.to_str().unwrap());
+
+    let kept = path.exists();
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(reply.as_deref(), Some("\x1b_Gi=41;OK\x1b\\"));
+    assert!(kept, "{} was deleted", path.display());
+}
+
 #[test]
 fn a_frame_is_rebuilt_only_when_its_layout_or_viewport_changed() {
     let mut pane = Pane::new(10, 5);

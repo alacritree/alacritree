@@ -147,15 +147,10 @@ impl Load {
             return Err(CommandError::ImageFile);
         }
         let path = image_path(path).ok_or(CommandError::ImageFile)?;
-        let opened = self.read_file(&path);
-        // Deleted as soon as it is open, as kitty does: the open handle keeps
-        // the data readable, and nothing that later drops the decode has to
-        // remember the file.
-        if medium == Medium::TempFile && path.to_string_lossy().contains("tty-graphics-protocol")
-        {
-            let _ = std::fs::remove_file(&path);
-        }
-        let (file, offset, len, head) = opened?;
+        let temporary = medium == Medium::TempFile
+            && path.to_string_lossy().contains("tty-graphics-protocol")
+            && in_temp_dir(&path);
+        let (file, offset, len, head) = self.read_file(&path, temporary)?;
         let (width, height) = self.check(&head, len, true)?;
         let source = Source::File { file, offset, len };
         Ok(self.decode(source, width, height))
@@ -169,8 +164,15 @@ impl Load {
     }
 
     /// Open `path`, check it is a regular file holding enough data, and read
-    /// its head.
-    fn read_file(&self, path: &Path) -> Result<(File, u64, usize, Vec<u8>), CommandError> {
+    /// its head.  A `temporary` file is deleted once it is open, as kitty
+    /// does, whether or not reading it succeeds.  The open handle keeps the
+    /// data readable, so nothing that drops the decode later has to remember
+    /// the file.
+    fn read_file(
+        &self,
+        path: &Path,
+        temporary: bool,
+    ) -> Result<(File, u64, usize, Vec<u8>), CommandError> {
         let fail = |why: &dyn std::fmt::Display| {
             log::debug!("graphics: cannot read image file {}: {why}", path.display());
             CommandError::ImageFile
@@ -181,6 +183,9 @@ impl Load {
             return Err(fail(&"not a regular file"));
         }
         let mut file = File::open(path).map_err(|e| fail(&e))?;
+        if temporary {
+            let _ = std::fs::remove_file(path);
+        }
         let metadata = file.metadata().map_err(|e| fail(&e))?;
         if !metadata.is_file() {
             return Err(fail(&"not a regular file"));
@@ -237,6 +242,19 @@ impl Load {
             raw_size: self.data_size,
         }
     }
+}
+
+/// Whether `path` lies in a temporary directory, the only place kitty lets a
+/// client have a file deleted from.
+fn in_temp_dir(path: &Path) -> bool {
+    let Ok(path) = std::fs::canonicalize(path) else {
+        return false;
+    };
+    let mut dirs = vec![std::env::temp_dir()];
+    if cfg!(unix) {
+        dirs.extend(["/tmp", "/dev/shm"].map(PathBuf::from));
+    }
+    dirs.iter().filter_map(|dir| std::fs::canonicalize(dir).ok()).any(|dir| path.starts_with(dir))
 }
 
 /// The path a client named, if it may be read at all: absolute, and once
