@@ -39,6 +39,7 @@ log = "0.4"
 env_logger = "0.11"
 # Names this machine, so an OSC 7 report naming it counts as local.
 gethostname = "1"
+memchr = "2"
 pabal = "0.2"
 # PTY wrappers (`pty_tee`, `pty_rearm`) hand alacritty_terminal a `Poller`, so
 # this must resolve to the version it links.

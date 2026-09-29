@@ -278,17 +278,15 @@ pub(crate) struct Sink<R> {
     destination: Destination<R>,
     pending: usize,
     scan_state: ScanState,
+    last_cwd: Option<OscEvent>,
+    last_progress: Option<OscEvent>,
+    last_pointer_shape: Option<OscEvent>,
 }
 
 #[cfg(test)]
 impl Sink<crate::repaint::Recorder> {
     fn collecting(policy: TapPolicy) -> Self {
-        Self {
-            policy,
-            destination: Destination::Collected(Vec::new()),
-            pending: 0,
-            scan_state: ScanState::Ground,
-        }
+        Self::new(policy, Destination::Collected(Vec::new()))
     }
 
     fn take(&mut self) -> Vec<OscEvent> {
@@ -300,13 +298,20 @@ impl Sink<crate::repaint::Recorder> {
 }
 
 impl<R: Repaint> Sink<R> {
-    fn channel(policy: TapPolicy, tx: std::sync::mpsc::Sender<OscEvent>, repaint: R) -> Self {
+    fn new(policy: TapPolicy, destination: Destination<R>) -> Self {
         Self {
             policy,
-            destination: Destination::Channel { tx, repaint },
+            destination,
             pending: 0,
             scan_state: ScanState::Ground,
+            last_cwd: None,
+            last_progress: None,
+            last_pointer_shape: None,
         }
+    }
+
+    fn channel(policy: TapPolicy, tx: std::sync::mpsc::Sender<OscEvent>, repaint: R) -> Self {
+        Self::new(policy, Destination::Channel { tx, repaint })
     }
 
     fn reset_pending(&mut self) {
@@ -315,12 +320,18 @@ impl<R: Repaint> Sink<R> {
     }
 
     fn scan(&mut self, bytes: &[u8]) {
-        for &byte in bytes {
+        let mut rest = bytes;
+        while let Some((&byte, tail)) = rest.split_first() {
+            rest = tail;
             match self.scan_state {
                 ScanState::Ground => {
-                    if byte == 0x1b {
-                        self.scan_state = ScanState::Escape;
+                    // Nearly all output is ground state, and only an escape
+                    // leaves it.
+                    if byte != 0x1b {
+                        let Some(at) = memchr::memchr(0x1b, rest) else { return };
+                        rest = &rest[at + 1..];
                     }
+                    self.scan_state = ScanState::Escape;
                 },
                 ScanState::Escape => match byte {
                     0x5d => {
@@ -344,7 +355,26 @@ impl<R: Repaint> Sink<R> {
         }
     }
 
+    /// A state the session already holds changes nothing on screen, so it is
+    /// not worth a repaint.  A notification is an occurrence, never a repeat.
+    fn is_repeat(&mut self, event: &OscEvent) -> bool {
+        let last = match event {
+            OscEvent::Notify(_) => return false,
+            OscEvent::Cwd(_) => &mut self.last_cwd,
+            OscEvent::Progress(_) => &mut self.last_progress,
+            OscEvent::PointerShape(_) => &mut self.last_pointer_shape,
+        };
+        if last.as_ref() == Some(event) {
+            return true;
+        }
+        *last = Some(event.clone());
+        false
+    }
+
     fn emit(&mut self, event: OscEvent) {
+        if self.is_repeat(&event) {
+            return;
+        }
         match &mut self.destination {
             Destination::Channel { tx, repaint } => {
                 if tx.send(event).is_ok() {
@@ -630,6 +660,35 @@ mod tests {
 
         feed(&mut parser, &mut sink, &chunk(b"\x1b]7;file:///tmp\x1b\\", false));
         assert_eq!(sink.take(), vec![OscEvent::Cwd(Some("/tmp".into()))]);
+    }
+
+    #[test]
+    fn a_repeated_state_is_emitted_once_and_a_repeated_notification_every_time() {
+        let mut parser = vte::Parser::new();
+        let mut sink = Sink::collecting(policy(ShellPlatform::Unix));
+        let stream = b"\x1b]9;4;1;50\x07\x1b]9;4;1;50\x07\x1b]9;done\x07\
+                       \x1b]22;pointer\x07\x1b]9;4;1;50\x07\x1b]9;done\x07\x1b]9;4;1;60\x07";
+
+        feed(&mut parser, &mut sink, &chunk(stream, false));
+        assert_eq!(sink.take(), vec![
+            OscEvent::Progress(Progress::Set(50)),
+            OscEvent::Notify("done".into()),
+            OscEvent::PointerShape(egui::CursorIcon::PointingHand),
+            OscEvent::Notify("done".into()),
+            OscEvent::Progress(Progress::Set(60)),
+        ]);
+    }
+
+    #[test]
+    fn the_scan_follows_an_escape_split_from_its_sequence() {
+        let mut sink = Sink::collecting(policy(ShellPlatform::Unix));
+
+        sink.scan(b"plain output\x1b");
+        sink.scan(b"]7;file");
+        assert_eq!((sink.scan_state, sink.pending), (ScanState::Osc, 6));
+
+        sink.scan(b"\x07more output");
+        assert_eq!((sink.scan_state, sink.pending), (ScanState::Ground, 0));
     }
 
     #[test]
