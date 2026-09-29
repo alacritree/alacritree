@@ -160,6 +160,22 @@ fn a_frame_is_rebuilt_only_when_its_layout_or_viewport_changed() {
     assert!(graphics.update_frame(&mut frame, Viewport { display_offset: 1, ..viewport }));
 }
 
+/// A session coming on screen rebuilds the shared frame outright, and the
+/// next frame must not rebuild it again.
+#[test]
+fn a_frame_built_outright_is_not_rebuilt_by_the_next_update() {
+    let mut pane = Pane::new(10, 5);
+    pane.message("a=T,f=24,i=1,s=10,v=20", vec![0; 10 * 20 * 3]);
+    pane.settle();
+    let mut frame = alacritree_graphics::frame::ImageFrame::default();
+    let viewport = Viewport { display_offset: 0, rows: 5, columns: 10 };
+    let graphics = pane.term.graphics_mut();
+
+    graphics.build_frame(&mut frame, viewport);
+
+    assert!(!graphics.update_frame(&mut frame, viewport));
+}
+
 #[test]
 fn a_steady_screen_keeps_its_layout_generation() {
     let mut pane = Pane::new(10, 5);

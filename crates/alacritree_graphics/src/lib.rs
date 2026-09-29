@@ -111,8 +111,7 @@ pub struct Graphics {
     /// Moves when the active screen or the cell size changes.
     epoch: u64,
     visible: Vec<Visible>,
-    /// The layout generation and viewport the last [`Graphics::update_frame`]
-    /// built for.
+    /// The layout generation and viewport the last frame was built for.
     built: Option<(u64, Viewport)>,
 }
 
