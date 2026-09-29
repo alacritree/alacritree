@@ -171,6 +171,26 @@ fn a_failed_file_transmission_says_only_that_the_file_could_not_be_read() {
     assert_eq!(pane.send(control, file.path()).as_deref(), Some("\x1b_Gi=32;OK\x1b\\"));
 }
 
+/// Claude Code probes with `a=q,t=f` and falls back to sending the bytes
+/// only on an error, so an `OK` for a file that was never read loses the
+/// image.  A WSL pane names a Linux path, which Windows refuses outright
+/// rather than guessing at the distro it lives in.
+#[test]
+fn a_file_query_is_refused_for_every_path_that_cannot_be_read() {
+    let mut pane = Pane::new(10, 5);
+    let directory = std::env::temp_dir();
+    let missing = directory.join("tty-graphics-protocol-never-written.png");
+    let from_wsl = "/tmp/tty-graphics-protocol-from-a-wsl-pane.png";
+    let refused = "\x1b_Gi=33;EBADF:Failed to read image file\x1b\\";
+
+    for path in [missing.to_str().unwrap(), directory.to_str().unwrap(), from_wsl, "relative.png"]
+    {
+        let reply = pane.send("a=q,t=f,i=33,f=100", path);
+        assert_eq!(reply.as_deref(), Some(refused), "{path}");
+    }
+    assert_eq!(pane.image_count(), 0, "a query stores nothing");
+}
+
 #[test]
 fn quiet_two_silences_every_reply() {
     let mut pane = Pane::new(10, 5);
