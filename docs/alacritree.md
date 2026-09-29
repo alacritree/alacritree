@@ -467,9 +467,9 @@ Where the program runs changes what reaches it:
 | zellij | kitty `a=q` query at client startup | yes | yes | yes | `support_kitty_graphics_protocol true` in `config.kdl`, which is the default. zellij redraws its panes' images in alacritree. |
 | herdr | its own config, no query | yes | yes | yes, at an assumed cell size | `[terminal] kitty_graphics = true`, which is the default. Natively on Windows it cannot learn the cell size and assumes 8x16 pixels. |
 | Codex | a list of terminal names in `TERM` and `TERM_PROGRAM` | needs a Codex release that lists alacritree | same | same | No override. Only its pets use images, and never inside tmux or zellij. |
-| Claude Code | `XTVERSION` must name kitty or Ghostty | with the variable | with the variable | with the variable | `CLAUDE_CODE_FORCE_TERMINAL_IMAGES=1`, set in `[env]`. It draws through kitty Unicode placeholders. |
+| Claude Code | kitty `a=q` query, then a terminal name from `XTVERSION` or the environment, which must be kitty 0.28.0 or later or Ghostty | with the variable | with the variable | with the variable | `CLAUDE_CODE_FORCE_TERMINAL_IMAGES=1` skips the query and the name check. It draws only through kitty Unicode placeholders. |
 
-A program inside zellij asks zellij, which answers from its own kitty support. Codex refuses to draw inside zellij or tmux. alacritree started from another terminal drops the variables that terminal sets to name itself, such as `WT_SESSION` and `KITTY_WINDOW_ID`, so a program in a pane does not mistake alacritree for its host. Without that, yazi picks sixel under an inherited `WT_SESSION`.
+A program inside zellij asks zellij, which answers from its own kitty support. Codex refuses to draw inside zellij or tmux. Claude Code turns images off under tmux and screen, but it reads `CLAUDE_CODE_FORCE_TERMINAL_IMAGES` first, so the variable forces images on inside tmux too. Setting it in `[env]` reaches every pane, including a tmux session started in one, so set it in the shell that starts Claude Code outside tmux if you also use tmux. alacritree started from another terminal drops the variables that terminal sets to name itself, such as `WT_SESSION` and `KITTY_WINDOW_ID`, so a program in a pane does not mistake alacritree for its host. Without that, yazi picks sixel under an inherited `WT_SESSION`.
 
 ## Input and key bindings
 
