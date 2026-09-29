@@ -7,6 +7,7 @@ use std::{cmp, mem, ptr, slice, str};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
+use alacritree_graphics::{ApcContext, CursorMove, Graphics, ScrollRegion};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as Base64;
 use bitflags::bitflags;
@@ -327,6 +328,10 @@ pub struct Term<T> {
 
     /// Config directly for the terminal.
     config: Config,
+
+    /// Kitty graphics protocol images, which the grid changes below move
+    /// and clear.
+    graphics: Graphics,
 }
 
 /// Configuration options for the [`Term`].
@@ -441,6 +446,46 @@ impl<T> Term<T> {
             selection: Default::default(),
             title: Default::default(),
             mode: Default::default(),
+            graphics: Graphics::new(),
+        }
+    }
+
+    /// The kitty graphics protocol images.
+    pub fn graphics(&self) -> &Graphics {
+        &self.graphics
+    }
+
+    pub fn graphics_mut(&mut self) -> &mut Graphics {
+        &mut self.graphics
+    }
+
+    /// Scrollback capacity of the active screen, which is where a scrolled
+    /// image is dropped.
+    fn image_history(&self) -> usize {
+        if self.mode.contains(TermMode::ALT_SCREEN) { 0 } else { self.config.scrolling_history }
+    }
+
+    /// Move images with a scroll of the lines `top..bottom` by `delta`,
+    /// negative for up.
+    #[inline]
+    fn scroll_images(&mut self, top: Line, bottom: Line, delta: i32) {
+        let region = ScrollRegion {
+            top: top.0 as usize,
+            bottom: bottom.0 as usize,
+            screen_lines: self.screen_lines(),
+            history: self.image_history(),
+        };
+        self.graphics.scroll(region, delta);
+    }
+
+    /// The cursor lines of the main and the alternate screen.
+    fn screen_cursor_lines(&self) -> (i32, i32) {
+        let (active, inactive) =
+            (self.grid.cursor.point.line.0, self.inactive_grid.cursor.point.line.0);
+        if self.mode.contains(TermMode::ALT_SCREEN) {
+            (inactive, active)
+        } else {
+            (active, inactive)
         }
     }
 
@@ -674,8 +719,18 @@ impl<T> Term<T> {
         self.vi_mode_cursor.point.line += delta;
 
         let is_alt = self.mode.contains(TermMode::ALT_SCREEN);
+        let cursors_before = self.screen_cursor_lines();
         self.grid.resize(!is_alt, num_lines, num_cols);
         self.inactive_grid.resize(is_alt, num_lines, num_cols);
+
+        // Content moves with the cursor when lines are pushed into or pulled
+        // back from history, and images follow it.
+        let cursors_after = self.screen_cursor_lines();
+        self.graphics.resize(
+            old_cols != num_cols,
+            cursors_after.0 - cursors_before.0,
+            cursors_after.1 - cursors_before.1,
+        );
 
         // Invalidate selection and tabs only when necessary.
         if old_cols != num_cols {
@@ -721,6 +776,9 @@ impl<T> Term<T> {
 
             // Reset alternate screen contents.
             self.inactive_grid.reset_region(..);
+            self.graphics.enter_alt_screen();
+        } else {
+            self.graphics.leave_alt_screen();
         }
 
         mem::swap(&mut self.keyboard_mode_stack, &mut self.inactive_keyboard_mode_stack);
@@ -1485,12 +1543,20 @@ impl<T: EventListener> Handler for Term<T> {
     fn scroll_up(&mut self, lines: usize) {
         let origin = self.scroll_region.start;
         self.scroll_up_relative(origin, lines);
+
+        let Range { start, end } = self.scroll_region;
+        let lines = cmp::min(lines, (end - start).0 as usize);
+        self.scroll_images(start, end, -(lines as i32));
     }
 
     #[inline]
     fn scroll_down(&mut self, lines: usize) {
         let origin = self.scroll_region.start;
         self.scroll_down_relative(origin, lines);
+
+        let Range { start, end } = self.scroll_region;
+        let lines = cmp::min(lines, (end - start).0 as usize);
+        self.scroll_images(start, end, lines as i32);
     }
 
     #[inline]
@@ -1786,12 +1852,15 @@ impl<T: EventListener> Handler for Term<T> {
                 self.selection = self.selection.take().filter(|s| !s.intersects_range(range));
             },
             ansi::ClearMode::All => {
+                self.graphics.clear_screen();
                 if self.mode.contains(TermMode::ALT_SCREEN) {
                     self.grid.reset_region(..);
                 } else {
                     let old_offset = self.grid.display_offset();
 
-                    self.grid.clear_viewport();
+                    let scrolled = self.grid.clear_viewport();
+                    let screen_end = Line(screen_lines as i32);
+                    self.scroll_images(Line(0), screen_end, -(scrolled as i32));
 
                     // Compute number of lines scrolled by clearing the viewport.
                     let lines = self.grid.display_offset().saturating_sub(old_offset);
@@ -1803,6 +1872,7 @@ impl<T: EventListener> Handler for Term<T> {
                 self.selection = None;
             },
             ansi::ClearMode::Saved if self.history_size() > 0 => {
+                self.graphics.clear_all();
                 self.grid.clear_history();
 
                 self.vi_mode_cursor.point.line =
@@ -1810,8 +1880,8 @@ impl<T: EventListener> Handler for Term<T> {
 
                 self.selection = self.selection.take().filter(|s| !s.intersects_range(..Line(0)));
             },
-            // We have no history to clear.
-            ansi::ClearMode::Saved => (),
+            // We have no history to clear, but kitty clears images anyway.
+            ansi::ClearMode::Saved => self.graphics.clear_all(),
         }
 
         self.mark_fully_damaged();
@@ -1848,6 +1918,7 @@ impl<T: EventListener> Handler for Term<T> {
         self.vi_mode_cursor = Default::default();
         self.keyboard_mode_stack = Default::default();
         self.inactive_keyboard_mode_stack = Default::default();
+        self.graphics.reset();
 
         // Preserve vi mode across resets.
         self.mode &= TermMode::VI;
@@ -2278,6 +2349,57 @@ impl<T: EventListener> Handler for Term<T> {
     fn text_area_size_chars(&mut self) {
         let text = format!("\x1b[8;{};{}t", self.screen_lines(), self.columns());
         self.event_proxy.send_event(Event::PtyWrite(text));
+    }
+
+    #[inline]
+    fn cell_size_pixels(&mut self) {
+        self.event_proxy.send_event(Event::TextAreaSizeRequest(Arc::new(move |window_size| {
+            format!("\x1b[6;{};{}t", window_size.cell_height, window_size.cell_width)
+        })));
+    }
+
+    #[inline]
+    fn apc(&mut self, payload: &[u8]) {
+        let context = ApcContext {
+            line: self.grid.cursor.point.line.0 as usize,
+            column: self.grid.cursor.point.column.0,
+            history: self.image_history(),
+        };
+        let outcome = self.graphics.apc(payload, context);
+        if let Some(reply) = outcome.reply {
+            self.event_proxy.send_event(Event::PtyWrite(reply));
+        }
+        if let Some(movement) = outcome.cursor {
+            self.move_past_image(movement);
+        }
+    }
+}
+
+impl<T: EventListener> Term<T> {
+    /// Move the cursor past an image the way kitty does: right by its
+    /// columns, onto the next line once that reaches the edge, then down by
+    /// its rows through linefeeds, so the scroll region scrolls.
+    fn move_past_image(&mut self, movement: CursorMove) {
+        let column = self.grid.cursor.point.column.0 as u64 + u64::from(movement.columns);
+        let wraps = column >= self.columns() as u64;
+        let rows = u64::from(movement.rows) + u64::from(wraps);
+
+        // The row count is the client's.  Past the bottom margin every
+        // linefeed scrolls, so like Ghostty stop one screen past it.
+        let line = self.grid.cursor.point.line;
+        let to_margin = if self.scroll_region.contains(&line) {
+            (self.scroll_region.end.0 - 1 - line.0) as u64
+        } else {
+            0
+        };
+        for _ in 0..rows.min(to_margin + self.screen_lines() as u64) {
+            self.linefeed();
+        }
+
+        self.damage_cursor();
+        self.grid.cursor.point.column = Column(if wraps { 0 } else { column as usize });
+        self.grid.cursor.input_needs_wrap = false;
+        self.damage_cursor();
     }
 }
 

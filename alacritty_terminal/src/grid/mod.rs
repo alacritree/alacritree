@@ -306,7 +306,9 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         }
     }
 
-    pub fn clear_viewport<D>(&mut self)
+    /// Scroll the viewport's content into history and clear it.  Returns how
+    /// many lines were scrolled.
+    pub fn clear_viewport<D>(&mut self) -> usize
     where
         T: ResetDiscriminant<D>,
         D: PartialEq,
@@ -330,6 +332,8 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         for line in (0..(self.lines - positions)).map(Line::from) {
             self.raw[line].reset(&self.cursor.template);
         }
+
+        positions
     }
 
     /// Completely reset the grid state.

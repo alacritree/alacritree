@@ -15,3 +15,5 @@ log = "0.4"
 png = "0.17"
 thiserror.workspace = true
 
+[dev-dependencies]
+alacritty_terminal = { path = "../../alacritty_terminal" }

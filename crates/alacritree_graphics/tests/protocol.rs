@@ -1,0 +1,228 @@
+//! Transmission and reply behaviour the issue asks for beyond kitty's and
+//! Ghostty's own tests: chunks split across reads, decoding off the
+//! terminal lock, and the exact bytes of replies.
+
+mod common;
+
+use std::sync::{Arc, Condvar, Mutex};
+
+use alacritree_common::jobs::{self, Priority};
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
+use common::{Pane, TempFile, assert_rect, command};
+
+#[test]
+fn a_chunked_transmit_and_put_split_across_reads_places_at_the_final_chunk() {
+    let mut pane = Pane::with(20, 10, 100, (10, 20));
+    let rgb = vec![0x40; 30 * 40 * 3];
+    let encoded = STANDARD.encode(&rgb);
+    let (first, rest) = encoded.split_at(1200);
+    let (second, third) = rest.split_at(1200);
+
+    let mut stream = format!("\x1b_Ga=T,f=24,i=5,s=30,v=40,m=1;{first}\x1b\\");
+    stream.push_str("ab");
+    stream.push_str(&format!("\x1b_Gm=1;{second}\x1b\\"));
+    stream.push_str("\r\nxy");
+    stream.push_str(&format!("\x1b_Gm=0;{third}\x1b\\"));
+    for read in stream.as_bytes().chunks(7) {
+        pane.feed(read);
+    }
+
+    assert_eq!(pane.replies(), ["\x1b_Gi=5;OK\x1b\\"]);
+    // Placed where "xy" left the cursor, three cells wide and two tall, and
+    // the cursor moved right by the columns and down by the rows minus one.
+    assert_rect(pane.quads()[0].dest, [2.0, 1.0, 5.0, 3.0]);
+    assert_eq!(pane.cursor(), (5, 2));
+}
+
+#[test]
+fn a_placement_at_the_bottom_scrolls_the_screen_to_fit_the_cursor() {
+    let mut pane = Pane::with(10, 4, 100, (10, 20));
+    pane.feed("\x1b[4;1H");
+    let reply = pane.message("a=T,f=24,i=1,s=10,v=60", vec![0; 10 * 60 * 3]);
+    assert_eq!(reply.as_deref(), Some("OK"));
+    assert_eq!(pane.cursor(), (1, 3));
+    assert_rect(pane.quads()[0].dest, [0.0, 1.0, 1.0, 4.0]);
+}
+
+type Gate = Arc<(Mutex<bool>, Condvar)>;
+
+/// Occupy every interactive worker of the job pool until the returned gate
+/// opens, so a decode queued meanwhile waits.
+fn hold_the_pool() -> (Gate, Vec<jobs::Job<()>>) {
+    let gate = Arc::new((Mutex::new(false), Condvar::new()));
+    let holders = (0..jobs::pool().background_ceiling())
+        .map(|_| {
+            let gate = Arc::clone(&gate);
+            jobs::pool().spawn(Priority::Interactive, move |_| {
+                let (open, condvar) = &*gate;
+                let _open = condvar.wait_while(open.lock().unwrap(), |open| !*open).unwrap();
+            })
+        })
+        .collect();
+    (gate, holders)
+}
+
+#[test]
+fn a_pending_image_draws_nothing_then_draws_after_its_decode_with_no_new_input() {
+    let mut pane = Pane::new(10, 5);
+    let (gate, _holders) = hold_the_pool();
+
+    let reply = pane.message("a=T,f=24,i=1,s=10,v=20", vec![0x80; 10 * 20 * 3]);
+    assert_eq!(reply.as_deref(), Some("OK"), "the reply does not wait for the decode");
+    assert_eq!(pane.cursor(), (1, 0), "neither does the cursor");
+    assert!(pane.graphics().is_decoding());
+    let generation = pane.graphics().layout_generation();
+    let mut frame = alacritree_graphics::frame::ImageFrame::default();
+    let viewport = alacritree_graphics::Viewport { display_offset: 0, rows: 5, columns: 10 };
+    pane.term.graphics_mut().build_frame(&mut frame, viewport);
+    assert!(frame.is_empty());
+
+    *gate.0.lock().unwrap() = true;
+    gate.1.notify_all();
+    pane.wakes.wait_for(1);
+
+    assert_ne!(pane.graphics().layout_generation(), generation);
+    pane.term.graphics_mut().build_frame(&mut frame, viewport);
+    assert_eq!(frame.quads().len(), 1);
+    assert_eq!(frame.runs()[0].pixels.rgba()[..4], [0x80, 0x80, 0x80, 0xff]);
+}
+
+#[test]
+fn a_steady_screen_keeps_its_layout_generation() {
+    let mut pane = Pane::new(10, 5);
+    pane.message("a=T,f=24,i=1,s=10,v=20", vec![0; 10 * 20 * 3]);
+    pane.settle();
+    let generation = pane.graphics().layout_generation();
+    pane.feed("plain text\r\nwith no images\x1b[31m in it\x1b[m");
+    assert_eq!(pane.graphics().layout_generation(), generation);
+    pane.feed("\n\n\n\n");
+    assert_ne!(pane.graphics().layout_generation(), generation, "the scroll moved the image");
+}
+
+#[test]
+fn replies_carry_kittys_exact_bytes() {
+    let mut pane = Pane::new(10, 5);
+    let exchanges = [
+        // kitten icat's detection probe.
+        ("a=q,t=d,i=31,s=1,v=1,f=24", &[0u8, 0, 0][..], "\x1b_Gi=31;OK\x1b\\"),
+        (
+            "a=t,i=7,f=24,s=2,v=2",
+            &[0; 3],
+            "\x1b_Gi=7;ENODATA:Insufficient image data: 3 < 12\x1b\\",
+        ),
+        ("a=t,i=7,f=77,s=1,v=1", &[0; 3], "\x1b_Gi=7;EINVAL:Unknown image format: 77\x1b\\"),
+        ("a=t,i=7,f=24,s=0,v=1", &[0; 3], "\x1b_Gi=7;EINVAL:Zero width/height not allowed\x1b\\"),
+        (
+            "a=T,i=8,I=9,f=24,s=1,v=1",
+            &[0; 3],
+            "\x1b_Gi=8,I=9;EINVAL:Must not specify both image id and image number\x1b\\",
+        ),
+        (
+            "a=t,i=7,f=24,s=10001,v=1",
+            &[0; 3],
+            "\x1b_Gi=7;EINVAL:Image too large, width or height greater than 10000\x1b\\",
+        ),
+        ("a=t,i=7,f=24,s=1,v=1,m=1", &[0; 20], "\x1b_Gi=7;EFBIG:Too much data\x1b\\"),
+        (
+            "a=p,i=404,p=3",
+            &[],
+            "\x1b_Gi=404,p=3;ENOENT:Put command refers to non-existent image with id: 404 and \
+             number: 0\x1b\\",
+        ),
+    ];
+    for (control, payload, reply) in exchanges {
+        assert_eq!(pane.send(control, payload).as_deref(), Some(reply), "{control}");
+    }
+}
+
+#[test]
+fn a_failed_file_transmission_says_only_that_the_file_could_not_be_read() {
+    let mut pane = Pane::new(10, 5);
+    let missing = std::env::temp_dir().join("tty-graphics-protocol-missing");
+    let control = "a=q,t=f,i=32,s=1,v=1,f=24";
+    assert_eq!(
+        pane.send(control, missing.to_str().unwrap()).as_deref(),
+        Some("\x1b_Gi=32;EBADF:Failed to read image file\x1b\\")
+    );
+
+    let file = TempFile::new("tty-graphics-protocol-probe", &[0; 3]);
+    assert_eq!(pane.send(control, file.path()).as_deref(), Some("\x1b_Gi=32;OK\x1b\\"));
+}
+
+#[test]
+fn quiet_two_silences_every_reply() {
+    let mut pane = Pane::new(10, 5);
+    assert_eq!(pane.send("a=t,i=7,f=24,s=2,v=2,q=2", [0; 3]), None);
+    assert_eq!(pane.send("a=q,i=7,f=77,s=1,v=1,q=2", [0; 3]), None);
+    assert_eq!(pane.send("a=p,i=404,q=2", b""), None);
+    assert_eq!(pane.send("a=t,i=7,f=24,s=1,v=1,q=1", [0; 3]), None);
+    assert_eq!(pane.send("a=t,f=24,s=2,v=2", [0; 3]), None, "no id, no reply");
+}
+
+#[test]
+fn cell_and_text_area_sizes_answer_in_device_pixels() {
+    let mut pane = Pane::with(80, 24, 100, (9, 18));
+    pane.feed("\x1b[16t\x1b[14t");
+    assert_eq!(pane.replies(), ["\x1b[6;18;9t", "\x1b[4;432;720t"]);
+}
+
+#[test]
+fn an_apc_that_is_not_graphics_is_ignored() {
+    let mut pane = Pane::new(10, 5);
+    pane.feed("\x1b_Xnot graphics\x1b\\\x1b_G\x1b\\");
+    assert!(pane.replies().is_empty());
+    pane.feed(command("i=1,a=q,s=1,v=1,f=24", [0; 3]));
+    assert_eq!(pane.replies().len(), 1);
+}
+
+#[test]
+fn the_alternate_screen_has_its_own_images_and_starts_empty() {
+    let mut pane = Pane::new(10, 5);
+    pane.message("a=T,f=24,i=1,s=10,v=20", vec![0; 10 * 20 * 3]);
+    pane.feed("\x1b[?1049h");
+    assert_eq!(pane.image_count(), 0);
+    pane.message("a=T,f=24,i=2,s=10,v=20", vec![0; 10 * 20 * 3]);
+    assert_eq!(pane.quads().len(), 1);
+
+    pane.feed("\x1b[?1049l");
+    assert_eq!(pane.image_count(), 1);
+    assert!(pane.graphics().pixels(1).is_some() || pane.graphics().is_decoding());
+    pane.feed("\x1b[?1049h");
+    assert_eq!(pane.image_count(), 0, "entering clears what the alternate screen held");
+}
+
+#[test]
+fn erase_saved_lines_clears_every_image_as_kitty_does() {
+    let mut pane = Pane::new(10, 5);
+    pane.message("a=T,f=24,i=1,s=10,v=20", vec![0; 10 * 20 * 3]);
+    pane.feed("\x1b[3J");
+    assert_eq!(pane.image_count(), 0);
+}
+
+#[test]
+fn resize_moves_images_with_the_lines_pushed_into_history() {
+    let mut pane = Pane::with(10, 5, 100, (10, 20));
+    pane.feed("\x1b[5;1H");
+    pane.message("a=T,f=24,i=1,s=10,v=20,C=1", vec![0; 10 * 20 * 3]);
+    assert_eq!(pane.quads()[0].dest[1], 4.0);
+
+    struct Size(usize, usize);
+    impl alacritty_terminal::grid::Dimensions for Size {
+        fn total_lines(&self) -> usize {
+            self.1
+        }
+
+        fn screen_lines(&self) -> usize {
+            self.1
+        }
+
+        fn columns(&self) -> usize {
+            self.0
+        }
+    }
+    pane.term.resize(Size(10, 3));
+    assert_eq!(pane.quads()[0].dest[1], 2.0, "the cursor line kept its image");
+    pane.term.resize(Size(10, 5));
+    assert_eq!(pane.quads()[0].dest[1], 4.0, "lines pulled back from history bring it back");
+}

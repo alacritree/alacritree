@@ -241,6 +241,7 @@ name = "alacritree_graphics"
 version = "0.0.0"
 dependencies = [
  "alacritree_common",
+ "alacritty_terminal",
  "base64",
  "flate2",
  "log",
@@ -394,6 +395,7 @@ dependencies = [
 name = "alacritty_terminal"
 version = "0.26.1-dev"
 dependencies = [
+ "alacritree_graphics",
  "base64",
  "bitflags 2.9.4",
  "home",
