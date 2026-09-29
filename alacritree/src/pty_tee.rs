@@ -1,11 +1,10 @@
-//! Copies the PTY byte stream on its way through, so a second parser can see
-//! the OSC sequences `vte`'s `ansi` layer drops.
+//! Copies the PTY byte stream on its way through, so the OSC tap can see the
+//! sequences `vte`'s `ansi` layer drops.
 //!
-//! The copy is all this layer does.  Parsing on the read thread costs up to
-//! the terminal's own parse again once escape sequences arrive every few
-//! bytes, which is exactly when a TUI is repainting, so the bytes go to a
-//! thread of their own instead.  Buffers cycle through a return channel
-//! rather than being allocated per read.
+//! The copy is all this layer does.  The read thread can be holding the
+//! terminal lock, so it hands the bytes to a thread of their own rather than
+//! waiting on anything.  Buffers cycle through a return channel rather than
+//! being allocated per read.
 
 use std::io::{self, Read};
 use std::sync::Arc;
