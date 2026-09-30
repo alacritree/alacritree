@@ -247,6 +247,48 @@ struct ProcessorState<T: Timeout> {
 
     /// State for synchronized terminal updates.
     sync_state: SyncState<T>,
+
+    /// The sixel image whose DCS string is being read.
+    sixel: SixelString,
+}
+
+/// Longest sixel string passed to [`Handler::sixel`]. A longer one is
+/// dropped whole.
+const MAX_SIXEL_LEN: usize = 64 * 1024 * 1024;
+
+/// The data of one `DCS P1;P2;P3 q ... ST`, collected until its terminator.
+#[derive(Debug, Default)]
+struct SixelString {
+    active: bool,
+    overflow: bool,
+    params: [u16; 3],
+    /// Reused from one image to the next.
+    data: Vec<u8>,
+}
+
+impl SixelString {
+    fn begin(&mut self, params: &Params) {
+        self.active = true;
+        self.overflow = false;
+        self.params = [0; 3];
+        for (slot, param) in self.params.iter_mut().zip(params.iter()) {
+            *slot = param[0];
+        }
+        self.data.clear();
+    }
+
+    #[inline]
+    fn push(&mut self, byte: u8) {
+        if self.overflow {
+            return;
+        }
+        if self.data.len() == MAX_SIXEL_LEN {
+            self.overflow = true;
+            self.data = Vec::new();
+        } else {
+            self.data.push(byte);
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -707,6 +749,14 @@ pub trait Handler {
     /// command. `payload` is everything between `ESC _` and the string
     /// terminator.
     fn apc(&mut self, _payload: &[u8]) {}
+
+    /// Handle a sixel image, the data of `DCS P1;P2;P3 q ... ST` with its
+    /// params 0 where absent. CAN and SUB end it like ST.
+    fn sixel(&mut self, _params: [u16; 3], _data: &[u8]) {}
+
+    /// XTSMGRAPHICS, `CSI ? Pi ; Pa ; Pv S`: read or set the graphics
+    /// attribute `item`. `values` holds the parameters after `action`.
+    fn graphics_attribute(&mut self, _item: u16, _action: u16, _values: &[u16]) {}
 
     /// Set hyperlink.
     fn set_hyperlink(&mut self, _: Option<Hyperlink>) {}
@@ -1323,6 +1373,10 @@ where
 
     #[inline]
     fn hook(&mut self, params: &Params, intermediates: &[u8], ignore: bool, action: char) {
+        if action == 'q' && intermediates.is_empty() && !ignore {
+            self.state.sixel.begin(params);
+            return;
+        }
         debug!(
             "[unhandled hook] params={:?}, ints: {:?}, ignore: {:?}, action: {:?}",
             params, intermediates, ignore, action
@@ -1331,12 +1385,23 @@ where
 
     #[inline]
     fn put(&mut self, byte: u8) {
-        debug!("[unhandled put] byte={:?}", byte);
+        if self.state.sixel.active {
+            self.state.sixel.push(byte);
+        } else {
+            debug!("[unhandled put] byte={:?}", byte);
+        }
     }
 
     #[inline]
     fn unhook(&mut self) {
-        debug!("[unhandled unhook]");
+        let sixel = &mut self.state.sixel;
+        if !mem::take(&mut sixel.active) {
+            debug!("[unhandled unhook]");
+        } else if sixel.overflow {
+            debug!("[unhandled sixel] longer than {MAX_SIXEL_LEN} bytes");
+        } else {
+            self.handler.sixel(sixel.params, &sixel.data);
+        }
     }
 
     #[inline]
@@ -1760,6 +1825,13 @@ where
                 handler.set_scrolling_region(top, bottom);
             },
             ('S', []) => handler.scroll_up(next_param_or(1) as usize),
+            ('S', [b'?']) => {
+                let mut values = params.iter().map(|param| param[0]);
+                let item = values.next().unwrap_or(0);
+                let action = values.next().unwrap_or(0);
+                let values: Vec<u16> = values.collect();
+                handler.graphics_attribute(item, action, &values);
+            },
             ('s', []) => handler.save_cursor_position(),
             ('T', []) => handler.scroll_down(next_param_or(1) as usize),
             ('t', []) => match next_param_or(1) as usize {
@@ -2164,6 +2236,59 @@ mod tests {
         assert!(record(b"\x1b]22;pointer\x07").is_empty());
         // A pointer name outside the CSS set is left to the handler.
         assert_eq!(record(b"\x1b]22;hand2\x07"), vec![(vec![b"22".to_vec(), b"hand2".to_vec()], true)]);
+    }
+
+    #[derive(Debug, Default, PartialEq)]
+    struct GraphicsRecorder {
+        text: String,
+        sixels: Vec<([u16; 3], Vec<u8>)>,
+        attributes: Vec<(u16, u16, Vec<u16>)>,
+    }
+
+    impl Handler for GraphicsRecorder {
+        fn input(&mut self, c: char) {
+            self.text.push(c);
+        }
+
+        fn sixel(&mut self, params: [u16; 3], data: &[u8]) {
+            self.sixels.push((params, data.to_vec()));
+        }
+
+        fn graphics_attribute(&mut self, item: u16, action: u16, values: &[u16]) {
+            self.attributes.push((item, action, values.to_vec()));
+        }
+    }
+
+    fn record_graphics(bytes: &[u8]) -> GraphicsRecorder {
+        let mut parser = Processor::<TestSyncHandler>::new();
+        let mut handler = GraphicsRecorder::default();
+        parser.advance(&mut handler, bytes);
+        handler
+    }
+
+    #[test]
+    fn a_sixel_string_reaches_the_handler_whole() {
+        let recorded = record_graphics(b"a\x1bP0;1;0q\"1;1;2;6#0!2~\x1b\\b");
+        assert_eq!(recorded.text, "ab");
+        assert_eq!(recorded.sixels, vec![([0, 1, 0], b"\"1;1;2;6#0!2~".to_vec())]);
+
+        // Missing params read as 0, and CAN ends the string like ST.
+        let recorded = record_graphics(b"\x1bPq#1~\x18c");
+        assert_eq!(recorded.sixels, vec![([0, 0, 0], b"#1~".to_vec())]);
+        assert_eq!(recorded.text, "c");
+
+        // Another DCS, such as DECRQSS, is not a sixel image.
+        assert!(record_graphics(b"\x1bP$qm\x1b\\").sixels.is_empty());
+    }
+
+    #[test]
+    fn xtsmgraphics_reaches_the_handler() {
+        let recorded = record_graphics(b"\x1b[?2;1;0S\x1b[?1;3;256S\x1b[?2;4S");
+        assert_eq!(recorded.attributes, vec![
+            (2, 1, vec![0]),
+            (1, 3, vec![256]),
+            (2, 4, vec![])
+        ]);
     }
 
     #[test]
