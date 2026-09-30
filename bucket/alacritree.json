@@ -1,12 +1,12 @@
 {
-    "version": "0.13.0",
+    "version": "0.14.0",
     "description": "Native terminal that turns Git worktrees into workspaces, built on Alacritty",
     "homepage": "https://github.com/alacritree/alacritree",
     "license": "Apache-2.0",
     "architecture": {
         "64bit": {
-            "url": "https://github.com/alacritree/alacritree/releases/download/v0.13.0/alacritree-x86_64-pc-windows-msvc.zip",
-            "hash": "b77b24010920afa11a7f26a5e4f8bd40adea35b09eb66ca664aa07986d597a04"
+            "url": "https://github.com/alacritree/alacritree/releases/download/v0.14.0/alacritree-x86_64-pc-windows-msvc.zip",
+            "hash": "af0ac0efd71419c214a08f186be7b0f530292a6602121fa658448adb875f06fb"
         }
     },
     "bin": "alacritree.exe",
