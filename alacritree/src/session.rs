@@ -666,6 +666,7 @@ fn new_term<R: Repaint>(
     let proxy = proxy.clone();
     graphics.set_waker(move || proxy.send_event(TermEvent::Wakeup));
     if let Some(distro) = distro {
+        // With remote-to-remote symlink evaluation off, Windows' default,
         // Windows opens no Linux symlink through `\\wsl.localhost`, so the
         // spelling the graphics checks is the file that opens.
         let distro = distro.to_owned();

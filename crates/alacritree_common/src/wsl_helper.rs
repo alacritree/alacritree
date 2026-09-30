@@ -344,36 +344,39 @@ pub fn wrap_profile_argv(
 /// line, for `SHIM_SCRIPT`'s reason.
 pub const EXEC_SHIM_SCRIPT: &str = r##"d=${XDG_RUNTIME_DIR:-/tmp}/alacritree; mkdir -p "$d" 2>/dev/null && printf %s $$ > "$d/session-$1.pid"; shift; exec "$@""##;
 
-/// Gives a shimmed session's tty the pixel size ConPTY cannot carry. `$1` is
-/// the probe key, then the width and height of a cell in pixels. WSL
-/// rewrites the tty's size with zero pixels on every grid change and every
-/// switch of screen buffer, so a watcher keeps the pixels at the grid times
-/// the cell for as long as the key's shell lives. It runs in its own
-/// session, which a helper restart does not end, and holds the tty only
-/// while the shell lives. A newer request for the key stops it first.
-/// Linux alone runs it, so the ioctl numbers are Linux's.
+/// Keeps a shimmed session's tty reporting the pixel size ConPTY drops. `$1`
+/// is the probe key, then the request's sequence number and a cell's width
+/// and height in pixels. WSL zeroes the pixels on every grid change and
+/// screen-buffer switch, so a detached watcher restores the grid times the
+/// cell while the shell lives, and the watcher of the highest sequence
+/// number is the one left running. It writes only onto a grid unchanged
+/// since its last check, so a resize landing between its read and its
+/// write is not undone.
 pub const PIXEL_SIZE_SCRIPT: &str = r##"d=${XDG_RUNTIME_DIR:-/tmp}/alacritree
 command -v perl >/dev/null 2>&1 || exit 0
 perl -e '
-use Fcntl;
+use Fcntl qw(:DEFAULT :flock);
 use POSIX ();
 use Time::HiRes qw(time sleep);
 POSIX::setsid();
-my ($dir, $key, $cell_width, $cell_height) = @ARGV;
+my ($dir, $key, $sequence, $cell_width, $cell_height) = @ARGV;
 my $marker = "$dir/pixels-$key.pid";
-if (open(my $m, "<", $marker)) {
-    my $old = <$m> // 0;
-    close $m;
-    my $cmdline = "";
-    if ($old && open(my $c, "<", "/proc/$old/cmdline")) {
-        local $/;
-        $cmdline = <$c> // "";
-        close $c;
-    }
-    kill "TERM", $old if index($cmdline, "\0$key\0") >= 0;
+sysopen(my $m, $marker, O_RDWR | O_CREAT) or exit;
+flock($m, LOCK_EX) or exit;
+my ($old, $old_sequence) = split(" ", <$m> // "");
+my $cmdline = "";
+if ($old && open(my $c, "<", "/proc/$old/cmdline")) {
+    local $/;
+    $cmdline = <$c> // "";
+    close $c;
 }
-open(my $m, ">", $marker) or exit;
-print $m $$;
+if (index($cmdline, "\0$key\0") >= 0) {
+    exit if $old_sequence > $sequence;
+    kill "TERM", $old;
+}
+seek($m, 0, 0);
+truncate($m, 0);
+print $m "$$ $sequence";
 close $m;
 my ($pid, $deadline) = (0, time + 30);
 until ($pid) {
@@ -386,7 +389,7 @@ until ($pid) {
 my $tty = readlink("/proc/$pid/fd/0") // exit;
 exit unless $tty =~ m{^/dev/pts/\d+$};
 sysopen(my $t, $tty, O_RDWR | O_NOCTTY | O_NONBLOCK) or exit;
-my $size = pack("S4", 0, 0, 0, 0);
+my ($size, $last_grid) = (pack("S4", 0, 0, 0, 0), "");
 while (kill 0, $pid) {
     if (ioctl($t, 0x5413, $size)) {
         my ($rows, $columns, $width, $height) = unpack("S4", $size);
@@ -394,17 +397,19 @@ while (kill 0, $pid) {
         my $want_height = $rows * $cell_height;
         $want_width = 65535 if $want_width > 65535;
         $want_height = 65535 if $want_height > 65535;
-        if ($width != $want_width || $height != $want_height) {
+        my $grid = "$rows $columns";
+        if ($grid eq $last_grid && ($width != $want_width || $height != $want_height)) {
             ioctl($t, 0x5414, pack("S4", $rows, $columns, $want_width, $want_height));
         }
+        $last_grid = $grid;
     }
     sleep 0.02;
 }
 close $t;
 if (open($m, "<", $marker)) {
-    my $owner = <$m> // 0;
+    my ($owner) = split(" ", <$m> // "");
     close $m;
-    unlink $marker if $owner == $$;
+    unlink $marker if ($owner // 0) == $$;
 }
 ' "$d" "$@" </dev/null >/dev/null 2>&1 &
 "##;
@@ -1011,14 +1016,13 @@ pub struct CellSize {
     pub height: u16,
 }
 
-/// How long a cell size waits for its distro's helper to come up, which
-/// covers a cold WSL boot.
-const CELL_SIZE_PATIENCE: Duration = Duration::from_secs(30);
 const CELL_SIZE_RETRY: Duration = Duration::from_millis(250);
 
-type CellSizes = (Mutex<HashMap<(String, String), (CellSize, Instant)>>, std::sync::Condvar);
+type CellSizes = (Mutex<HashMap<(String, String), (CellSize, u64)>>, std::sync::Condvar);
 
-/// The newest cell size per `(distro, probe key)` not yet handed to a helper.
+/// The newest cell size per `(distro, probe key)` not yet handed to a
+/// helper, with the sequence number that orders it among the watchers the
+/// helper starts.
 fn cell_sizes() -> &'static CellSizes {
     static SIZES: OnceLock<CellSizes> = OnceLock::new();
     SIZES.get_or_init(Default::default)
@@ -1027,13 +1031,15 @@ fn cell_sizes() -> &'static CellSizes {
 /// Keep the tty of the shimmed session under `key` reporting its pixel size
 /// for cells of `size`, through [`PIXEL_SIZE_SCRIPT`]. It never blocks: a
 /// writer thread sends the newest size per session, and holds it while the
-/// helper is still starting.
+/// helper is down for as long as the session's probe is registered.
 pub fn set_cell_size(distro: &str, key: &str, size: CellSize) {
     if !enabled() || !cfg!(windows) {
         return;
     }
+    static SEQUENCE: AtomicU64 = AtomicU64::new(1);
+    let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let (sizes, queued) = cell_sizes();
-    lock(sizes).insert((distro.to_string(), key.to_string()), (size, Instant::now()));
+    lock(sizes).insert((distro.to_string(), key.to_string()), (size, sequence));
     queued.notify_one();
     ensure_cell_size_writer();
 }
@@ -1053,15 +1059,18 @@ fn ensure_cell_size_writer() {
                         pending.drain().collect()
                     };
                     let mut waiting = false;
-                    for ((distro, key), (size, since)) in batch {
+                    for ((distro, key), (size, sequence)) in batch {
                         if let Some(client) = client(&distro) {
-                            let (width, height) = (size.width.to_string(), size.height.to_string());
-                            if let Err(e) = client.run(PIXEL_SIZE_SCRIPT, &[&key, &width, &height])
+                            let args = [sequence, size.width.into(), size.height.into()]
+                                .map(|n: u64| n.to_string());
+                            let [sequence, width, height] = &args;
+                            if let Err(e) =
+                                client.run(PIXEL_SIZE_SCRIPT, &[&key, sequence, width, height])
                             {
                                 log::debug!("wsl cell size for {key} not sent: {e}");
                             }
-                        } else if since.elapsed() < CELL_SIZE_PATIENCE {
-                            lock(sizes).entry((distro, key)).or_insert((size, since));
+                        } else if lock(probe_cache()).contains_key(&(distro.clone(), key.clone())) {
+                            lock(sizes).entry((distro, key)).or_insert((size, sequence));
                             waiting = true;
                         }
                     }
@@ -1836,9 +1845,10 @@ mod tests {
     /// Runs `PIXEL_SIZE_SCRIPT` the way the helper does, for a shell on a
     /// real pty under probe key `k`. `ws TTY [ROWS COLS WIDTH HEIGHT]` sets
     /// the tty's size and prints it; `ws "$tty" 31 91 0 0` rewrites it the
-    /// way WSL does on a resize or a switch of screen buffer.
+    /// way WSL does on a resize or a switch of screen buffer. Requests 4 and
+    /// 3 start together, as two cell sizes sent back to back do.
     const PIXEL_SIZE_HARNESS: &str = r##"echo harness
-command -v perl >/dev/null && command -v script >/dev/null || { echo "skip: needs perl and script"; exit 0; }
+command -v perl >/dev/null && command -v script >/dev/null && command -v pgrep >/dev/null || { echo "skip: needs perl, script and pgrep"; exit 0; }
 pixel_size_script=$(cat <<'EOF_PIXEL_SIZE_SCRIPT'
 {script}
 EOF_PIXEL_SIZE_SCRIPT
@@ -1853,15 +1863,20 @@ while [ ! -s "$d/session-k.pid" ] && [ $i -lt 100 ]; do sleep 0.05; i=$((i + 1))
 tty=$(readlink "/proc/$(cat "$d/session-k.pid")/fd/0")
 ws() { perl -e 'open(T, "+<", shift) or die; ioctl(T, 0x5414, pack("S4", @ARGV)) if @ARGV; my $w = pack("S4", 0, 0, 0, 0); ioctl(T, 0x5413, $w); print join(" ", unpack("S4", $w)), "\n"' "$@"; }
 ws "$tty" 30 90 0 0 >/dev/null
-sh -c "$pixel_size_script" sh k 10 20
+sh -c "$pixel_size_script" sh k 1 10 20
 sleep 0.3
 ws "$tty"
 ws "$tty" 31 91 0 0 >/dev/null
 sleep 0.3
 ws "$tty"
-sh -c "$pixel_size_script" sh k 12 24
+sh -c "$pixel_size_script" sh k 2 12 24
 sleep 0.3
 ws "$tty"
+sh -c "$pixel_size_script" sh k 4 16 32
+sh -c "$pixel_size_script" sh k 3 14 28
+sleep 0.3
+ws "$tty"
+echo "$(pgrep -f -- " $d k " | wc -l) watcher"
 kill "$(cat "$d/session-k.pid")" 2>/dev/null
 sleep 0.3
 [ -e "$d/pixels-k.pid" ] && echo "watcher outlived its shell" || echo "watcher gone"
@@ -1869,9 +1884,10 @@ rm -rf "$XDG_RUNTIME_DIR"
 "##;
 
     /// The tty reports its grid times the cell, again after a rewrite that
-    /// zeroes the pixels and after a new cell size, and the watcher ends
-    /// with the shell. Runs through WSL's default distro on Windows, and is
-    /// skipped where there is no Linux with perl and `script` to run it in.
+    /// zeroes the pixels and after a new cell size, the newest of two
+    /// racing requests is the one watcher left, and it ends with the shell. Runs through WSL's
+    /// default distro on Windows, and is skipped where there is no Linux with perl and `script`
+    /// to run it in.
     #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn the_pixel_size_script_keeps_the_grid_times_the_cell_on_the_tty() {
@@ -1898,6 +1914,14 @@ rm -rf "$XDG_RUNTIME_DIR"
             return;
         }
         let sizes: Vec<&str> = lines.lines().collect();
-        assert_eq!(sizes, ["30 90 900 600", "31 91 910 620", "31 91 1092 744", "watcher gone"]);
+        let expected = [
+            "30 90 900 600",
+            "31 91 910 620",
+            "31 91 1092 744",
+            "31 91 1456 992",
+            "1 watcher",
+            "watcher gone",
+        ];
+        assert_eq!(sizes, expected);
     }
 }
