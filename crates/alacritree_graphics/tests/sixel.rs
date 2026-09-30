@@ -43,6 +43,17 @@ fn a_sixel_image_at_the_bottom_scrolls_the_screen_to_put_the_cursor_below_it() {
 }
 
 #[test]
+fn a_sixel_image_taller_than_the_screen_scrolls_whole_into_view() {
+    let mut pane = Pane::new(10, 5);
+    pane.feed(sixel(10, 240));
+
+    // Twelve rows from line 0: the screen scrolls until the cursor is below
+    // the last one.
+    assert_rect(pane.quads()[0].dest, [0.0, -8.0, 1.0, 4.0]);
+    assert_eq!(pane.cursor(), (0, 4));
+}
+
+#[test]
 fn in_display_mode_a_sixel_image_goes_top_left_and_leaves_the_cursor() {
     let mut pane = Pane::new(10, 5);
     pane.feed(format!("\x1b[?80h\x1b[3;4H{}", sixel(10, 180)));

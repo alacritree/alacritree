@@ -2386,8 +2386,14 @@ impl<T: EventListener> Handler for Term<T> {
         };
         let max_rows = display.then(|| self.screen_lines());
         let rows = self.graphics.sixel(params, data, context, max_rows);
-        if !display && rows != 0 {
-            self.move_past_image(CursorMove { columns: 0, rows });
+        if !display {
+            // The image bounds the rows, so unlike a kitty placement's
+            // client-given count they need no cap, and an image taller than
+            // the screen scrolls until its last row is in view.
+            for _ in 0..rows {
+                self.linefeed();
+            }
+            self.grid.cursor.input_needs_wrap = false;
         }
     }
 
