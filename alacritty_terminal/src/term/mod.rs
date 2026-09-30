@@ -78,6 +78,7 @@ bitflags! {
         const REPORT_ALTERNATE_KEYS   = 1 << 20;
         const REPORT_ALL_KEYS_AS_ESC  = 1 << 21;
         const REPORT_ASSOCIATED_TEXT  = 1 << 22;
+        const SIXEL_DISPLAY           = 1 << 23;
         const MOUSE_MODE              = Self::MOUSE_REPORT_CLICK.bits() | Self::MOUSE_MOTION.bits() | Self::MOUSE_DRAG.bits();
         const KITTY_KEYBOARD_PROTOCOL = Self::DISAMBIGUATE_ESC_CODES.bits()
                                       | Self::REPORT_EVENT_TYPES.bits()
@@ -1320,7 +1321,7 @@ impl<T: EventListener> Handler for Term<T> {
         match intermediate {
             None => {
                 trace!("Reporting primary device attributes");
-                let text = String::from("\x1b[?6c");
+                let text = String::from("\x1b[?62;4c");
                 self.event_proxy.send_event(Event::PtyWrite(text));
             },
             Some('>') => {
@@ -2075,6 +2076,7 @@ impl<T: EventListener> Handler for Term<T> {
                 self.mode.insert(TermMode::ORIGIN);
                 self.goto(0, 0);
             },
+            NamedPrivateMode::SixelDisplay => self.mode.insert(TermMode::SIXEL_DISPLAY),
             NamedPrivateMode::ColumnMode => self.deccolm(),
             NamedPrivateMode::BlinkingCursor => {
                 let style = self.cursor_style.get_or_insert(self.config.default_cursor_style);
@@ -2124,6 +2126,7 @@ impl<T: EventListener> Handler for Term<T> {
             NamedPrivateMode::AlternateScroll => self.mode.remove(TermMode::ALTERNATE_SCROLL),
             NamedPrivateMode::LineWrap => self.mode.remove(TermMode::LINE_WRAP),
             NamedPrivateMode::Origin => self.mode.remove(TermMode::ORIGIN),
+            NamedPrivateMode::SixelDisplay => self.mode.remove(TermMode::SIXEL_DISPLAY),
             NamedPrivateMode::ColumnMode => self.deccolm(),
             NamedPrivateMode::BlinkingCursor => {
                 let style = self.cursor_style.get_or_insert(self.config.default_cursor_style);
@@ -2141,6 +2144,9 @@ impl<T: EventListener> Handler for Term<T> {
             PrivateMode::Named(mode) => match mode {
                 NamedPrivateMode::CursorKeys => self.mode.contains(TermMode::APP_CURSOR).into(),
                 NamedPrivateMode::Origin => self.mode.contains(TermMode::ORIGIN).into(),
+                NamedPrivateMode::SixelDisplay => {
+                    self.mode.contains(TermMode::SIXEL_DISPLAY).into()
+                },
                 NamedPrivateMode::LineWrap => self.mode.contains(TermMode::LINE_WRAP).into(),
                 NamedPrivateMode::BlinkingCursor => {
                     let style = self.cursor_style.get_or_insert(self.config.default_cursor_style);
@@ -2366,6 +2372,31 @@ impl<T: EventListener> Handler for Term<T> {
     fn cell_size_pixels(&mut self) {
         self.event_proxy.send_event(Event::TextAreaSizeRequest(Arc::new(move |window_size| {
             format!("\x1b[6;{};{}t", window_size.cell_height, window_size.cell_width)
+        })));
+    }
+
+    #[inline]
+    fn sixel(&mut self, params: [u16; 3], data: &[u8]) {
+        let display = self.mode.contains(TermMode::SIXEL_DISPLAY);
+        let cursor = self.grid.cursor.point;
+        let context = ApcContext {
+            line: if display { 0 } else { cursor.line.0 as usize },
+            column: if display { 0 } else { cursor.column.0 },
+            history: self.image_history(),
+        };
+        let max_rows = display.then(|| self.screen_lines());
+        let rows = self.graphics.sixel(params, data, context, max_rows);
+        if !display && rows != 0 {
+            self.move_past_image(CursorMove { columns: 0, rows });
+        }
+    }
+
+    #[inline]
+    fn graphics_attribute(&mut self, item: u16, action: u16, _values: &[u16]) {
+        self.event_proxy.send_event(Event::TextAreaSizeRequest(Arc::new(move |size| {
+            let width = u32::from(size.num_cols) * u32::from(size.cell_width);
+            let height = u32::from(size.num_lines) * u32::from(size.cell_height);
+            alacritree_graphics::graphics_attribute_reply(item, action, (width, height))
         })));
     }
 

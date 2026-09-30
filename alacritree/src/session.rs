@@ -2967,7 +2967,7 @@ pub(crate) mod tests {
             })
             .collect();
         let name = format!("\x1bP>|alacritree {}\x1b\\", env!("CARGO_PKG_VERSION"));
-        assert_eq!(replies, [name.as_str(), "\x1b[?6c"]);
+        assert_eq!(replies, [name.as_str(), "\x1b[?62;4c"]);
     }
 
     #[test]

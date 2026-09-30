@@ -967,6 +967,7 @@ impl PrivateMode {
             7 => Self::Named(NamedPrivateMode::LineWrap),
             12 => Self::Named(NamedPrivateMode::BlinkingCursor),
             25 => Self::Named(NamedPrivateMode::ShowCursor),
+            80 => Self::Named(NamedPrivateMode::SixelDisplay),
             1000 => Self::Named(NamedPrivateMode::ReportMouseClicks),
             1002 => Self::Named(NamedPrivateMode::ReportCellMouseMotion),
             1003 => Self::Named(NamedPrivateMode::ReportAllMouseMotion),
@@ -1017,6 +1018,9 @@ pub enum NamedPrivateMode {
     LineWrap = 7,
     BlinkingCursor = 12,
     ShowCursor = 25,
+    /// Sixel display mode (DECSDM): images go at the top left of the
+    /// screen and leave the cursor where it was.
+    SixelDisplay = 80,
     ReportMouseClicks = 1000,
     ReportCellMouseMotion = 1002,
     ReportAllMouseMotion = 1003,
