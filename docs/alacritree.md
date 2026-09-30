@@ -472,6 +472,8 @@ Where the program runs changes what reaches it:
 
 A program inside zellij asks zellij, which answers from its own kitty support. Codex refuses to draw inside zellij or tmux. Claude Code turns images off under tmux and screen, but it reads `CLAUDE_CODE_FORCE_TERMINAL_IMAGES` first, so the variable forces images on inside tmux too. Setting it in `[env]` reaches every pane, including a tmux session started in one, so set it in the shell that starts Claude Code outside tmux if you also use tmux. alacritree started from another terminal drops the variables that terminal sets to name itself, such as `WT_SESSION` and `KITTY_WINDOW_ID`, so a program in a pane does not mistake alacritree for its host. Without that, yazi picks sixel under an inherited `WT_SESSION`.
 
+Alacritree also draws sixel images, the format of programs such as `img2sixel`, lsix, gnuplot and matplotlib's sixel backends. They find it through attribute 4 in the DA1 reply, and `XTSMGRAPHICS` reports 256 colour registers. A sixel image draws under the text, so text printed over it shows on top and printing spaces over it leaves it in place. Clearing the screen removes it, and so does a later sixel image that covers all of its cells.
+
 #### Answering to kitty's name
 
 Codex draws images only for terminals it knows by name, and reads `TERM` only when `TERM_PROGRAM` is unset, so `TERM` cannot change its mind in a pane. It accepts any terminal that sets `KITTY_WINDOW_ID`, whatever the value. A shell wrapper sets it for Codex alone, and only when Codex runs in alacritree, since another terminal would get images it cannot draw.

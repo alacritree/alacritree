@@ -6,7 +6,7 @@ This is a Cargo workspace. Edit `alacritree/` (the app) and `crates/` (its libra
 
 - `alacritty/`, `alacritty_terminal/`, `alacritty_config/` and `alacritty_config_derive/` are vendored upstream alacritty and read-only. Only `alacritty_terminal` is used, for the PTY, VT parser and grid. The `alacritty` GUI binary is not what this fork ships.
 - `egui-winit/` is a vendored `egui-winit` with a one-line change, wired in through `[patch.crates-io]` in the root `Cargo.toml`. Leave the `x11-clipboard` pin beside it alone unless asked.
-- `vte/` is a vendored `vte`, wired in through `[patch.crates-io]`. Its parser hands APC strings to `Perform::apc_dispatch`. Its `ansi::Handler` gains `unhandled_osc`, which receives every OSC sequence the parser does not interpret, OSC 22 pointer names outside the CSS set included, plus `apc`, `cell_size_pixels` (`CSI 16 t`) and `report_version` (XTVERSION). Nothing else in it changes. Run its tests with `cargo test -p vte`.
+- `vte/` is a vendored `vte`, wired in through `[patch.crates-io]`. Its parser hands APC strings to `Perform::apc_dispatch`. Its `ansi::Handler` gains `unhandled_osc`, which receives every OSC sequence the parser does not interpret, OSC 22 pointer names outside the CSS set included, plus `apc`, `sixel` (`DCS q`), `graphics_attribute` (XTSMGRAPHICS), `cell_size_pixels` (`CSI 16 t`) and `report_version` (XTVERSION), and `NamedPrivateMode` gains `SixelDisplay` (DECSDM, mode 80). Nothing else in it changes. Run its tests with `cargo test -p vte -p alacritty_terminal`, since `-p vte` alone builds it without the `ansi` feature and skips the handler's tests.
 - `CONTRIBUTING.md` and the root `Makefile` are upstream alacritty's and do not govern `alacritree/`.
 
 ## Build and test
