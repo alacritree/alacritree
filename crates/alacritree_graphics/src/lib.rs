@@ -1,11 +1,12 @@
-//! The kitty graphics protocol, from an APC payload to the list of images a
-//! frame draws.
+//! The kitty graphics protocol and sixel images, from an APC payload or a
+//! sixel string to the list of images a frame draws.
 //!
 //! [`frame`] is the contract with the renderer. Nothing in this crate knows
 //! about GL or about `alacritty_terminal`, which calls in with plain values.
 //! kitty's implementation is the reference, except that pixels are decoded
 //! on the job pool rather than under the terminal lock.
 
+use std::convert::Infallible;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -27,6 +28,7 @@ pub mod frame;
 mod load;
 mod placement;
 mod reply;
+mod sixel;
 mod store;
 
 /// kitty's `MAX_IMAGE_DIMENSION`, in pixels per side.
@@ -265,6 +267,37 @@ impl Graphics {
         }
     }
 
+    /// Handle a sixel image, the data of `DCS P1;P2;P3 q ... ST` with its
+    /// params, placed at the context's cursor and clipped to `max_rows`.
+    /// Returns the rows it covers, 0 when it draws nothing.
+    pub fn sixel(
+        &mut self,
+        params: [u16; 3],
+        data: &[u8],
+        context: ApcContext,
+        max_rows: Option<usize>,
+    ) -> u32 {
+        let Some(geometry) = sixel::measure(params, data) else {
+            return 0;
+        };
+        let (ready, waker, cell) = (Arc::clone(&self.ready), self.waker.clone(), self.cell);
+        let store = self.active_mut();
+        store.set_history(context.history);
+        let size = (geometry.width, geometry.height);
+        if !store.fits(size.0, size.1) {
+            log::debug!("graphics: a {}x{} sixel image is over the quota", size.0, size.1);
+            return 0;
+        }
+        let slot = Arc::new(Slot::default());
+        let data = data.to_vec();
+        let decode = move || Ok::<_, Infallible>(sixel::decode(&data, geometry));
+        let job = decode::spawn(decode, Arc::clone(&slot), ready, waker);
+        let cursor = (context.line, context.column);
+        let (internal_id, rows) = store.add_sixel(size, (slot, job), cursor, max_rows, cell);
+        store.apply_quota(Some(internal_id));
+        rows
+    }
+
     /// Scroll the images of the active screen with the grid: `delta` rows,
     /// negative for up. Insert and delete line must not call this, since
     /// they do not move images.
@@ -480,6 +513,25 @@ impl Graphics {
         }
         let cell = self.cell;
         self.active_mut().put(index, command, (context.line, context.column), cell)
+    }
+}
+
+/// The reply to XTSMGRAPHICS, `CSI ? item ; action ; ... S`, given the
+/// text area's size in pixels. The register count and the largest image
+/// are fixed, so setting or resetting either reports what stays in force.
+pub fn graphics_attribute_reply(item: u16, action: u16, text_area: (u32, u32)) -> String {
+    const INVALID_ITEM: u8 = 1;
+    const INVALID_ACTION: u8 = 2;
+    const READ_MAX: u16 = 4;
+    match (item, action) {
+        (1 | 2, 0 | 5..) => format!("\x1b[?{item};{INVALID_ACTION}S"),
+        (1, _) => format!("\x1b[?1;0;{}S", sixel::REGISTERS),
+        (2, READ_MAX) => format!("\x1b[?2;0;{MAX_DIMENSION};{MAX_DIMENSION}S"),
+        (2, _) => {
+            let (width, height) = (text_area.0.min(MAX_DIMENSION), text_area.1.min(MAX_DIMENSION));
+            format!("\x1b[?2;0;{width};{height}S")
+        },
+        _ => format!("\x1b[?{item};{INVALID_ITEM}S"),
     }
 }
 

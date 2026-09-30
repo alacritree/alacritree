@@ -6,6 +6,7 @@
 //! still reply, which this crate cannot without holding the lock through
 //! the decode.
 
+use std::fmt::Display;
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -70,27 +71,14 @@ enum DecodeError {
 }
 
 impl Decode {
-    /// Decode on the job pool into `slot`, then bump `ready` and wake the
-    /// pane. Dropping the returned job before it starts cancels it.
+    /// Decode on the job pool, as [`spawn`] does.
     pub(crate) fn spawn(
         self,
         slot: Arc<Slot>,
         ready: Arc<AtomicU64>,
         waker: Option<Waker>,
     ) -> Job<()> {
-        jobs::pool().spawn(Priority::Interactive, move |_| match self.run() {
-            Ok(pixels) => {
-                let _ = slot.pixels.set(Arc::new(pixels));
-                ready.fetch_add(1, Ordering::Release);
-                if let Some(waker) = waker {
-                    waker();
-                }
-            },
-            Err(error) => {
-                log::warn!("graphics: {error}");
-                slot.failed.store(true, Ordering::Release);
-            },
-        })
+        spawn(move || self.run(), slot, ready, waker)
     }
 
     fn run(self) -> Result<Pixels, DecodeError> {
@@ -133,6 +121,29 @@ impl Decode {
         };
         Ok(Pixels::new(self.width, self.height, rgba.into_boxed_slice()))
     }
+}
+
+/// Run `decode` on the job pool into `slot`, then bump `ready` and wake the
+/// pane. Dropping the returned job before it starts cancels it.
+pub(crate) fn spawn<E: Display>(
+    decode: impl FnOnce() -> Result<Pixels, E> + Send + 'static,
+    slot: Arc<Slot>,
+    ready: Arc<AtomicU64>,
+    waker: Option<Waker>,
+) -> Job<()> {
+    jobs::pool().spawn(Priority::Interactive, move |_| match decode() {
+        Ok(pixels) => {
+            let _ = slot.pixels.set(Arc::new(pixels));
+            ready.fetch_add(1, Ordering::Release);
+            if let Some(waker) = waker {
+                waker();
+            }
+        },
+        Err(error) => {
+            log::warn!("graphics: {error}");
+            slot.failed.store(true, Ordering::Release);
+        },
+    })
 }
 
 fn read_file(mut file: File, offset: u64, len: usize) -> io::Result<Vec<u8>> {

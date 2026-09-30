@@ -19,6 +19,10 @@ use crate::{CursorMove, ScrollRegion, Viewport};
 /// kitty's storage limit per screen buffer, counted in decoded RGBA bytes.
 pub(crate) const DEFAULT_QUOTA: usize = 320 * 1024 * 1024;
 
+/// Sixel images draw over cell backgrounds and under the text, so text
+/// printed over one stays readable.
+const SIXEL_Z: i32 = -1;
+
 pub(crate) struct Image {
     /// Creation order, which breaks draw-order ties.
     internal_id: u64,
@@ -38,6 +42,8 @@ pub(crate) struct Image {
     atime: u64,
     placements: Vec<Placement>,
     next_placement: u32,
+    /// Came from a sixel string rather than a kitty command.
+    sixel: bool,
 }
 
 impl Image {
@@ -185,6 +191,7 @@ impl Store {
                     atime,
                     placements: Vec::new(),
                     next_placement: 0,
+                    sixel: false,
                 });
                 self.images.len() - 1
             },
@@ -342,6 +349,90 @@ impl Store {
         }
         self.generation += 1;
         movement
+    }
+
+    /// Add a sixel image whose decoded pixels land in `slot`, placed at
+    /// screen `(line, column)` under the text and clipped to `max_rows`.
+    /// Older sixel placements whose cells lie inside its own are deleted.
+    /// Returns its internal id and the rows it covers.
+    pub(crate) fn add_sixel(
+        &mut self,
+        (width, height): (u32, u32),
+        (slot, decode): (Arc<Slot>, Job<()>),
+        (line, column): (usize, usize),
+        max_rows: Option<usize>,
+        cell: CellSize,
+    ) -> (u64, u32) {
+        let clip = max_rows.map_or(u32::MAX, |rows| (rows as u32).saturating_mul(cell.height));
+        let mut placement = Placement {
+            internal_id: 1,
+            client_id: 0,
+            row: self.scrolled + line as i64,
+            column: column as i32,
+            cell_x: 0,
+            cell_y: 0,
+            src_x: 0.0,
+            src_y: 0.0,
+            src_width: width as f32,
+            src_height: height.min(clip) as f32,
+            columns: 0,
+            rows: 0,
+            effective_columns: 0,
+            effective_rows: 0,
+            z: SIXEL_Z,
+            is_virtual: false,
+        };
+        placement.fit(cell);
+        self.remove_sixels_inside(&placement);
+
+        let atime = self.tick();
+        self.next_image += 1;
+        let rows = placement.effective_rows;
+        self.expiry = self.expiry.min(expiry(&placement, self.history));
+        let image = Image {
+            internal_id: self.next_image,
+            client_id: 0,
+            number: 0,
+            width,
+            height,
+            data: Some(slot),
+            _decode: Some(decode),
+            footprint: footprint(width, height),
+            transient: false,
+            atime,
+            placements: vec![placement],
+            next_placement: 1,
+            sixel: true,
+        };
+        self.used += image.footprint;
+        self.images.push(image);
+        self.generation += 1;
+        (self.next_image, rows)
+    }
+
+    /// Delete the sixel placements whose cells lie inside `outer`'s.
+    fn remove_sixels_inside(&mut self, outer: &Placement) {
+        let (top, bottom) = (outer.row, outer.bottom(outer.row));
+        let left = i64::from(outer.column);
+        let right = left + i64::from(outer.effective_columns);
+        let mut removed = false;
+        for image in self.images.iter_mut().filter(|image| image.sixel) {
+            let before = image.placements.len();
+            image.placements.retain(|p| {
+                let column = i64::from(p.column);
+                let inside = top <= p.row
+                    && p.bottom(p.row) <= bottom
+                    && left <= column
+                    && column + i64::from(p.effective_columns) <= right;
+                !inside
+            });
+            removed |= image.placements.len() != before;
+        }
+        if removed {
+            self.remove_unreachable();
+            self.recompute_expiry();
+            self.generation += 1;
+        }
     }
 
     /// kitty's `handle_delete_command` once any upload is aborted.
