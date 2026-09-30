@@ -7,6 +7,7 @@
 //! on the job pool rather than under the terminal lock.
 
 use std::convert::Infallible;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -160,6 +161,14 @@ impl Graphics {
     /// the pane should draw it.
     pub fn set_waker(&mut self, waker: impl Fn() + Send + Sync + 'static) {
         self.waker = Some(Arc::new(waker));
+    }
+
+    /// Set where the files a client names are, for a client that sees
+    /// another filesystem than this process does. `map` turns a path as the
+    /// client spells it into the path opened here, once the spelling has
+    /// passed kitty's checks.
+    pub fn set_client_paths(&mut self, map: impl Fn(&str) -> PathBuf + Send + Sync + 'static) {
+        self.load.client_paths = Some(Box::new(map));
     }
 
     /// Set the decoded bytes each screen buffer may hold.

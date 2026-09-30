@@ -248,8 +248,8 @@ fn a_failed_file_transmission_says_only_that_the_file_could_not_be_read() {
 
 /// Claude Code probes with `a=q,t=f` and falls back to sending the bytes
 /// only on an error, so an `OK` for a file that was never read loses the
-/// image. A WSL pane names a Linux path, which Windows refuses outright
-/// rather than guessing at the distro it lives in.
+/// image. Without a client filesystem to find it in, a Linux path is
+/// refused on Windows rather than guessed at.
 #[test]
 fn a_file_query_is_refused_for_every_path_that_cannot_be_read() {
     let mut pane = Pane::new(10, 5);
@@ -263,6 +263,98 @@ fn a_file_query_is_refused_for_every_path_that_cannot_be_read() {
         assert_eq!(reply.as_deref(), Some(refused), "{path}");
     }
     assert_eq!(pane.image_count(), 0, "a query stores nothing");
+}
+
+/// A client whose filesystem is a directory here, as a WSL distro's is to
+/// Windows.
+struct ClientRoot(std::path::PathBuf);
+
+impl ClientRoot {
+    fn new(name: &str) -> Self {
+        let root = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
+            .join(format!("client-root-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        Self(root)
+    }
+
+    /// Write `data` at `path` as the client spells it.
+    fn write(&self, path: &str, data: &[u8]) -> std::path::PathBuf {
+        let local = self.0.join(path.trim_start_matches('/'));
+        std::fs::create_dir_all(local.parent().unwrap()).unwrap();
+        std::fs::write(&local, data).unwrap();
+        local
+    }
+
+    fn pane(&self) -> Pane {
+        let mut pane = Pane::new(10, 5);
+        let root = self.0.clone();
+        pane.term
+            .graphics_mut()
+            .set_client_paths(move |path| root.join(path.trim_start_matches('/')));
+        pane
+    }
+}
+
+impl Drop for ClientRoot {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A client on another filesystem names files by its own paths, and its
+/// `t=t` files are deleted only from its own temporary directories.
+#[test]
+fn a_client_on_another_filesystem_sends_files_by_its_own_paths() {
+    let client = ClientRoot::new("sends");
+    client.write("/home/lev/pixel.rgb", &[0x40; 3]);
+    let in_tmp = client.write("/tmp/tty-graphics-protocol-a", &[0; 3]);
+    let in_shm = client.write("/dev/shm/tty-graphics-protocol-b", &[0; 3]);
+    let in_home = client.write("/home/lev/tty-graphics-protocol-c", &[0; 3]);
+    let mut pane = client.pane();
+
+    let exchanges = [
+        ("a=t,t=f,i=50,f=24,s=1,v=1", "/home/lev/pixel.rgb"),
+        ("a=t,t=t,i=51,f=24,s=1,v=1", "/tmp/tty-graphics-protocol-a"),
+        ("a=t,t=t,i=52,f=24,s=1,v=1", "/dev/shm/tty-graphics-protocol-b"),
+        ("a=t,t=t,i=53,f=24,s=1,v=1", "/home/lev/tty-graphics-protocol-c"),
+    ];
+    for (control, path) in exchanges {
+        assert_eq!(pane.message(control, path).as_deref(), Some("OK"), "{path}");
+    }
+    pane.settle();
+
+    assert_eq!(pane.pixels(50)[..4], [0x40, 0x40, 0x40, 0xff]);
+    assert!(!in_tmp.exists(), "{} was left behind", in_tmp.display());
+    assert!(!in_shm.exists(), "{} was left behind", in_shm.display());
+    assert!(in_home.exists(), "{} was deleted", in_home.display());
+}
+
+/// kitty's refusals hold in the client's filesystem, judged by the path's
+/// spelling, whatever files sit behind it here.
+#[test]
+fn a_client_path_is_held_to_kittys_rules_in_its_own_filesystem() {
+    let client = ClientRoot::new("rules");
+    for path in ["/proc/version", "/sys/kernel/x", "/dev/null", "/tmp/x"] {
+        client.write(path, &[0; 3]);
+    }
+    let mut pane = client.pane();
+
+    let refused = [
+        "/proc/version",
+        "/sys/kernel/x",
+        "/dev/null",
+        "//proc/version",
+        "/./proc/version",
+        "/tmp/../proc/version",
+        r"/tmp\..\proc\version",
+        "tmp/x",
+    ];
+    for path in refused {
+        let reply = pane.send("a=q,t=f,i=54,f=24,s=1,v=1", path);
+        let expected = "\x1b_Gi=54;EBADF:Failed to read image file\x1b\\";
+        assert_eq!(reply.as_deref(), Some(expected), "{path}");
+    }
+    assert_eq!(pane.message("a=q,t=f,i=54,f=24,s=1,v=1", "/tmp/x").as_deref(), Some("OK"));
 }
 
 #[test]

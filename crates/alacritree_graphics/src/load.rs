@@ -76,7 +76,12 @@ pub(crate) struct Load {
     data_size: usize,
     /// The size past which more data is `EFBIG`.
     capacity: usize,
+    /// Where a client on another filesystem keeps the files it names.
+    pub client_paths: Option<ClientPaths>,
 }
+
+/// A path as a client spells it, mapped to the one this process opens.
+pub(crate) type ClientPaths = Box<dyn Fn(&str) -> PathBuf + Send + Sync>;
 
 impl Load {
     pub(crate) fn target(&self) -> Option<Target> {
@@ -146,10 +151,23 @@ impl Load {
             log::debug!("graphics: shared memory transmission is not supported");
             return Err(CommandError::ImageFile);
         }
-        let path = image_path(path).ok_or(CommandError::ImageFile)?;
-        let temporary = medium == Medium::TempFile
-            && path.to_string_lossy().contains("tty-graphics-protocol")
-            && in_temp_dir(&path);
+        let marked = |path: &Path| {
+            medium == Medium::TempFile && path.to_string_lossy().contains("tty-graphics-protocol")
+        };
+        let (path, temporary) = match &self.client_paths {
+            Some(local) => {
+                let client = client_path(path).ok_or(CommandError::ImageFile)?;
+                let path = local(client);
+                let in_temp_dir = ["/tmp/", "/dev/shm/"].iter().any(|dir| client.starts_with(dir));
+                let temporary = marked(&path) && in_temp_dir;
+                (path, temporary)
+            },
+            None => {
+                let path = image_path(path).ok_or(CommandError::ImageFile)?;
+                let temporary = marked(&path) && in_temp_dir(&path);
+                (path, temporary)
+            },
+        };
         let (file, offset, len, head) = self.read_file(&path, temporary)?;
         let (width, height) = self.check(&head, len, true)?;
         let source = Source::File { file, offset, len };
@@ -288,6 +306,23 @@ fn image_path(bytes: &[u8]) -> Option<PathBuf> {
         }
     }
     Some(path)
+}
+
+/// The path a client on another filesystem named, if it may be read. Only
+/// that filesystem can resolve it, so kitty's rules are checked against the
+/// spelling: absolute, with no `..` or backslash that the map could turn
+/// into one, and outside `/proc`, `/sys` and `/dev` except for `/dev/shm`.
+fn client_path(bytes: &[u8]) -> Option<&str> {
+    let path = std::str::from_utf8(bytes).ok()?;
+    if path.contains('\\') || path.split('/').any(|part| part == "..") {
+        return None;
+    }
+    let mut parts = path.strip_prefix('/')?.split('/').filter(|part| !matches!(*part, "" | "."));
+    match parts.next() {
+        Some("proc" | "sys") => None,
+        Some("dev") if parts.next() != Some("shm") || parts.next().is_none() => None,
+        _ => Some(path),
+    }
 }
 
 /// The size in a PNG's `IHDR`, with kitty's errors for a header libpng

@@ -650,12 +650,14 @@ fn session_activity(
 }
 
 /// A session's terminal, with its images sized in `cell_size` device pixels
-/// and their decodes waking the pane the way PTY output does.
+/// and their decodes waking the pane the way PTY output does. Image files a
+/// program in `distro` names are read from that distro.
 fn new_term<R: Repaint>(
     config: &Config,
     size: &TermSize,
     cell_size: (f32, f32),
     proxy: &EventProxy<R>,
+    distro: Option<&str>,
 ) -> Arc<FairMutex<Term<EventProxy<R>>>> {
     let mut term = Term::new(term_config(config), size, proxy.clone());
     let graphics = term.graphics_mut();
@@ -663,6 +665,13 @@ fn new_term<R: Repaint>(
     graphics.set_cell_pixels(width, height);
     let proxy = proxy.clone();
     graphics.set_waker(move || proxy.send_event(TermEvent::Wakeup));
+    if let Some(distro) = distro {
+        // Windows opens no Linux symlink through `\\wsl.localhost`, so the
+        // spelling the graphics checks is the file that opens.
+        let distro = distro.to_owned();
+        graphics
+            .set_client_paths(move |path| alacritree_common::wsl::linux_to_windows(path, &distro));
+    }
     Arc::new(FairMutex::new(term))
 }
 
@@ -933,7 +942,7 @@ impl<R: Repaint> Session<R> {
     ) -> std::io::Result<Self> {
         let editor = scratchpad::Editor::open(path.clone())?;
         let (proxy, events) = EventProxy::new(repaint);
-        let term = new_term(config, &size, cell_size, &proxy);
+        let term = new_term(config, &size, cell_size, &proxy, None);
         Ok(Self {
             id: next_session_id(),
             title: "scratchpad".to_string(),
@@ -980,7 +989,7 @@ impl<R: Repaint> Session<R> {
         view: crate::tasks::view::TasksView,
     ) -> Self {
         let (proxy, events) = EventProxy::new(repaint);
-        let term = new_term(config, &size, cell_size, &proxy);
+        let term = new_term(config, &size, cell_size, &proxy, None);
         Self {
             id: next_session_id(),
             title: "tasks".to_string(),
@@ -1138,11 +1147,8 @@ impl<R: Repaint> Session<R> {
     ) -> (Self, OpenRequest<R>) {
         let pty_cwd = pty_working_directory(working_directory.clone(), config);
         let window_size = window_size(size, cell_size);
-        let reported_cwd_distro = if config.vt.report_cwd {
-            report_distro.or_else(|| wsl_probe.as_ref().map(|probe| probe.distro.clone()))
-        } else {
-            None
-        };
+        let distro = report_distro.or_else(|| wsl_probe.as_ref().map(|probe| probe.distro.clone()));
+        let reported_cwd_distro = distro.clone().filter(|_| config.vt.report_cwd);
 
         let shell_platform = if reported_cwd_distro.is_some() || wsl_probe.is_some() || cfg!(unix) {
             osc::ShellPlatform::Unix
@@ -1163,7 +1169,7 @@ impl<R: Repaint> Session<R> {
             None => (proxy, None),
         };
 
-        let term = new_term(config, &size, cell_size, &proxy);
+        let term = new_term(config, &size, cell_size, &proxy, distro.as_deref());
 
         let id = next_session_id();
         let env = session_env(&config.env, &kind, id);
@@ -2064,6 +2070,46 @@ pub(crate) mod tests {
             Some(alacritree_common::wsl::linux_to_windows("/home/dev/src", "Ubuntu")),
         );
         assert_eq!(session.working_directory, None);
+    }
+
+    /// A program in a WSL pane names an image file by its Linux path, which
+    /// is read from the pane's distro whether or not cwd reports are on. A
+    /// Windows pane names no distro and is refused the same path.
+    #[cfg(windows)]
+    #[test]
+    fn an_image_file_named_from_a_wsl_pane_is_read_from_its_distro() {
+        use base64::Engine;
+
+        let file =
+            std::env::temp_dir().join(format!("alacritree-wsl-image-{}", std::process::id()));
+        std::fs::write(&file, [0; 3]).unwrap();
+        let linux = alacritree_common::wsl::windows_to_linux(&file).unwrap();
+        let query = format!(
+            "\x1b_Ga=q,t=f,i=7,f=24,s=1,v=1;{}\x1b\\",
+            base64::engine::general_purpose::STANDARD.encode(&linux)
+        );
+        let mut config = Config::default();
+        config.vt.report_cwd = false;
+
+        let replies = [Some("Ubuntu".to_string()), None].map(|distro| {
+            let (mut session, _) = Session::pending_shell(
+                Recorder::default(),
+                &config,
+                None,
+                TermSize { columns: 80, screen_lines: 24 },
+                (8.0, 16.0),
+                None,
+                distro,
+                None,
+            );
+            feed(&session, &query);
+            session.drain_events(&Palette::default());
+            String::from_utf8(session.pending_writes.take().unwrap()).unwrap()
+        });
+
+        let _ = std::fs::remove_file(&file);
+        assert_eq!(replies[0], "\x1b_Gi=7;OK\x1b\\", "{linux}");
+        assert_eq!(replies[1], "\x1b_Gi=7;EBADF:Failed to read image file\x1b\\");
     }
 
     fn feed(session: &Session<Recorder>, bytes: &str) {
