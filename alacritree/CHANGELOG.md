@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.15.0](https://github.com/alacritree/alacritree/compare/v0.14.0...v0.15.0) (2026-09-30)
+
+
+### Features
+
+* **session:** name alacritree in TERM_PROGRAM [86] ([#388](https://github.com/alacritree/alacritree/issues/388)) ([2bc925b](https://github.com/alacritree/alacritree/commit/2bc925b5bfab7990d1ada704c359cad71b0dc9df))
+* **ui:** draw kitty graphics protocol images [87] ([#390](https://github.com/alacritree/alacritree/issues/390)) ([4f8b1bf](https://github.com/alacritree/alacritree/commit/4f8b1bf85e79233ab3b020b0785409bb303f4a76))
+* **ui:** draw kitty unicode placeholder images [89] ([#395](https://github.com/alacritree/alacritree/issues/395)) ([ae516f9](https://github.com/alacritree/alacritree/commit/ae516f9bc4f7d936896b15d82edaaf1d224c1657))
+* **ui:** draw sixel images [88] ([#394](https://github.com/alacritree/alacritree/issues/394)) ([63b36b4](https://github.com/alacritree/alacritree/commit/63b36b4ac59d0b5ad9c0443173bc438dc253df90))
+* **ui:** show kitty images in WSL panes [90] ([#397](https://github.com/alacritree/alacritree/issues/397)) ([4b67305](https://github.com/alacritree/alacritree/commit/4b673058be282cf403dc520eaffaa885c46f8143))
+* **vt:** handle OSC codes that need no grid [85] ([#383](https://github.com/alacritree/alacritree/issues/383)) ([e0faca4](https://github.com/alacritree/alacritree/commit/e0faca446164ffcf2c0aec050cb171ccf97d0155))
+
 ## [0.14.0](https://github.com/alacritree/alacritree/compare/v0.13.0...v0.14.0) (2026-09-28)
 
 
