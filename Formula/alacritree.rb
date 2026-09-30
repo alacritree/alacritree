@@ -1,7 +1,7 @@
 class Alacritree < Formula
   desc "Native terminal that turns Git worktrees into workspaces, built on Alacritty"
   homepage "https://github.com/alacritree/alacritree"
-  version "0.13.0"
+  version "0.14.0"
   license "Apache-2.0"
 
   # Linked dynamically through the `fontconfig` Rust crate (alacritty's font
@@ -22,7 +22,7 @@ class Alacritree < Formula
   on_macos do
     on_arm do
       url "https://github.com/alacritree/alacritree/releases/download/v#{version}/alacritree-aarch64-apple-darwin.tar.gz"
-      sha256 "ed995f1a029e96535640b7254511168d0974121d7571aa92c826fcc2f6db61b2"
+      sha256 "eae5c478682ff890b38b84e72d0b5d12a3b1fef58c0b5110afa43444c6dc0734"
     end
   end
 
