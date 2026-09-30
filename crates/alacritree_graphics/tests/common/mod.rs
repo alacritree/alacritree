@@ -9,6 +9,7 @@ use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use alacritree_graphics::frame::{ImageFrame, ImageQuad};
+use alacritree_graphics::placeholder::Placeholders;
 use alacritree_graphics::{Graphics, Viewport};
 use alacritty_terminal::event::{Event, EventListener, WindowSize};
 use alacritty_terminal::grid::Dimensions;
@@ -171,7 +172,7 @@ impl Pane {
             columns: self.term.columns(),
         };
         let mut frame = ImageFrame::default();
-        self.term.graphics_mut().build_frame(&mut frame, viewport);
+        self.term.graphics_mut().build_frame(&mut frame, viewport, &Placeholders::default());
         frame
     }
 

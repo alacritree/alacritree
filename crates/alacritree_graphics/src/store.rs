@@ -13,6 +13,7 @@ use alacritree_common::jobs::Job;
 use crate::command::Command;
 use crate::decode::Slot;
 use crate::frame::{ImageQuad, Pixels};
+use crate::placeholder::Placeholders;
 use crate::placement::{CellSize, Placement};
 use crate::{CursorMove, ScrollRegion, Viewport};
 
@@ -642,7 +643,43 @@ impl Store {
             }
         }
     }
+
+    /// Push the tile of each placeholder run whose image is decoded and
+    /// whose virtual placement exists into `out`, in no order.
+    pub(crate) fn collect_placeholders(
+        &self,
+        placeholders: &Placeholders,
+        cell: CellSize,
+        out: &mut Vec<Visible>,
+    ) {
+        // Id 0 names no image, and an unnamed image must not answer to it.
+        for (row, run) in placeholders.runs().filter(|(_, run)| run.image_id != 0) {
+            let Some(index) = self.index_by_id(run.image_id) else { continue };
+            let image = &self.images[index];
+            if self.decoded(index).is_none() {
+                continue;
+            }
+            // kitty's `grman_put_cell_image`: the placement named, or else
+            // the image's first virtual one.
+            let placement = image.placements.iter().find(|p| {
+                p.is_virtual && (run.placement_id == 0 || p.client_id == run.placement_id)
+            });
+            let Some(placement) = placement else { continue };
+            let size = (image.width, image.height);
+            if let Some(quad) = placement.placeholder_quad(size, cell, run, row) {
+                out.push(Visible {
+                    key: (PLACEHOLDER_Z, image.internal_id, placement.internal_id),
+                    image: index,
+                    quad,
+                });
+            }
+        }
+    }
 }
+
+/// The z kitty and Ghostty draw placeholder tiles at: above cell
+/// backgrounds, under the text and the cursor.
+const PLACEHOLDER_Z: i32 = -1;
 
 fn footprint(width: u32, height: u32) -> usize {
     width as usize * height as usize * 4

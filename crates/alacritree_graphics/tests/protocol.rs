@@ -8,6 +8,7 @@ use std::sync::{Arc, Condvar, Mutex};
 
 use alacritree_common::jobs::{self, Priority};
 use alacritree_graphics::Viewport;
+use alacritree_graphics::placeholder::Placeholders;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use common::{Pane, TempFile, assert_rect, command};
@@ -93,14 +94,14 @@ fn a_pending_image_draws_nothing_then_draws_after_its_decode_with_no_new_input()
     let generation = pane.graphics().layout_generation();
     let mut frame = alacritree_graphics::frame::ImageFrame::default();
     let viewport = alacritree_graphics::Viewport { display_offset: 0, rows: 5, columns: 10 };
-    pane.term.graphics_mut().build_frame(&mut frame, viewport);
+    pane.term.graphics_mut().build_frame(&mut frame, viewport, &Placeholders::default());
     assert!(frame.is_empty());
 
     pool.release();
     pane.wakes.wait_for(1);
 
     assert_ne!(pane.graphics().layout_generation(), generation);
-    pane.term.graphics_mut().build_frame(&mut frame, viewport);
+    pane.term.graphics_mut().build_frame(&mut frame, viewport, &Placeholders::default());
     assert_eq!(frame.quads().len(), 1);
     assert_eq!(frame.runs()[0].pixels.rgba()[..4], [0x80, 0x80, 0x80, 0xff]);
 }
@@ -148,15 +149,23 @@ fn a_frame_is_rebuilt_only_when_its_layout_or_viewport_changed() {
     let viewport = alacritree_graphics::Viewport { display_offset: 0, rows: 5, columns: 10 };
     let graphics = pane.term.graphics_mut();
 
-    assert!(graphics.update_frame(&mut frame, viewport));
+    assert!(graphics.update_frame(&mut frame, viewport, &Placeholders::default()));
     let generation = frame.generation();
-    assert!(!graphics.update_frame(&mut frame, viewport));
+    assert!(!graphics.update_frame(&mut frame, viewport, &Placeholders::default()));
     assert_eq!(frame.generation(), generation);
     assert_eq!(frame.quads().len(), 1);
 
-    assert!(graphics.update_frame(&mut frame, Viewport { display_offset: 1, ..viewport }));
+    assert!(graphics.update_frame(
+        &mut frame,
+        Viewport { display_offset: 1, ..viewport },
+        &Placeholders::default()
+    ));
     graphics.set_cell_pixels(20, 40);
-    assert!(graphics.update_frame(&mut frame, Viewport { display_offset: 1, ..viewport }));
+    assert!(graphics.update_frame(
+        &mut frame,
+        Viewport { display_offset: 1, ..viewport },
+        &Placeholders::default()
+    ));
 }
 
 /// A session coming on screen rebuilds the shared frame outright, and the
@@ -170,9 +179,9 @@ fn a_frame_built_outright_is_not_rebuilt_by_the_next_update() {
     let viewport = Viewport { display_offset: 0, rows: 5, columns: 10 };
     let graphics = pane.term.graphics_mut();
 
-    graphics.build_frame(&mut frame, viewport);
+    graphics.build_frame(&mut frame, viewport, &Placeholders::default());
 
-    assert!(!graphics.update_frame(&mut frame, viewport));
+    assert!(!graphics.update_frame(&mut frame, viewport, &Placeholders::default()));
 }
 
 #[test]

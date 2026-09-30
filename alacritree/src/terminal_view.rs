@@ -1,5 +1,6 @@
 use alacritree_common::jobs;
 use alacritree_graphics::Viewport;
+use alacritree_graphics::placeholder::{PLACEHOLDER, Placeholders};
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Line, Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionRange, SelectionType};
@@ -27,6 +28,8 @@ use crate::links::{self, Link};
 use crate::repaint::Repaint;
 use crate::session::{EventProxy, Session, SessionId, SessionKind, TermSize};
 use crate::{decoration_sprites, mouse, paste};
+
+mod placeholders;
 
 /// The pointer over the grid.  A hovered link wins, since it says a click
 /// does something; otherwise the application's OSC 22 choice, when allowed.
@@ -189,7 +192,7 @@ pub(crate) fn show(
             peek.link.as_ref().map(|l| &l.bounds),
             cursor_shape,
         );
-        capture_images(&mut term, gpu, snapshot.display_offset, switched);
+        capture_images(&mut term, gpu, snapshot, switched);
     }
     // Between the capture and the paint that reads it: the glide is this
     // session's, and it needs the cell the capture just recorded.
@@ -934,6 +937,9 @@ pub(crate) struct GridSnapshot {
     /// Scratch for the rows a capture is about to walk, reused so reading
     /// damage costs no allocation.
     damaged: Vec<usize>,
+    /// Kitty image placeholders on each viewport row, decoded as the rows
+    /// holding them are re-walked.
+    placeholders: Placeholders,
     context: CaptureContext,
     colors: TerminalColors,
 }
@@ -988,6 +994,7 @@ impl GridSnapshot {
             display_offset: 0,
             dirty_rows: 0..0,
             damaged: Vec::new(),
+            placeholders: Placeholders::default(),
             context: CaptureContext::default(),
             colors,
         }
@@ -1058,6 +1065,7 @@ impl GridSnapshot {
         if rebuilt {
             self.rows.clear();
             self.rows.resize_with(screen_lines, RowSnapshot::default);
+            self.placeholders.reset(screen_lines);
         }
 
         let display_offset = term.grid().display_offset() as i32;
@@ -1136,6 +1144,7 @@ impl GridSnapshot {
             let dest = &mut self.rows[row];
             dest.text.clear();
             dest.runs.clear();
+            let mut has_placeholder = false;
 
             let mut col = 0;
             while col < cols {
@@ -1152,7 +1161,11 @@ impl GridSnapshot {
                     {
                         break;
                     }
-                    let ch = if cell.c == '\0' || cell.flags.contains(Flags::HIDDEN) {
+                    // A placeholder is drawn by the image pass, never as a glyph.
+                    has_placeholder |= cell.c == PLACEHOLDER;
+                    let ch = if matches!(cell.c, '\0' | PLACEHOLDER)
+                        || cell.flags.contains(Flags::HIDDEN)
+                    {
                         ' '
                     } else {
                         cell.c
@@ -1174,6 +1187,11 @@ impl GridSnapshot {
                     bg,
                 });
             }
+            if has_placeholder {
+                placeholders::scan_row(&mut self.placeholders, row, cells);
+            } else {
+                self.placeholders.clear_row(row);
+            }
         }
 
         let cursor_point: Point = grid.cursor.point;
@@ -1188,7 +1206,7 @@ impl GridSnapshot {
             .map_or(colors.cursor, rgb_to_color32);
         // Only the solid block covers the glyph underneath it.
         let glyph = (matches!(shape, CursorShape::Block)
-            && cell.c != '\0'
+            && !matches!(cell.c, '\0' | PLACEHOLDER)
             && !cell.flags.contains(Flags::HIDDEN))
         .then(|| {
             let glyph_color = colors.cursor_fg.unwrap_or_else(|| {
@@ -1214,7 +1232,8 @@ impl GridSnapshot {
     }
 }
 
-/// Bring the grid's image frame up to date with the terminal's placements.
+/// Bring the grid's image frame up to date with the terminal's placements
+/// and the placeholders `snapshot` just captured.
 ///
 /// Runs under the capture's lock and costs one comparison while nothing
 /// moved. The frame belongs to whichever session filled it last, so a
@@ -1222,19 +1241,20 @@ impl GridSnapshot {
 fn capture_images(
     term: &mut Term<EventProxy<impl Repaint>>,
     gpu: &GpuGrid,
-    display_offset: i32,
+    snapshot: &GridSnapshot,
     switched: bool,
 ) {
     let viewport = Viewport {
-        display_offset: display_offset as usize,
+        display_offset: snapshot.display_offset as usize,
         rows: term.screen_lines(),
         columns: term.columns(),
     };
+    let placeholders = &snapshot.placeholders;
     let images = &mut gpu.state.lock().expect("grid state").images;
     if switched {
-        term.graphics_mut().build_frame(images, viewport);
+        term.graphics_mut().build_frame(images, viewport, placeholders);
     } else {
-        term.graphics_mut().update_frame(images, viewport);
+        term.graphics_mut().update_frame(images, viewport, placeholders);
     }
 }
 

@@ -6,6 +6,9 @@
 //! a placement sized in cells keeps its cells and one at native size keeps
 //! its pixels.
 
+use crate::frame::ImageQuad;
+use crate::placeholder::Run;
+
 /// The size of one cell in device pixels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct CellSize {
@@ -198,6 +201,66 @@ impl Placement {
         if height > 0.0 { self.src_height / height } else { 1.0 }
     }
 
+    /// Where `run`, on viewport row `row`, lands and which texels it shows,
+    /// for this virtual placement of an image `width` by `height` texels.
+    /// `None` when that stretch of the cell box holds none of the image.
+    ///
+    /// kitty's `grman_put_cell_image`: the image keeps its aspect ratio and
+    /// is centred in the cell box, whose unset sides are its size in cells.
+    pub(crate) fn placeholder_quad(
+        &self,
+        (width, height): (u32, u32),
+        cell: CellSize,
+        run: &Run,
+        row: usize,
+    ) -> Option<ImageQuad> {
+        if width == 0 || height == 0 {
+            return None;
+        }
+        let columns = if self.columns != 0 { self.columns } else { width.div_ceil(cell.width) };
+        let rows = if self.rows != 0 { self.rows } else { height.div_ceil(cell.height) };
+        let (cw, ch) = (f64::from(cell.width), f64::from(cell.height));
+        let (width, height) = (f64::from(width), f64::from(height));
+        let (box_width, box_height) = (f64::from(columns) * cw, f64::from(rows) * ch);
+
+        let (scale, x_offset, y_offset) = if width * box_height > height * box_width {
+            let scale = box_width / width;
+            (scale, 0.0, (box_height - height * scale) / 2.0)
+        } else {
+            let scale = box_height / height;
+            (scale, (box_width - width * scale) / 2.0, 0.0)
+        };
+
+        // The run's stretch of the box clipped to the fitted image, in box
+        // pixels. kitty samples past the image into a transparent texture
+        // border, which the image shader's clamp to the edge would smear.
+        let first = f64::from(run.box_column);
+        let left = (first * cw).max(x_offset);
+        let right = ((first + f64::from(run.columns)) * cw).min(x_offset + width * scale);
+        let top = (f64::from(run.box_row) * ch).max(y_offset);
+        let bottom = (f64::from(run.box_row + 1) * ch).min(y_offset + height * scale);
+        if left >= right || top >= bottom {
+            return None;
+        }
+
+        // The viewport cell the box's top-left corner would sit on.
+        let origin_column = f64::from(run.column) - first;
+        let origin_row = row as f64 - f64::from(run.box_row);
+        let dest = [
+            origin_column + left / cw,
+            origin_row + top / ch,
+            origin_column + right / cw,
+            origin_row + bottom / ch,
+        ];
+        let src = [
+            (left - x_offset) / scale,
+            (top - y_offset) / scale,
+            (right - x_offset) / scale,
+            (bottom - y_offset) / scale,
+        ];
+        Some(ImageQuad { dest: dest.map(|side| side as f32), src: src.map(|side| side as f32) })
+    }
+
     /// The last screen row this placement covers, exclusive.
     pub(crate) fn bottom(&self, row: i64) -> i64 {
         row + i64::from(self.effective_rows)
@@ -285,6 +348,56 @@ mod tests {
         p.cell_x = 3;
         p.fit(CELL);
         assert_eq!(p.dest(1.0, CELL), Some([0.3, 1.0, 1.8, 2.5]));
+    }
+
+    /// Ghostty's `renderPlacement` result for a run on viewport row `row`,
+    /// in pixels, rounded as Ghostty rounds it: the offset inside the run's
+    /// first cell, the source rectangle, then the destination size.
+    fn render(columns: u32, rows: u32, box_row: u32, row: usize) -> [i32; 8] {
+        const DOG: (u32, u32) = (500, 306);
+        const CELL: CellSize = CellSize { width: 36, height: 80 };
+        let mut virtual_placement = placement(DOG.0 as f32, DOG.1 as f32);
+        (virtual_placement.columns, virtual_placement.rows) = (columns, rows);
+        virtual_placement.is_virtual = true;
+        let run =
+            Run { column: 0, columns: 4, image_id: 1, placement_id: 0, box_row, box_column: 0 };
+
+        let quad = virtual_placement.placeholder_quad(DOG, CELL, &run, row).unwrap();
+
+        let (cw, ch) = (CELL.width as f32, CELL.height as f32);
+        let [left, top, right, bottom] = quad.dest;
+        let [x, y, x2, y2] = quad.src;
+        [
+            left * cw,
+            (top - row as f32) * ch,
+            x,
+            y,
+            x2 - x,
+            y2 - y,
+            (right - left) * cw,
+            (bottom - top) * ch,
+        ]
+        .map(|value| value.round() as i32)
+    }
+
+    // Ghostty graphics_unicode.zig "unicode render placement: dog 4x2"
+    #[test]
+    fn a_wide_image_fits_the_box_width_and_centres_vertically() {
+        assert_eq!(render(4, 2, 0, 0), [0, 36, 0, 0, 500, 153, 144, 44]);
+        assert_eq!(render(4, 2, 1, 1), [0, 0, 0, 153, 500, 153, 144, 44]);
+    }
+
+    // Ghostty graphics_unicode.zig "unicode render placement: dog 2x2 with blank cells"
+    #[test]
+    fn cells_past_the_box_show_nothing() {
+        assert_eq!(render(2, 2, 0, 0), [0, 58, 0, 0, 500, 153, 72, 22]);
+        assert_eq!(render(2, 2, 1, 1), [0, 0, 0, 153, 500, 153, 72, 22]);
+    }
+
+    // Ghostty graphics_unicode.zig "unicode render placement: dog 1x1"
+    #[test]
+    fn a_one_cell_box_holds_the_whole_image() {
+        assert_eq!(render(1, 1, 0, 0), [0, 29, 0, 0, 500, 306, 36, 22]);
     }
 
     #[test]

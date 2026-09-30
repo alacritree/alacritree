@@ -18,6 +18,7 @@ use crate::command::{Action, Command, Medium};
 use crate::decode::{Decode, Slot};
 use crate::frame::{Band, ImageFrame, Pixels};
 use crate::load::{Load, Target};
+use crate::placeholder::Placeholders;
 use crate::placement::CellSize;
 use crate::reply::{CommandError, ReplyTo, reply};
 use crate::store::{Store, Visible};
@@ -26,6 +27,7 @@ mod command;
 mod decode;
 pub mod frame;
 mod load;
+pub mod placeholder;
 mod placement;
 mod reply;
 mod sixel;
@@ -113,8 +115,9 @@ pub struct Graphics {
     /// Moves when the active screen or the cell size changes.
     epoch: u64,
     visible: Vec<Visible>,
-    /// The layout generation and viewport the last frame was built for.
-    built: Option<(u64, Viewport)>,
+    /// The layout generation, viewport and placeholder generation the last
+    /// frame was built for.
+    built: Option<(u64, Viewport, u64)>,
 }
 
 impl Default for Graphics {
@@ -198,28 +201,39 @@ impl Graphics {
         self.active().is_decoding()
     }
 
-    /// Rebuild `frame` when the layout, the viewport or the cell size changed
-    /// since the last call, and say whether it did. A steady screen costs one
-    /// comparison. Pass the same frame every time.
-    pub fn update_frame(&mut self, frame: &mut ImageFrame, viewport: Viewport) -> bool {
-        if self.built == Some((self.layout_generation(), viewport)) {
+    /// Rebuild `frame` when the layout, the viewport, the cell size or the
+    /// placeholders changed since the last call, and say whether it did. A
+    /// steady screen costs one comparison. Pass the same frame every time.
+    pub fn update_frame(
+        &mut self,
+        frame: &mut ImageFrame,
+        viewport: Viewport,
+        placeholders: &Placeholders,
+    ) -> bool {
+        if self.built == Some((self.layout_generation(), viewport, placeholders.generation())) {
             return false;
         }
-        self.build_frame(frame, viewport);
+        self.build_frame(frame, viewport, placeholders);
         true
     }
 
     /// Fill `frame` with the active screen's decoded placements `viewport`
-    /// shows, in draw order: z, then image creation order, then placement
-    /// creation order.
-    pub fn build_frame(&mut self, frame: &mut ImageFrame, viewport: Viewport) {
+    /// shows and the tiles of the placeholders on it, in draw order: z, then
+    /// image creation order, then placement creation order.
+    pub fn build_frame(
+        &mut self,
+        frame: &mut ImageFrame,
+        viewport: Viewport,
+        placeholders: &Placeholders,
+    ) {
         // Read before building, so a decode landing meanwhile rebuilds next time.
-        self.built = Some((self.layout_generation(), viewport));
+        self.built = Some((self.layout_generation(), viewport, placeholders.generation()));
         let Self { main, alt, alt_active, cell, visible, .. } = self;
         let store = if *alt_active { alt } else { main };
         frame.clear();
         visible.clear();
         store.collect(viewport, *cell, visible);
+        store.collect_placeholders(placeholders, *cell, visible);
         visible.sort_unstable_by_key(|visible| visible.key);
         for visible in visible.iter() {
             frame.push(Band::of(visible.key.0), store.pixels(visible.image), visible.quad);
