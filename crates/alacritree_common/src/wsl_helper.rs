@@ -349,10 +349,9 @@ pub const EXEC_SHIM_SCRIPT: &str = r##"d=${XDG_RUNTIME_DIR:-/tmp}/alacritree; mk
 /// rewrites the tty's size with zero pixels on every grid change and every
 /// switch of screen buffer, so a watcher keeps the pixels at the grid times
 /// the cell for as long as the key's shell lives. It runs in its own
-/// session, which a helper restart does not end, and never holds the tty
-/// open between checks, so the pty closes with the shell. A newer request
-/// for the key replaces it. Linux alone runs it, so the ioctl numbers are
-/// Linux's.
+/// session, which a helper restart does not end, and holds the tty only
+/// while the shell lives. A newer request for the key stops it first.
+/// Linux alone runs it, so the ioctl numbers are Linux's.
 pub const PIXEL_SIZE_SCRIPT: &str = r##"d=${XDG_RUNTIME_DIR:-/tmp}/alacritree
 command -v perl >/dev/null 2>&1 || exit 0
 perl -e '
@@ -362,29 +361,33 @@ use Time::HiRes qw(time sleep);
 POSIX::setsid();
 my ($dir, $key, $cell_width, $cell_height) = @ARGV;
 my $marker = "$dir/pixels-$key.pid";
-sub owner {
-    open(my $m, "<", $marker) or return 0;
-    my $owner = <$m>;
+if (open(my $m, "<", $marker)) {
+    my $old = <$m> // 0;
     close $m;
-    return $owner // 0;
+    my $cmdline = "";
+    if ($old && open(my $c, "<", "/proc/$old/cmdline")) {
+        local $/;
+        $cmdline = <$c> // "";
+        close $c;
+    }
+    kill "TERM", $old if index($cmdline, "\0$key\0") >= 0;
 }
 open(my $m, ">", $marker) or exit;
 print $m $$;
 close $m;
 my ($pid, $deadline) = (0, time + 30);
-while (owner() == $$) {
-    sleep 0.02;
-    if (!$pid) {
-        last if time > $deadline;
-        open(my $p, "<", "$dir/session-$key.pid") or next;
-        $pid = <$p> // 0;
-        close $p;
-        next;
-    }
-    my $tty = readlink("/proc/$pid/fd/0") // last;
-    last unless $tty =~ m{^/dev/pts/\d+$};
-    sysopen(my $t, $tty, O_RDWR | O_NOCTTY | O_NONBLOCK) or next;
-    my $size = pack("S4", 0, 0, 0, 0);
+until ($pid) {
+    exit if time > $deadline;
+    sleep 0.05;
+    open(my $p, "<", "$dir/session-$key.pid") or next;
+    $pid = <$p> // 0;
+    close $p;
+}
+my $tty = readlink("/proc/$pid/fd/0") // exit;
+exit unless $tty =~ m{^/dev/pts/\d+$};
+sysopen(my $t, $tty, O_RDWR | O_NOCTTY | O_NONBLOCK) or exit;
+my $size = pack("S4", 0, 0, 0, 0);
+while (kill 0, $pid) {
     if (ioctl($t, 0x5413, $size)) {
         my ($rows, $columns, $width, $height) = unpack("S4", $size);
         my $want_width = $columns * $cell_width;
@@ -395,9 +398,14 @@ while (owner() == $$) {
             ioctl($t, 0x5414, pack("S4", $rows, $columns, $want_width, $want_height));
         }
     }
-    close $t;
+    sleep 0.02;
 }
-unlink $marker if owner() == $$;
+close $t;
+if (open($m, "<", $marker)) {
+    my $owner = <$m> // 0;
+    close $m;
+    unlink $marker if $owner == $$;
+}
 ' "$d" "$@" </dev/null >/dev/null 2>&1 &
 "##;
 
