@@ -422,10 +422,15 @@ mod tests {
     /// goes through a third diacritic.
     const ICAT_ID: u32 = 0x2A12_3456;
 
+    /// The width of the icat pane, and the spaces icat's default
+    /// `--align center` prints before each row of its 4-column box.
+    const ICAT_COLUMNS: usize = 20;
+    const ICAT_INDENT: usize = (ICAT_COLUMNS - 4) / 2;
+
     /// What `kitten icat --unicode-placeholder` writes for a 20x20 RGB image
     /// into 5x10 pixel cells: `transmit_stream` sends it uncompressed in one
     /// chunk, being under 2048 bytes, and `write_unicode_placeholder` prints
-    /// a 4x2 box.
+    /// a 4x2 box centred in the pane.
     fn icat(id: u32) -> String {
         let rgb: Vec<u8> =
             (0..20 * 20).flat_map(|i: u32| [(i % 20) as u8, (i / 20) as u8, 0]).collect();
@@ -436,6 +441,7 @@ mod tests {
         out += &format!("\x1b[38:2:{}:{}:{}m", (id >> 16) & 255, (id >> 8) & 255, id & 255);
         let mark = |number: u32| DIACRITICS[number as usize];
         for row in 0..2 {
+            out += &" ".repeat(ICAT_INDENT);
             for column in 0..4 {
                 out.extend([PLACEHOLDER, mark(row), mark(column), mark(id >> 24)]);
             }
@@ -453,7 +459,7 @@ mod tests {
     }
 
     fn icat_pane() -> Pane {
-        Pane::with_cell(20, 10, (5, 10))
+        Pane::with_cell(ICAT_COLUMNS, 10, (5, 10))
     }
 
     /// Every placeholder in view shows the tile its marks name.
@@ -477,11 +483,13 @@ mod tests {
 
         for row in 0..2 {
             for column in 0..4 {
-                let tile = pane.tile_at(column as usize, row as usize + 1);
-                assert_eq!(tile, Some(icat_tile(row, column)), "cell {column},{}", row + 1);
+                let (x, y) = (ICAT_INDENT + column as usize, row as usize + 1);
+                assert_eq!(pane.tile_at(x, y), Some(icat_tile(row, column)), "cell {x},{y}");
             }
         }
-        for (column, row) in [(4, 1), (4, 2), (0, 0), (0, 3)] {
+        let (left, right) = (ICAT_INDENT - 1, ICAT_INDENT + 4);
+        for (column, row) in [(left, 1), (right, 1), (right, 2), (ICAT_INDENT, 0), (ICAT_INDENT, 3)]
+        {
             assert_eq!(pane.tile_at(column, row), None, "cell {column},{row} showed a tile");
         }
     }
@@ -505,10 +513,10 @@ mod tests {
         pane.capture();
         assert_every_tile_on_its_cell(&pane, 8);
 
-        // Three columns reflow each placeholder row onto two lines, and six
-        // lines push more of the screen into history.
+        // Ten columns split each placeholder row's run across two lines, and
+        // six lines push more of the screen into history.
         pane.term.scroll_display(Scroll::Bottom);
-        pane.term.resize(TermSize::new(3, 6));
+        pane.term.resize(TermSize::new(10, 6));
         pane.term.scroll_display(Scroll::Top);
         pane.capture();
         assert_every_tile_on_its_cell(&pane, 8);
