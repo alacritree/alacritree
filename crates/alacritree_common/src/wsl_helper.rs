@@ -344,6 +344,63 @@ pub fn wrap_profile_argv(
 /// line, for `SHIM_SCRIPT`'s reason.
 pub const EXEC_SHIM_SCRIPT: &str = r##"d=${XDG_RUNTIME_DIR:-/tmp}/alacritree; mkdir -p "$d" 2>/dev/null && printf %s $$ > "$d/session-$1.pid"; shift; exec "$@""##;
 
+/// Gives a shimmed session's tty the pixel size ConPTY cannot carry. `$1` is
+/// the probe key, then the width and height of a cell in pixels. WSL
+/// rewrites the tty's size with zero pixels on every grid change and every
+/// switch of screen buffer, so a watcher keeps the pixels at the grid times
+/// the cell for as long as the key's shell lives. It runs in its own
+/// session, which a helper restart does not end, and never holds the tty
+/// open between checks, so the pty closes with the shell. A newer request
+/// for the key replaces it. Linux alone runs it, so the ioctl numbers are
+/// Linux's.
+pub const PIXEL_SIZE_SCRIPT: &str = r##"d=${XDG_RUNTIME_DIR:-/tmp}/alacritree
+command -v perl >/dev/null 2>&1 || exit 0
+perl -e '
+use Fcntl;
+use POSIX ();
+use Time::HiRes qw(time sleep);
+POSIX::setsid();
+my ($dir, $key, $cell_width, $cell_height) = @ARGV;
+my $marker = "$dir/pixels-$key.pid";
+sub owner {
+    open(my $m, "<", $marker) or return 0;
+    my $owner = <$m>;
+    close $m;
+    return $owner // 0;
+}
+open(my $m, ">", $marker) or exit;
+print $m $$;
+close $m;
+my ($pid, $deadline) = (0, time + 30);
+while (owner() == $$) {
+    sleep 0.02;
+    if (!$pid) {
+        last if time > $deadline;
+        open(my $p, "<", "$dir/session-$key.pid") or next;
+        $pid = <$p> // 0;
+        close $p;
+        next;
+    }
+    my $tty = readlink("/proc/$pid/fd/0") // last;
+    last unless $tty =~ m{^/dev/pts/\d+$};
+    sysopen(my $t, $tty, O_RDWR | O_NOCTTY | O_NONBLOCK) or next;
+    my $size = pack("S4", 0, 0, 0, 0);
+    if (ioctl($t, 0x5413, $size)) {
+        my ($rows, $columns, $width, $height) = unpack("S4", $size);
+        my $want_width = $columns * $cell_width;
+        my $want_height = $rows * $cell_height;
+        $want_width = 65535 if $want_width > 65535;
+        $want_height = 65535 if $want_height > 65535;
+        if ($width != $want_width || $height != $want_height) {
+            ioctl($t, 0x5414, pack("S4", $rows, $columns, $want_width, $want_height));
+        }
+    }
+    close $t;
+}
+unlink $marker if owner() == $$;
+' "$d" "$@" </dev/null >/dev/null 2>&1 &
+"##;
+
 /// Probe-key shim for a wsl.exe argv whose `--exec` carries a command, the
 /// shape a multiplexer attach takes. The command runs under
 /// [`EXEC_SHIM_SCRIPT`] rather than the login-shell shim, so the session
@@ -935,6 +992,78 @@ fn ensure_poller() {
             });
         if let Err(e) = spawned {
             log::warn!("wsl probe poller failed to start: {e}");
+        }
+    });
+}
+
+/// One cell in device pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CellSize {
+    pub width: u16,
+    pub height: u16,
+}
+
+/// How long a cell size waits for its distro's helper to come up, which
+/// covers a cold WSL boot.
+const CELL_SIZE_PATIENCE: Duration = Duration::from_secs(30);
+const CELL_SIZE_RETRY: Duration = Duration::from_millis(250);
+
+type CellSizes = (Mutex<HashMap<(String, String), (CellSize, Instant)>>, std::sync::Condvar);
+
+/// The newest cell size per `(distro, probe key)` not yet handed to a helper.
+fn cell_sizes() -> &'static CellSizes {
+    static SIZES: OnceLock<CellSizes> = OnceLock::new();
+    SIZES.get_or_init(Default::default)
+}
+
+/// Keep the tty of the shimmed session under `key` reporting its pixel size
+/// for cells of `size`, through [`PIXEL_SIZE_SCRIPT`]. It never blocks: a
+/// writer thread sends the newest size per session, and holds it while the
+/// helper is still starting.
+pub fn set_cell_size(distro: &str, key: &str, size: CellSize) {
+    if !enabled() || !cfg!(windows) {
+        return;
+    }
+    let (sizes, queued) = cell_sizes();
+    lock(sizes).insert((distro.to_string(), key.to_string()), (size, Instant::now()));
+    queued.notify_one();
+    ensure_cell_size_writer();
+}
+
+fn ensure_cell_size_writer() {
+    static STARTED: std::sync::Once = std::sync::Once::new();
+    STARTED.call_once(|| {
+        let spawned =
+            std::thread::Builder::new().name("wsl-helper-cell-size".to_string()).spawn(|| {
+                let (sizes, queued) = cell_sizes();
+                loop {
+                    let batch: Vec<_> = {
+                        let mut pending = lock(sizes);
+                        while pending.is_empty() {
+                            pending = queued.wait(pending).unwrap_or_else(PoisonError::into_inner);
+                        }
+                        pending.drain().collect()
+                    };
+                    let mut waiting = false;
+                    for ((distro, key), (size, since)) in batch {
+                        if let Some(client) = client(&distro) {
+                            let (width, height) = (size.width.to_string(), size.height.to_string());
+                            if let Err(e) = client.run(PIXEL_SIZE_SCRIPT, &[&key, &width, &height])
+                            {
+                                log::debug!("wsl cell size for {key} not sent: {e}");
+                            }
+                        } else if since.elapsed() < CELL_SIZE_PATIENCE {
+                            lock(sizes).entry((distro, key)).or_insert((size, since));
+                            waiting = true;
+                        }
+                    }
+                    if waiting {
+                        std::thread::sleep(CELL_SIZE_RETRY);
+                    }
+                }
+            });
+        if let Err(e) = spawned {
+            log::warn!("wsl cell size writer failed to start: {e}");
         }
     });
 }
@@ -1694,5 +1823,73 @@ mod tests {
         }
         blocked.join().expect("writer thread");
         tore_down.join().expect("teardown thread");
+    }
+
+    /// Runs `PIXEL_SIZE_SCRIPT` the way the helper does, for a shell on a
+    /// real pty under probe key `k`. `ws TTY [ROWS COLS WIDTH HEIGHT]` sets
+    /// the tty's size and prints it; `ws "$tty" 31 91 0 0` rewrites it the
+    /// way WSL does on a resize or a switch of screen buffer.
+    const PIXEL_SIZE_HARNESS: &str = r##"echo harness
+command -v perl >/dev/null && command -v script >/dev/null || { echo "skip: needs perl and script"; exit 0; }
+pixel_size_script=$(cat <<'EOF_PIXEL_SIZE_SCRIPT'
+{script}
+EOF_PIXEL_SIZE_SCRIPT
+)
+XDG_RUNTIME_DIR=$(mktemp -d)
+export XDG_RUNTIME_DIR
+d=$XDG_RUNTIME_DIR/alacritree
+mkdir -p "$d"
+sleep 5 2>/dev/null | script -qec "printf %s \$\$ > $d/session-k.pid; exec sleep 30" /dev/null >/dev/null 2>&1 &
+i=0
+while [ ! -s "$d/session-k.pid" ] && [ $i -lt 100 ]; do sleep 0.05; i=$((i + 1)); done
+tty=$(readlink "/proc/$(cat "$d/session-k.pid")/fd/0")
+ws() { perl -e 'open(T, "+<", shift) or die; ioctl(T, 0x5414, pack("S4", @ARGV)) if @ARGV; my $w = pack("S4", 0, 0, 0, 0); ioctl(T, 0x5413, $w); print join(" ", unpack("S4", $w)), "\n"' "$@"; }
+ws "$tty" 30 90 0 0 >/dev/null
+sh -c "$pixel_size_script" sh k 10 20
+sleep 0.3
+ws "$tty"
+ws "$tty" 31 91 0 0 >/dev/null
+sleep 0.3
+ws "$tty"
+sh -c "$pixel_size_script" sh k 12 24
+sleep 0.3
+ws "$tty"
+kill "$(cat "$d/session-k.pid")" 2>/dev/null
+sleep 0.3
+[ -e "$d/pixels-k.pid" ] && echo "watcher outlived its shell" || echo "watcher gone"
+rm -rf "$XDG_RUNTIME_DIR"
+"##;
+
+    /// The tty reports its grid times the cell, again after a rewrite that
+    /// zeroes the pixels and after a new cell size, and the watcher ends
+    /// with the shell. Runs through WSL's default distro on Windows, and is
+    /// skipped where there is no Linux with perl and `script` to run it in.
+    #[cfg(any(windows, target_os = "linux"))]
+    #[test]
+    fn the_pixel_size_script_keeps_the_grid_times_the_cell_on_the_tty() {
+        let harness = PIXEL_SIZE_HARNESS.replace("{script}", PIXEL_SIZE_SCRIPT);
+        let mut command = std::process::Command::new(if cfg!(windows) { "wsl.exe" } else { "sh" });
+        if cfg!(windows) {
+            command.args(["-e", "sh"]);
+        }
+        command.arg("-s").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+        let Ok(mut child) = command.spawn() else {
+            eprintln!("skipped: no sh to run the script in");
+            return;
+        };
+        child.stdin.take().expect("piped stdin").write_all(harness.as_bytes()).unwrap();
+        let output = child.wait_with_output().unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+
+        let Some(lines) = stdout.strip_prefix("harness\n") else {
+            eprintln!("skipped: no Linux to run the script in: {stdout:?}");
+            return;
+        };
+        if let Some(reason) = lines.strip_prefix("skip: ") {
+            eprintln!("skipped: {reason}");
+            return;
+        }
+        let sizes: Vec<&str> = lines.lines().collect();
+        assert_eq!(sizes, ["30 90 900 600", "31 91 910 620", "31 91 1092 744", "watcher gone"]);
     }
 }

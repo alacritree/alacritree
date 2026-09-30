@@ -1275,6 +1275,19 @@ impl<R: Repaint> Session<R> {
         if let Some(probe) = &self.wsl_probe {
             wsl_helper::register_probe(&probe.distro, &probe.key);
         }
+        self.send_wsl_cell_size();
+    }
+
+    /// Have a shimmed WSL shell's tty report the pixel size ConPTY drops,
+    /// which programs such as `kitten icat` read to size images. The distro
+    /// side keeps it in step with the grid, so only a new cell size needs
+    /// sending.
+    fn send_wsl_cell_size(&self) {
+        if let Some(probe) = &self.wsl_probe {
+            let size = window_size(self.size, self.cell_size);
+            let cell = wsl_helper::CellSize { width: size.cell_width, height: size.cell_height };
+            wsl_helper::set_cell_size(&probe.distro, &probe.key, cell);
+        }
     }
 
     /// Mark whether this session's grid is the one being painted.  Output from
@@ -1395,6 +1408,7 @@ impl<R: Repaint> Session<R> {
         {
             return;
         }
+        let cell_changed = cell_size != self.cell_size;
         self.size = size;
         self.cell_size = cell_size;
         // Upstream resizes the PTY first and the terminal second; here the
@@ -1410,6 +1424,9 @@ impl<R: Repaint> Session<R> {
         };
         let ws = window_size(size, cell_size);
         let _ = sender.send(Msg::Resize(ws));
+        if cell_changed {
+            self.send_wsl_cell_size();
+        }
     }
 
     pub(crate) fn is_exited(&self) -> bool {
