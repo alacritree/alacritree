@@ -256,6 +256,10 @@ struct ProcessorState<T: Timeout> {
 /// dropped whole.
 const MAX_SIXEL_LEN: usize = 64 * 1024 * 1024;
 
+/// A sixel buffer grown past this is freed after its image rather than kept
+/// for the next one.
+const KEEP_SIXEL_CAPACITY: usize = 1024 * 1024;
+
 /// The data of one `DCS P1;P2;P3 q ... ST`, collected until its terminator.
 #[derive(Debug, Default)]
 struct SixelString {
@@ -1405,6 +1409,9 @@ where
             debug!("[unhandled sixel] longer than {MAX_SIXEL_LEN} bytes");
         } else {
             self.handler.sixel(sixel.params, &sixel.data);
+        }
+        if sixel.data.capacity() > KEEP_SIXEL_CAPACITY {
+            sixel.data = Vec::new();
         }
     }
 
