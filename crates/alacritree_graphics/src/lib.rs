@@ -346,10 +346,9 @@ impl Graphics {
         }
     }
 
-    /// The screen cells in `lines` by `columns` were blanked by an erase short
-    /// of a full clear (EL, ECH, ED 0 and 1) or filled by DECALN. Sixel images
-    /// lose those cells, as if text was printed into each; kitty placements
-    /// stay, as in kitty and Ghostty.
+    /// The screen cells in `lines` by `columns` were blanked by EL, ECH, ED 0
+    /// or ED 1, or filled by DECALN. Sixel images lose those cells, as if text
+    /// was printed into each; kitty placements stay, as in kitty and Ghostty.
     pub fn erase(&mut self, lines: Range<usize>, columns: Range<usize>) {
         let cell = self.cell;
         let store = self.active_mut();
