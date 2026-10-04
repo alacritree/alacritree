@@ -563,11 +563,7 @@ impl Store {
     /// Text was printed into screen cell `(line, column)`. Every sixel image
     /// over it stops drawing that cell, and one with no cell left goes.
     pub(crate) fn print(&mut self, (line, column): (usize, usize), cell: CellSize) {
-        let (row, column) = (self.scrolled + line as i64, column as i64);
-        self.erase_sixel_cells(cell, |p| {
-            let covered = p.covers_row(row, p.row) && p.covers_column(column);
-            covered.then(|| ((row - p.row) as u32, (column - i64::from(p.column)) as u32))
-        });
+        self.erase(line..line + 1, column..column + 1, cell);
     }
 
     /// The screen cells in `lines` by `columns` were blanked or overwritten,
