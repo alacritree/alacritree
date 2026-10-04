@@ -57,9 +57,8 @@ impl Image {
     }
 }
 
-/// The cells of a sixel image that text was printed into, which it no
-/// longer draws, as in WezTerm, where each cell holds its slice of a sixel
-/// image and printing replaces it.
+/// Each cell holds its slice of the image, as in WezTerm, and printing into
+/// the cell erases the slice.
 ///
 /// The mask divides the source the placement drew into cells of the size of
 /// the last erase, and a cell is looked up by the texel at its centre, so
@@ -125,9 +124,9 @@ impl Erased {
         self.index(texel).is_some_and(|index| self.cells[index])
     }
 
-    /// Whether every cell a native size `placement` covers now is erased,
-    /// which a scroll that clipped it or a cell size change leaves true even
-    /// with mask cells no print can reach.
+    /// Whether every cell a native size `placement` covers now is erased.
+    /// A scroll that clipped it or a cell size change can leave mask cells
+    /// no print can reach, so only the cells it covers count.
     fn hides(&self, placement: &Placement, cell: CellSize) -> bool {
         (0..placement.effective_rows).all(|row| {
             (0..placement.effective_columns)
