@@ -1078,6 +1078,9 @@ impl<T> Term<T> {
         cursor_cell.bg = bg;
         cursor_cell.flags = flags;
         cursor_cell.extra = extra;
+
+        let point = self.grid.cursor.point;
+        self.graphics.print(point.line.0 as usize, point.column.0);
     }
 
     #[inline]

@@ -45,6 +45,8 @@ pub(crate) struct Image {
     next_placement: u32,
     /// Came from a sixel string rather than a kitty command.
     sixel: bool,
+    /// The cells of a sixel image that text was printed into.
+    erased: Option<Erased>,
 }
 
 impl Image {
@@ -52,6 +54,114 @@ impl Image {
     /// `root_frame_data_loaded`.
     fn has_data(&self) -> bool {
         self.data.as_ref().is_some_and(|slot| !slot.failed())
+    }
+}
+
+/// The cells of a sixel image that text was printed into, which it no
+/// longer draws, as in WezTerm, where each cell holds its slice of a sixel
+/// image and printing replaces it.
+///
+/// The mask divides the source the placement drew when its first cell was
+/// erased into cells of that time's size, and a cell is looked up by the
+/// texel at its centre, so the mask holds across a scroll that clips the
+/// image and across a cell size change.
+struct Erased {
+    cell: CellSize,
+    /// Texel row of the mask's first row.
+    top: u32,
+    columns: u32,
+    cells: Vec<bool>,
+    /// Cells not erased yet.
+    left: usize,
+}
+
+impl Erased {
+    fn new(placement: &Placement, cell: CellSize) -> Self {
+        let width = (placement.src_x + placement.src_width).ceil() as u32;
+        let columns = width.div_ceil(cell.width);
+        let rows = (placement.src_height.ceil() as u32).div_ceil(cell.height);
+        let count = columns as usize * rows as usize;
+        Self { cell, top: placement.src_y as u32, columns, cells: vec![false; count], left: count }
+    }
+
+    fn index(&self, (x, y): (u32, u32)) -> Option<usize> {
+        let column = x / self.cell.width;
+        let row = y.checked_sub(self.top)? / self.cell.height;
+        let index = row as usize * self.columns as usize + column as usize;
+        (column < self.columns && index < self.cells.len()).then_some(index)
+    }
+
+    /// Erase the cell under `texel`, returning whether it was drawn.
+    fn erase(&mut self, texel: (u32, u32)) -> bool {
+        match self.index(texel) {
+            Some(index) if !self.cells[index] => {
+                self.cells[index] = true;
+                self.left -= 1;
+                true
+            },
+            _ => false,
+        }
+    }
+
+    fn contains(&self, texel: (u32, u32)) -> bool {
+        self.index(texel).is_some_and(|index| self.cells[index])
+    }
+
+    /// The texels `(row, column)` of a native size `placement` shows,
+    /// `[left, top, right, bottom]`, or `None` past the end of its source.
+    fn source(
+        placement: &Placement,
+        (row, column): (u32, u32),
+        cell: CellSize,
+    ) -> Option<[f32; 4]> {
+        let (cw, ch) = (cell.width as f32, cell.height as f32);
+        let left = placement.src_x + column as f32 * cw;
+        let top = placement.src_y + row as f32 * ch;
+        let right = (left + cw).min(placement.src_x + placement.src_width);
+        let bottom = (top + ch).min(placement.src_y + placement.src_height);
+        (left < right && top < bottom).then_some([left, top, right, bottom])
+    }
+
+    fn centre([left, top, right, bottom]: [f32; 4]) -> (u32, u32) {
+        (((left + right) / 2.0) as u32, ((top + bottom) / 2.0) as u32)
+    }
+
+    /// Push one quad per run of drawn cells in each row of a native size
+    /// `placement` whose top row is at viewport row `top`.
+    fn pieces(
+        &self,
+        placement: &Placement,
+        top: f32,
+        cell: CellSize,
+        mut push: impl FnMut(ImageQuad),
+    ) {
+        let (cw, ch) = (cell.width as f32, cell.height as f32);
+        let left = placement.column as f32;
+        let mut emit = |[x0, y0, ..]: [f32; 4], [.., x1, y1]: [f32; 4]| {
+            let dest = [
+                left + (x0 - placement.src_x) / cw,
+                top + (y0 - placement.src_y) / ch,
+                left + (x1 - placement.src_x) / cw,
+                top + (y1 - placement.src_y) / ch,
+            ];
+            push(ImageQuad { dest, src: [x0, y0, x1, y1] });
+        };
+        for row in 0..placement.effective_rows {
+            let mut run: Option<([f32; 4], [f32; 4])> = None;
+            for column in 0..placement.effective_columns {
+                let Some(source) = Self::source(placement, (row, column), cell) else { break };
+                if self.contains(Self::centre(source)) {
+                    if let Some((first, last)) = run.take() {
+                        emit(first, last);
+                    }
+                } else {
+                    run = Some((run.map_or(source, |(first, _)| first), source));
+                }
+            }
+            if let Some((first, last)) = run {
+                emit(first, last);
+            }
+        }
     }
 }
 
@@ -70,6 +180,8 @@ pub(crate) struct Store {
     /// back down.
     scrolled: i64,
     used: usize,
+    /// Images that came from a sixel string, which printed text erases.
+    sixels: usize,
     pub quota: usize,
     /// Scrollback capacity in lines; a placement above it is dropped.
     history: i64,
@@ -87,6 +199,7 @@ impl Default for Store {
             clock: 0,
             scrolled: 0,
             used: 0,
+            sixels: 0,
             quota: DEFAULT_QUOTA,
             history: 0,
             expiry: i64::MAX,
@@ -193,6 +306,7 @@ impl Store {
                     placements: Vec::new(),
                     next_placement: 0,
                     sixel: false,
+                    erased: None,
                 });
                 self.images.len() - 1
             },
@@ -269,6 +383,7 @@ impl Store {
     pub(crate) fn remove_at(&mut self, index: usize) {
         let image = self.images.remove(index);
         self.used -= image.footprint;
+        self.sixels -= usize::from(image.sixel);
         self.generation += 1;
     }
 
@@ -404,11 +519,50 @@ impl Store {
             placements: vec![placement],
             next_placement: 1,
             sixel: true,
+            erased: None,
         };
         self.used += image.footprint;
+        self.sixels += 1;
         self.images.push(image);
         self.generation += 1;
         (self.next_image, rows)
+    }
+
+    pub(crate) fn has_sixels(&self) -> bool {
+        self.sixels != 0
+    }
+
+    /// Text was printed into screen cell `(line, column)`: every sixel image
+    /// over it stops drawing that cell, and one with no cell left goes.
+    pub(crate) fn print(&mut self, (line, column): (usize, usize), cell: CellSize) {
+        let (row, column) = (self.scrolled + line as i64, column as i64);
+        let mut index = 0;
+        while index < self.images.len() {
+            let Image { sixel, placements, erased, .. } = &mut self.images[index];
+            let source = placements
+                .first()
+                .filter(|p| *sixel && p.covers_row(row, p.row) && p.covers_column(column))
+                .and_then(|p| {
+                    let at = ((row - p.row) as u32, (column - i64::from(p.column)) as u32);
+                    Some((p, Erased::source(p, at, cell)?))
+                });
+            let Some((placement, source)) = source else {
+                index += 1;
+                continue;
+            };
+            let erased = erased.get_or_insert_with(|| Erased::new(placement, cell));
+            if !erased.erase(Erased::centre(source)) {
+                index += 1;
+                continue;
+            }
+            self.generation += 1;
+            if erased.left == 0 {
+                self.remove_at(index);
+                self.recompute_expiry();
+            } else {
+                index += 1;
+            }
+        }
     }
 
     /// Delete the sixel placements whose cells lie inside `outer`'s.
@@ -631,15 +785,18 @@ impl Store {
                 if top >= rows || bottom <= 0.0 || left >= columns || right <= 0.0 {
                     continue;
                 }
+                let key = (p.z, image.internal_id, p.internal_id);
+                if let Some(erased) = &image.erased {
+                    erased.pieces(p, top as f32, cell, |quad| {
+                        out.push(Visible { key, image: index, quad });
+                    });
+                    continue;
+                }
                 let quad = ImageQuad {
                     dest: [left as f32, top as f32, right as f32, bottom as f32],
                     src: [p.src_x, p.src_y, p.src_x + p.src_width, p.src_y + p.src_height],
                 };
-                out.push(Visible {
-                    key: (p.z, image.internal_id, p.internal_id),
-                    image: index,
-                    quad,
-                });
+                out.push(Visible { key, image: index, quad });
             }
         }
     }

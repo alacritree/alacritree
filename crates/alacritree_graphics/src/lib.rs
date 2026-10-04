@@ -333,6 +333,17 @@ impl Graphics {
         }
     }
 
+    /// Text was printed into screen cell `(line, column)`. Sixel images stop
+    /// drawing that cell, as in WezTerm; kitty placements stay, as in kitty.
+    #[inline]
+    pub fn print(&mut self, line: usize, column: usize) {
+        let cell = self.cell;
+        let store = self.active_mut();
+        if store.has_sixels() {
+            store.print((line, column), cell);
+        }
+    }
+
     /// Erase in display (ED 2): remove placements with a row on screen,
     /// keeping those wholly in scrollback, and images left unplaced.
     pub fn clear_screen(&mut self) {

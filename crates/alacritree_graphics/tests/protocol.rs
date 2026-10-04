@@ -400,6 +400,19 @@ fn the_alternate_screen_has_its_own_images_and_starts_empty() {
 }
 
 #[test]
+fn text_printed_over_a_kitty_placement_leaves_it_drawn_as_kitty_does() {
+    let mut pane = Pane::new(10, 5);
+    pane.message("a=T,f=24,i=1,s=30,v=40,C=1", vec![0; 30 * 40 * 3]);
+
+    pane.feed("\x1b[1;1HXYZ\x1b[2;1HXYZ");
+
+    let quads = pane.quads();
+    assert_eq!(quads.len(), 1);
+    assert_rect(quads[0].dest, [0.0, 0.0, 3.0, 2.0]);
+    assert_eq!(pane.image_count(), 1);
+}
+
+#[test]
 fn erase_saved_lines_clears_every_image_as_kitty_does() {
     let mut pane = Pane::new(10, 5);
     pane.message("a=T,f=24,i=1,s=10,v=20", vec![0; 10 * 20 * 3]);
