@@ -1213,6 +1213,7 @@ impl<T: EventListener> Handler for Term<T> {
                 cell.c = 'E';
             }
         }
+        self.graphics.fill_screen(self.screen_lines(), self.columns());
 
         self.mark_fully_damaged();
     }

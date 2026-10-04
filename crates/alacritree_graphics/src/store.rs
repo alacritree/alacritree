@@ -566,23 +566,55 @@ impl Store {
     /// over it stops drawing that cell, and one with no cell left goes.
     pub(crate) fn print(&mut self, (line, column): (usize, usize), cell: CellSize) {
         let (row, column) = (self.scrolled + line as i64, column as i64);
+        self.erase_sixel_cells(cell, |p| {
+            let covered = p.covers_row(row, p.row) && p.covers_column(column);
+            covered.then(|| ((row - p.row) as u32, (column - i64::from(p.column)) as u32))
+        });
+    }
+
+    /// DECALN filled the screen of `lines` by `columns` cells with text, so
+    /// every sixel image loses its cells on it.
+    pub(crate) fn fill_screen(&mut self, (lines, columns): (usize, usize), cell: CellSize) {
+        let top = self.scrolled;
+        self.erase_sixel_cells(cell, |p| {
+            let first = (top - p.row).max(0);
+            let end = (top + lines as i64 - p.row).min(i64::from(p.effective_rows));
+            let width = (columns as i64 - i64::from(p.column)).clamp(0, p.effective_columns.into());
+            (first..end)
+                .flat_map(move |row| (0..width).map(move |column| (row, column)))
+                .map(|(row, column)| (row as u32, column as u32))
+        });
+    }
+
+    /// Erase the cells `cells` names, as `(row, column)` inside the
+    /// placement, from each sixel image, and remove one left drawing none.
+    fn erase_sixel_cells<I: IntoIterator<Item = (u32, u32)>>(
+        &mut self,
+        cell: CellSize,
+        cells: impl Fn(&Placement) -> I,
+    ) {
         let mut index = 0;
         while index < self.images.len() {
             let Image { sixel, placements, erased, .. } = &mut self.images[index];
-            let source = placements
-                .first()
-                .filter(|p| *sixel && p.covers_row(row, p.row) && p.covers_column(column))
-                .and_then(|p| {
-                    let at = ((row - p.row) as u32, (column - i64::from(p.column)) as u32);
-                    Some((p, Erased::source(p, at, cell)?))
-                });
-            let Some((placement, source)) = source else {
+            let Some(placement) = placements.first().filter(|_| *sixel) else {
                 index += 1;
                 continue;
             };
+            let mut sources = cells(placement)
+                .into_iter()
+                .filter_map(|at| Erased::source(placement, at, cell))
+                .peekable();
+            if sources.peek().is_none() {
+                index += 1;
+                continue;
+            }
             let erased = erased.get_or_insert_with(|| Erased::new(placement, cell));
             erased.rescale(placement, cell);
-            if !erased.erase(Erased::centre(source)) {
+            let mut changed = false;
+            for source in sources {
+                changed |= erased.erase(Erased::centre(source));
+            }
+            if !changed {
                 index += 1;
                 continue;
             }

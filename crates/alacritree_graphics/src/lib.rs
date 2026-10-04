@@ -344,6 +344,17 @@ impl Graphics {
         }
     }
 
+    /// DECALN filled the screen of `lines` by `columns` cells with `E`. Sixel
+    /// images lose every cell on screen, as if each `E` was printed, while
+    /// kitty placements stay, as in kitty and Ghostty.
+    pub fn fill_screen(&mut self, lines: usize, columns: usize) {
+        let cell = self.cell;
+        let store = self.active_mut();
+        if store.has_sixels() {
+            store.fill_screen((lines, columns), cell);
+        }
+    }
+
     /// Erase in display (ED 2): remove placements with a row on screen,
     /// keeping those wholly in scrollback, and images left unplaced.
     pub fn clear_screen(&mut self) {

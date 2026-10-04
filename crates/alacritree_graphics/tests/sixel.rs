@@ -153,6 +153,20 @@ fn after_the_cells_shrink_text_erases_one_new_cell_of_a_sixel_image() {
 }
 
 #[test]
+fn decaln_erases_sixel_images_on_screen_and_keeps_kitty_placements() {
+    let mut pane = Pane::new(10, 5);
+    pane.message("a=T,f=24,i=1,s=10,v=20,C=1", vec![0; 10 * 20 * 3]);
+    pane.feed(format!("\x1b[3;5H{}", sixel(30, 40)));
+
+    pane.feed("\x1b#8");
+
+    assert_eq!(pane.image_count(), 1);
+    let quads = pane.quads();
+    assert_eq!(quads.len(), 1);
+    assert_rect(quads[0].dest, [0.0, 0.0, 1.0, 1.0]);
+}
+
+#[test]
 fn an_empty_sixel_image_leaves_the_cursor() {
     let mut pane = Pane::new(10, 5);
     pane.feed("\x1b[2;2H\x1bPq??-\x1b\\");
