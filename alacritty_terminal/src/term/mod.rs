@@ -330,8 +330,7 @@ pub struct Term<T> {
     /// Config directly for the terminal.
     config: Config,
 
-    /// Kitty graphics protocol images, which the grid changes below move
-    /// and clear.
+    /// kitty and sixel images, which the grid changes below move and clear.
     graphics: Graphics,
 }
 
@@ -455,7 +454,7 @@ impl<T> Term<T> {
         }
     }
 
-    /// The kitty graphics protocol images.
+    /// The kitty and sixel images.
     pub fn graphics(&self) -> &Graphics {
         &self.graphics
     }
@@ -1078,6 +1077,9 @@ impl<T> Term<T> {
         cursor_cell.bg = bg;
         cursor_cell.flags = flags;
         cursor_cell.extra = extra;
+
+        let point = self.grid.cursor.point;
+        self.graphics.print(point.line.0 as usize, point.column.0);
     }
 
     #[inline]
@@ -1211,6 +1213,7 @@ impl<T: EventListener> Handler for Term<T> {
                 cell.c = 'E';
             }
         }
+        self.graphics.fill_screen(self.screen_lines(), self.columns());
 
         self.mark_fully_damaged();
     }

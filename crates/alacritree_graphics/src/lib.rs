@@ -205,7 +205,8 @@ impl Graphics {
         store.index_by_id(id).and_then(|index| store.decoded(index)).cloned()
     }
 
-    /// Whether an image of the active screen is still decoding.
+    /// Whether an image of the active screen is still decoding. Once it is
+    /// not, [`Graphics::layout_generation`] holds until the terminal changes.
     pub fn is_decoding(&self) -> bool {
         self.active().is_decoding()
     }
@@ -330,6 +331,28 @@ impl Graphics {
         let store = self.active_mut();
         if !store.is_empty() {
             store.scroll(&region, delta, cell);
+        }
+    }
+
+    /// Text was printed into screen cell `(line, column)`. Sixel images stop
+    /// drawing that cell, as in WezTerm; kitty placements stay, as in kitty.
+    #[inline]
+    pub fn print(&mut self, line: usize, column: usize) {
+        let cell = self.cell;
+        let store = self.active_mut();
+        if store.has_sixels() {
+            store.print((line, column), cell);
+        }
+    }
+
+    /// DECALN filled the screen of `lines` by `columns` cells with `E`. Sixel
+    /// images lose every cell on screen, as if each `E` was printed, while
+    /// kitty placements stay, as in kitty and Ghostty.
+    pub fn fill_screen(&mut self, lines: usize, columns: usize) {
+        let cell = self.cell;
+        let store = self.active_mut();
+        if store.has_sixels() {
+            store.fill_screen((lines, columns), cell);
         }
     }
 

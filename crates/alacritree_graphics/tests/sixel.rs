@@ -80,6 +80,107 @@ fn a_sixel_image_deletes_the_older_ones_it_covers() {
 }
 
 #[test]
+fn text_printed_over_a_sixel_image_erases_only_the_cells_it_lands_in() {
+    let mut pane = Pane::new(10, 5);
+    pane.feed(format!("\x1b[1;1H{}", sixel(30, 40)));
+
+    // Three columns by two rows; the top middle cell gets text.
+    pane.feed("\x1b[1;2HX");
+
+    let quads: Vec<_> = pane.quads().iter().map(|quad| (quad.dest, quad.src)).collect();
+    assert_eq!(quads, [
+        ([0.0, 0.0, 1.0, 1.0], [0.0, 0.0, 10.0, 20.0]),
+        ([2.0, 0.0, 3.0, 1.0], [20.0, 0.0, 30.0, 20.0]),
+        ([0.0, 1.0, 3.0, 2.0], [0.0, 20.0, 30.0, 40.0]),
+    ]);
+}
+
+#[test]
+fn a_wide_character_over_a_sixel_image_erases_both_its_cells() {
+    let mut pane = Pane::new(10, 5);
+    pane.feed(format!("\x1b[1;1H{}", sixel(30, 40)));
+
+    pane.feed("\x1b[1;1H中");
+
+    let quads: Vec<_> = pane.quads().iter().map(|quad| (quad.dest, quad.src)).collect();
+    assert_eq!(quads, [
+        ([2.0, 0.0, 3.0, 1.0], [20.0, 0.0, 30.0, 20.0]),
+        ([0.0, 1.0, 3.0, 2.0], [0.0, 20.0, 30.0, 40.0]),
+    ]);
+}
+
+#[test]
+fn spaces_printed_over_every_cell_of_a_sixel_image_remove_it() {
+    let mut pane = Pane::new(10, 5);
+    pane.feed(format!("\x1b[2;3H{}", sixel(20, 30)));
+
+    pane.feed("\x1b[2;3H  \x1b[3;3H ");
+    assert_eq!(pane.image_count(), 1);
+    pane.feed(" ");
+    assert_eq!(pane.image_count(), 0);
+}
+
+#[test]
+fn a_sixel_image_clipped_by_a_scroll_region_goes_once_its_visible_cells_are_printed_over() {
+    let mut pane = Pane::new(10, 5);
+    pane.feed(format!("\x1b[2;1H{}", sixel(10, 60)));
+    pane.feed("\x1b[2;1HX");
+
+    // Scrolling the region up by two clips the image to its last row.
+    pane.feed("\x1b[2;5r\x1b[2S\x1b[2;1HX");
+
+    assert!(pane.quads().is_empty());
+    assert_eq!(pane.image_count(), 0);
+}
+
+#[test]
+fn a_sixel_image_goes_once_its_cells_at_a_new_cell_size_are_printed_over() {
+    let mut pane = Pane::new(10, 5);
+    pane.feed(format!("\x1b[1;1H{}", sixel(40, 36)));
+    pane.feed("\x1b[1;1HX");
+
+    // Four columns by two rows become two columns by one row.
+    pane.term.graphics_mut().set_cell_pixels(20, 40);
+    pane.feed("\x1b[1;1HXX");
+
+    assert!(pane.quads().is_empty());
+    assert_eq!(pane.image_count(), 0);
+}
+
+#[test]
+fn after_the_cells_shrink_text_erases_one_new_cell_of_a_sixel_image() {
+    let mut pane = Pane::with(10, 5, 5, (20, 40));
+    pane.feed(format!("\x1b[1;1H{}", sixel(40, 36)));
+    pane.feed("\x1b[1;1HX");
+
+    // Two columns by one row become four columns by two rows, the left
+    // half still erased.
+    pane.term.graphics_mut().set_cell_pixels(10, 20);
+    pane.feed("\x1b[1;3HX");
+
+    let quads = pane.quads();
+    assert_eq!(quads.len(), 2);
+    assert_rect(quads[0].dest, [3.0, 0.0, 4.0, 1.0]);
+    assert_rect(quads[0].src, [30.0, 0.0, 40.0, 20.0]);
+    assert_rect(quads[1].dest, [2.0, 1.0, 4.0, 1.8]);
+    assert_rect(quads[1].src, [20.0, 20.0, 40.0, 36.0]);
+}
+
+#[test]
+fn decaln_erases_sixel_images_on_screen_and_keeps_kitty_placements() {
+    let mut pane = Pane::new(10, 5);
+    pane.message("a=T,f=24,i=1,s=10,v=20,C=1", vec![0; 10 * 20 * 3]);
+    pane.feed(format!("\x1b[3;5H{}", sixel(30, 40)));
+
+    pane.feed("\x1b#8");
+
+    assert_eq!(pane.image_count(), 1);
+    let quads = pane.quads();
+    assert_eq!(quads.len(), 1);
+    assert_rect(quads[0].dest, [0.0, 0.0, 1.0, 1.0]);
+}
+
+#[test]
 fn an_empty_sixel_image_leaves_the_cursor() {
     let mut pane = Pane::new(10, 5);
     pane.feed("\x1b[2;2H\x1bPq??-\x1b\\");

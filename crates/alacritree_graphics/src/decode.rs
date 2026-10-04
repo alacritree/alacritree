@@ -24,6 +24,11 @@ use crate::load::{Format, MAX_DATA_SIZE};
 pub(crate) struct Slot {
     pixels: OnceLock<Arc<Pixels>>,
     failed: AtomicBool,
+    /// Set once the job has counted its pixels in the ready counter, or
+    /// failed. The pixels land before the count, so a frame built between
+    /// the two still draws them; a finished slot also has a settled layout
+    /// generation.
+    finished: AtomicBool,
 }
 
 impl Slot {
@@ -33,6 +38,10 @@ impl Slot {
 
     pub(crate) fn failed(&self) -> bool {
         self.failed.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn finished(&self) -> bool {
+        self.finished.load(Ordering::Acquire)
     }
 }
 
@@ -135,6 +144,7 @@ pub(crate) fn spawn<E: Display>(
         Ok(pixels) => {
             let _ = slot.pixels.set(Arc::new(pixels));
             ready.fetch_add(1, Ordering::Release);
+            slot.finished.store(true, Ordering::Release);
             if let Some(waker) = waker {
                 waker();
             }
@@ -142,6 +152,7 @@ pub(crate) fn spawn<E: Display>(
         Err(error) => {
             log::warn!("graphics: {error}");
             slot.failed.store(true, Ordering::Release);
+            slot.finished.store(true, Ordering::Release);
         },
     })
 }
