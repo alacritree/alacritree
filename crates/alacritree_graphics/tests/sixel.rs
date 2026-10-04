@@ -215,6 +215,22 @@ fn erase_sequences_over_every_cell_of_a_sixel_image_remove_it() {
 }
 
 #[test]
+fn erase_sequences_short_of_a_full_clear_leave_kitty_placements_drawn_as_kitty_does() {
+    for sequence in ["\x1b[K", "\x1b[1K", "\x1b[2K", "\x1b[5X", "\x1b[J", "\x1b[1J"] {
+        let mut pane = Pane::new(10, 5);
+        pane.message("a=T,f=24,i=1,s=30,v=40,C=1", vec![0; 30 * 40 * 3]);
+        // A sixel image elsewhere sends the erase through the sixel path.
+        pane.feed(format!("\x1b[4;8H{}", sixel(10, 18)));
+
+        pane.feed(format!("\x1b[2;2H{sequence}"));
+
+        let kitty: Vec<_> =
+            pane.quads().iter().map(|quad| quad.dest).filter(|dest| dest[1] < 2.0).collect();
+        assert_eq!(kitty, [[0.0, 0.0, 3.0, 2.0]], "{sequence:?}");
+    }
+}
+
+#[test]
 fn decaln_erases_sixel_images_on_screen_and_keeps_kitty_placements() {
     let mut pane = Pane::new(10, 5);
     pane.message("a=T,f=24,i=1,s=10,v=20,C=1", vec![0; 10 * 20 * 3]);
