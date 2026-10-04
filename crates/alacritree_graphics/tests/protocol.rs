@@ -413,6 +413,21 @@ fn text_printed_over_a_kitty_placement_leaves_it_drawn_as_kitty_does() {
 }
 
 #[test]
+fn erase_sequences_short_of_a_full_clear_leave_kitty_placements_drawn_as_kitty_does() {
+    for sequence in ["\x1b[K", "\x1b[1K", "\x1b[2K", "\x1b[5X", "\x1b[J", "\x1b[1J"] {
+        let mut pane = Pane::new(10, 5);
+        pane.message("a=T,f=24,i=1,s=30,v=40,C=1", vec![0; 30 * 40 * 3]);
+
+        pane.feed(format!("\x1b[2;2H{sequence}"));
+
+        let quads = pane.quads();
+        assert_eq!(quads.len(), 1, "{sequence:?}");
+        assert_rect(quads[0].dest, [0.0, 0.0, 3.0, 2.0]);
+        assert_eq!(pane.image_count(), 1, "{sequence:?}");
+    }
+}
+
+#[test]
 fn erase_saved_lines_clears_every_image_as_kitty_does() {
     let mut pane = Pane::new(10, 5);
     pane.message("a=T,f=24,i=1,s=10,v=20", vec![0; 10 * 20 * 3]);
