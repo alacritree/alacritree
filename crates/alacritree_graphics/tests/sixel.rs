@@ -107,6 +107,33 @@ fn spaces_printed_over_every_cell_of_a_sixel_image_remove_it() {
 }
 
 #[test]
+fn a_sixel_image_clipped_by_a_scroll_region_goes_once_its_visible_cells_are_printed_over() {
+    let mut pane = Pane::new(10, 5);
+    pane.feed(format!("\x1b[2;1H{}", sixel(10, 60)));
+    pane.feed("\x1b[2;1HX");
+
+    // Scrolling the region up by two clips the image to its last row.
+    pane.feed("\x1b[2;5r\x1b[2S\x1b[2;1HX");
+
+    assert!(pane.quads().is_empty());
+    assert_eq!(pane.image_count(), 0);
+}
+
+#[test]
+fn a_sixel_image_goes_once_its_cells_at_a_new_cell_size_are_printed_over() {
+    let mut pane = Pane::new(10, 5);
+    pane.feed(format!("\x1b[1;1H{}", sixel(40, 36)));
+    pane.feed("\x1b[1;1HX");
+
+    // Four columns by two rows become two columns by one row.
+    pane.term.graphics_mut().set_cell_pixels(20, 40);
+    pane.feed("\x1b[1;1HXX");
+
+    assert!(pane.quads().is_empty());
+    assert_eq!(pane.image_count(), 0);
+}
+
+#[test]
 fn an_empty_sixel_image_leaves_the_cursor() {
     let mut pane = Pane::new(10, 5);
     pane.feed("\x1b[2;2H\x1bPq??-\x1b\\");

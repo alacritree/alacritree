@@ -71,8 +71,6 @@ struct Erased {
     top: u32,
     columns: u32,
     cells: Vec<bool>,
-    /// Cells not erased yet.
-    left: usize,
 }
 
 impl Erased {
@@ -80,8 +78,8 @@ impl Erased {
         let width = (placement.src_x + placement.src_width).ceil() as u32;
         let columns = width.div_ceil(cell.width);
         let rows = (placement.src_height.ceil() as u32).div_ceil(cell.height);
-        let count = columns as usize * rows as usize;
-        Self { cell, top: placement.src_y as u32, columns, cells: vec![false; count], left: count }
+        let cells = vec![false; columns as usize * rows as usize];
+        Self { cell, top: placement.src_y as u32, columns, cells }
     }
 
     fn index(&self, (x, y): (u32, u32)) -> Option<usize> {
@@ -96,7 +94,6 @@ impl Erased {
         match self.index(texel) {
             Some(index) if !self.cells[index] => {
                 self.cells[index] = true;
-                self.left -= 1;
                 true
             },
             _ => false,
@@ -105,6 +102,17 @@ impl Erased {
 
     fn contains(&self, texel: (u32, u32)) -> bool {
         self.index(texel).is_some_and(|index| self.cells[index])
+    }
+
+    /// Whether every cell a native size `placement` covers now is erased,
+    /// which a scroll that clipped it or a cell size change leaves true even
+    /// with mask cells no print can reach.
+    fn hides(&self, placement: &Placement, cell: CellSize) -> bool {
+        (0..placement.effective_rows).all(|row| {
+            (0..placement.effective_columns)
+                .map_while(|column| Self::source(placement, (row, column), cell))
+                .all(|source| self.contains(Self::centre(source)))
+        })
     }
 
     /// The texel rect `[left, top, right, bottom]` that cell `(row, column)`
@@ -557,7 +565,7 @@ impl Store {
                 continue;
             }
             self.generation += 1;
-            if erased.left == 0 {
+            if erased.hides(placement, cell) {
                 self.remove_at(index);
                 self.recompute_expiry();
             } else {
