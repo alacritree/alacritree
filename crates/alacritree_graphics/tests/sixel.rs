@@ -192,6 +192,19 @@ fn erase_sequences_remove_a_sixel_image_from_exactly_the_cells_they_blank() {
 }
 
 #[test]
+fn an_erase_after_a_scroll_hits_the_image_row_on_the_erased_line() {
+    let mut pane = Pane::new(10, 5);
+    pane.feed(format!("\x1b[2;3H{}", sixel(30, 40)));
+
+    // Scrolling by two puts the image's top row in history and its bottom
+    // row on line 0.
+    pane.feed("\x1b[5;1H\n\n\x1b[1;1H\x1b[2K");
+
+    let dests: Vec<_> = pane.quads().iter().map(|quad| quad.dest).collect();
+    assert_eq!(dests, [[2.0, -1.0, 5.0, 0.0]]);
+}
+
+#[test]
 fn erase_sequences_over_every_cell_of_a_sixel_image_remove_it() {
     let mut pane = Pane::new(10, 5);
     pane.feed(format!("\x1b[2;3H{}", sixel(30, 40)));
