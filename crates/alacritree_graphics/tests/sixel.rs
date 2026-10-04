@@ -96,6 +96,20 @@ fn text_printed_over_a_sixel_image_erases_only_the_cells_it_lands_in() {
 }
 
 #[test]
+fn a_wide_character_over_a_sixel_image_erases_both_its_cells() {
+    let mut pane = Pane::new(10, 5);
+    pane.feed(format!("\x1b[1;1H{}", sixel(30, 40)));
+
+    pane.feed("\x1b[1;1H中");
+
+    let quads: Vec<_> = pane.quads().iter().map(|quad| (quad.dest, quad.src)).collect();
+    assert_eq!(quads, [
+        ([2.0, 0.0, 3.0, 1.0], [20.0, 0.0, 30.0, 20.0]),
+        ([0.0, 1.0, 3.0, 2.0], [0.0, 20.0, 30.0, 40.0]),
+    ]);
+}
+
+#[test]
 fn spaces_printed_over_every_cell_of_a_sixel_image_remove_it() {
     let mut pane = Pane::new(10, 5);
     pane.feed(format!("\x1b[2;3H{}", sixel(20, 30)));
