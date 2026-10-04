@@ -107,8 +107,9 @@ impl Erased {
         self.index(texel).is_some_and(|index| self.cells[index])
     }
 
-    /// The texels `(row, column)` of a native size `placement` shows,
-    /// `[left, top, right, bottom]`, or `None` past the end of its source.
+    /// The texel rect `[left, top, right, bottom]` that cell `(row, column)`
+    /// of a native size `placement` shows, or `None` past the end of its
+    /// source.
     fn source(
         placement: &Placement,
         (row, column): (u32, u32),
@@ -180,7 +181,7 @@ pub(crate) struct Store {
     /// back down.
     scrolled: i64,
     used: usize,
-    /// Images that came from a sixel string, which printed text erases.
+    /// How many images came from a sixel string, which printed text erases.
     sixels: usize,
     pub quota: usize,
     /// Scrollback capacity in lines; a placement above it is dropped.
@@ -532,7 +533,7 @@ impl Store {
         self.sixels != 0
     }
 
-    /// Text was printed into screen cell `(line, column)`: every sixel image
+    /// Text was printed into screen cell `(line, column)`. Every sixel image
     /// over it stops drawing that cell, and one with no cell left goes.
     pub(crate) fn print(&mut self, (line, column): (usize, usize), cell: CellSize) {
         let (row, column) = (self.scrolled + line as i64, column as i64);
