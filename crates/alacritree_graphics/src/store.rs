@@ -280,9 +280,7 @@ impl Store {
     }
 
     pub(crate) fn is_decoding(&self) -> bool {
-        self.images.iter().any(|image| {
-            image.data.as_ref().is_some_and(|slot| slot.pixels().is_none() && !slot.failed())
-        })
+        self.images.iter().any(|image| image.data.as_ref().is_some_and(|slot| !slot.finished()))
     }
 
     pub(crate) fn has_data(&self, index: usize) -> bool {

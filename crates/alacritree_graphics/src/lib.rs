@@ -205,7 +205,8 @@ impl Graphics {
         store.index_by_id(id).and_then(|index| store.decoded(index)).cloned()
     }
 
-    /// Whether an image of the active screen is still decoding.
+    /// Whether an image of the active screen is still decoding. Once it is
+    /// not, [`Graphics::layout_generation`] holds until the terminal changes.
     pub fn is_decoding(&self) -> bool {
         self.active().is_decoding()
     }
