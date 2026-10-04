@@ -61,10 +61,10 @@ impl Image {
 /// longer draws, as in WezTerm, where each cell holds its slice of a sixel
 /// image and printing replaces it.
 ///
-/// The mask divides the source the placement drew when its first cell was
-/// erased into cells of that time's size, and a cell is looked up by the
-/// texel at its centre, so the mask holds across a scroll that clips the
-/// image and across a cell size change.
+/// The mask divides the source the placement drew into cells of the size of
+/// the last erase, and a cell is looked up by the texel at its centre, so
+/// the mask holds across a scroll that clips the image and across a cell
+/// size change. An erase at a new cell size first rebuilds it at that size.
 struct Erased {
     cell: CellSize,
     /// Texel row of the mask's first row.
@@ -80,6 +80,27 @@ impl Erased {
         let rows = (placement.src_height.ceil() as u32).div_ceil(cell.height);
         let cells = vec![false; columns as usize * rows as usize];
         Self { cell, top: placement.src_y as u32, columns, cells }
+    }
+
+    /// Rebuild the mask at `cell`, erasing each new cell whose centre lies
+    /// in an erased old one, so one erase covers one cell of the new size.
+    fn rescale(&mut self, placement: &Placement, cell: CellSize) {
+        if self.cell == cell {
+            return;
+        }
+        let mut rescaled = Self::new(placement, cell);
+        let right_edge = (placement.src_x + placement.src_width).ceil() as u32;
+        let bottom_edge = rescaled.top + placement.src_height.ceil() as u32;
+        let columns = rescaled.columns as usize;
+        for (index, erased) in rescaled.cells.iter_mut().enumerate() {
+            let (row, column) = ((index / columns) as u32, (index % columns) as u32);
+            let left = column * cell.width;
+            let top = rescaled.top + row * cell.height;
+            let right = (left + cell.width).min(right_edge);
+            let bottom = (top + cell.height).min(bottom_edge);
+            *erased = self.contains(((left + right) / 2, (top + bottom) / 2));
+        }
+        *self = rescaled;
     }
 
     fn index(&self, (x, y): (u32, u32)) -> Option<usize> {
@@ -560,6 +581,7 @@ impl Store {
                 continue;
             };
             let erased = erased.get_or_insert_with(|| Erased::new(placement, cell));
+            erased.rescale(placement, cell);
             if !erased.erase(Erased::centre(source)) {
                 index += 1;
                 continue;

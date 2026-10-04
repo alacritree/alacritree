@@ -134,6 +134,25 @@ fn a_sixel_image_goes_once_its_cells_at_a_new_cell_size_are_printed_over() {
 }
 
 #[test]
+fn after_the_cells_shrink_text_erases_one_new_cell_of_a_sixel_image() {
+    let mut pane = Pane::with(10, 5, 5, (20, 40));
+    pane.feed(format!("\x1b[1;1H{}", sixel(40, 36)));
+    pane.feed("\x1b[1;1HX");
+
+    // Two columns by one row become four columns by two rows, the left
+    // half still erased.
+    pane.term.graphics_mut().set_cell_pixels(10, 20);
+    pane.feed("\x1b[1;3HX");
+
+    let quads = pane.quads();
+    assert_eq!(quads.len(), 2);
+    assert_rect(quads[0].dest, [3.0, 0.0, 4.0, 1.0]);
+    assert_rect(quads[0].src, [30.0, 0.0, 40.0, 20.0]);
+    assert_rect(quads[1].dest, [2.0, 1.0, 4.0, 1.8]);
+    assert_rect(quads[1].src, [20.0, 20.0, 40.0, 36.0]);
+}
+
+#[test]
 fn an_empty_sixel_image_leaves_the_cursor() {
     let mut pane = Pane::new(10, 5);
     pane.feed("\x1b[2;2H\x1bPq??-\x1b\\");
