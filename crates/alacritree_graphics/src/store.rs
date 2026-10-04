@@ -6,6 +6,7 @@
 //! placement by changing one number. Only a scroll inside margins, which
 //! clips placements one by one, walks them.
 
+use std::ops::Range;
 use std::sync::Arc;
 
 use alacritree_common::jobs::Job;
@@ -562,23 +563,20 @@ impl Store {
     /// Text was printed into screen cell `(line, column)`. Every sixel image
     /// over it stops drawing that cell, and one with no cell left goes.
     pub(crate) fn print(&mut self, (line, column): (usize, usize), cell: CellSize) {
-        let (row, column) = (self.scrolled + line as i64, column as i64);
-        self.erase_sixel_cells(cell, |p| {
-            let covered = p.covers_row(row, p.row) && p.covers_column(column);
-            covered.then(|| ((row - p.row) as u32, (column - i64::from(p.column)) as u32))
-        });
+        self.erase(line..line + 1, column..column + 1, cell);
     }
 
-    /// DECALN filled the screen of `lines` by `columns` cells with text, so
-    /// every sixel image loses its cells on it.
-    pub(crate) fn fill_screen(&mut self, (lines, columns): (usize, usize), cell: CellSize) {
+    /// The screen cells in `lines` by `columns` were blanked or overwritten,
+    /// so every sixel image loses its cells in them.
+    pub(crate) fn erase(&mut self, lines: Range<usize>, columns: Range<usize>, cell: CellSize) {
         let top = self.scrolled;
         self.erase_sixel_cells(cell, |p| {
-            let first = (top - p.row).max(0);
-            let end = (top + lines as i64 - p.row).min(i64::from(p.effective_rows));
-            let width = (columns as i64 - i64::from(p.column)).clamp(0, p.effective_columns.into());
-            (first..end)
-                .flat_map(move |row| (0..width).map(move |column| (row, column)))
+            let rows = (top + lines.start as i64 - p.row).max(0)
+                ..(top + lines.end as i64 - p.row).min(p.effective_rows.into());
+            let left = i64::from(p.column);
+            let columns = (columns.start as i64 - left).max(0)
+                ..(columns.end as i64 - left).min(p.effective_columns.into());
+            rows.flat_map(move |row| columns.clone().map(move |column| (row, column)))
                 .map(|(row, column)| (row as u32, column as u32))
         });
     }

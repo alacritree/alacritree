@@ -167,6 +167,70 @@ fn after_the_cells_shrink_text_erases_one_new_cell_of_a_sixel_image() {
 }
 
 #[test]
+fn erase_sequences_remove_a_sixel_image_from_exactly_the_cells_they_blank() {
+    // The image covers columns 2 to 4 of lines 1 and 2.
+    let cases: [(&str, &str, &[[f32; 4]]); 7] = [
+        ("EL 0", "\x1b[2;4H\x1b[K", &[[2.0, 1.0, 3.0, 2.0], [2.0, 2.0, 5.0, 3.0]]),
+        ("EL 1", "\x1b[2;4H\x1b[1K", &[[4.0, 1.0, 5.0, 2.0], [2.0, 2.0, 5.0, 3.0]]),
+        ("EL 2", "\x1b[3;1H\x1b[2K", &[[2.0, 1.0, 5.0, 2.0]]),
+        ("ECH", "\x1b[2;4H\x1b[X", &[[2.0, 1.0, 3.0, 2.0], [4.0, 1.0, 5.0, 2.0], [
+            2.0, 2.0, 5.0, 3.0,
+        ]]),
+        ("ECH 2", "\x1b[2;2H\x1b[2X", &[[3.0, 1.0, 5.0, 2.0], [2.0, 2.0, 5.0, 3.0]]),
+        ("ED 0", "\x1b[2;5H\x1b[J", &[[2.0, 1.0, 4.0, 2.0]]),
+        ("ED 1", "\x1b[3;3H\x1b[1J", &[[3.0, 2.0, 5.0, 3.0]]),
+    ];
+    for (name, sequence, expected) in cases {
+        let mut pane = Pane::new(10, 5);
+        pane.feed(format!("\x1b[2;3H{}", sixel(30, 40)));
+
+        pane.feed(sequence);
+
+        let dests: Vec<_> = pane.quads().iter().map(|quad| quad.dest).collect();
+        assert_eq!(dests, expected, "{name}");
+    }
+}
+
+#[test]
+fn an_erase_after_a_scroll_hits_the_image_row_on_the_erased_line() {
+    let mut pane = Pane::new(10, 5);
+    pane.feed(format!("\x1b[2;3H{}", sixel(30, 40)));
+
+    // Scrolling by two puts the image's top row in history and its bottom
+    // row on line 0.
+    pane.feed("\x1b[5;1H\n\n\x1b[1;1H\x1b[2K");
+
+    let dests: Vec<_> = pane.quads().iter().map(|quad| quad.dest).collect();
+    assert_eq!(dests, [[2.0, -1.0, 5.0, 0.0]]);
+}
+
+#[test]
+fn erase_sequences_over_every_cell_of_a_sixel_image_remove_it() {
+    let mut pane = Pane::new(10, 5);
+    pane.feed(format!("\x1b[2;3H{}", sixel(30, 40)));
+
+    pane.feed("\x1b[2;1H\x1b[2K\x1b[3;3H\x1b[3X");
+
+    assert_eq!(pane.image_count(), 0);
+}
+
+#[test]
+fn erase_sequences_short_of_a_full_clear_leave_kitty_placements_drawn_as_kitty_does() {
+    for sequence in ["\x1b[K", "\x1b[1K", "\x1b[2K", "\x1b[5X", "\x1b[J", "\x1b[1J"] {
+        let mut pane = Pane::new(10, 5);
+        pane.message("a=T,f=24,i=1,s=30,v=40,C=1", vec![0; 30 * 40 * 3]);
+        // A sixel image elsewhere sends the erase through the sixel path.
+        pane.feed(format!("\x1b[4;8H{}", sixel(10, 18)));
+
+        pane.feed(format!("\x1b[2;2H{sequence}"));
+
+        let kitty: Vec<_> =
+            pane.quads().iter().map(|quad| quad.dest).filter(|dest| dest[1] < 2.0).collect();
+        assert_eq!(kitty, [[0.0, 0.0, 3.0, 2.0]], "{sequence:?}");
+    }
+}
+
+#[test]
 fn decaln_erases_sixel_images_on_screen_and_keeps_kitty_placements() {
     let mut pane = Pane::new(10, 5);
     pane.message("a=T,f=24,i=1,s=10,v=20,C=1", vec![0; 10 * 20 * 3]);

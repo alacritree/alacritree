@@ -1213,7 +1213,7 @@ impl<T: EventListener> Handler for Term<T> {
                 cell.c = 'E';
             }
         }
-        self.graphics.fill_screen(self.screen_lines(), self.columns());
+        self.graphics.erase(0..self.screen_lines(), 0..self.columns());
 
         self.mark_fully_damaged();
     }
@@ -1613,6 +1613,9 @@ impl<T: EventListener> Handler for Term<T> {
         for cell in &mut row[start..end] {
             *cell = bg.into();
         }
+
+        let line = line.0 as usize;
+        self.graphics.erase(line..line + 1, start.0..end.0);
     }
 
     #[inline]
@@ -1734,6 +1737,9 @@ impl<T: EventListener> Handler for Term<T> {
             *cell = bg.into();
         }
 
+        let line = point.line.0 as usize;
+        self.graphics.erase(line..line + 1, left.0..right.0);
+
         let range = self.grid.cursor.point.line..=self.grid.cursor.point.line;
         self.selection = self.selection.take().filter(|s| !s.intersects_range(range));
     }
@@ -1833,15 +1839,18 @@ impl<T: EventListener> Handler for Term<T> {
         let bg = self.grid.cursor.template.bg;
 
         let screen_lines = self.screen_lines();
+        let columns = self.columns();
 
         match mode {
             ansi::ClearMode::Above => {
                 let cursor = self.grid.cursor.point;
+                let line = cursor.line.0 as usize;
 
                 // If clearing more than one line.
                 if cursor.line > 1 {
                     // Fully clear all lines before the current line.
                     self.grid.reset_region(..cursor.line);
+                    self.graphics.erase(0..line, 0..columns);
                 }
 
                 // Clear up to the current column in the current line.
@@ -1849,18 +1858,22 @@ impl<T: EventListener> Handler for Term<T> {
                 for cell in &mut self.grid[cursor.line][..end] {
                     *cell = bg.into();
                 }
+                self.graphics.erase(line..line + 1, 0..end.0);
 
                 let range = Line(0)..=cursor.line;
                 self.selection = self.selection.take().filter(|s| !s.intersects_range(range));
             },
             ansi::ClearMode::Below => {
                 let cursor = self.grid.cursor.point;
+                let line = cursor.line.0 as usize;
                 for cell in &mut self.grid[cursor.line][cursor.column..] {
                     *cell = bg.into();
                 }
+                self.graphics.erase(line..line + 1, cursor.column.0..columns);
 
-                if (cursor.line.0 as usize) < screen_lines - 1 {
+                if line < screen_lines - 1 {
                     self.grid.reset_region((cursor.line + 1)..);
+                    self.graphics.erase(line + 1..screen_lines, 0..columns);
                 }
 
                 let range = cursor.line..Line(screen_lines as i32);

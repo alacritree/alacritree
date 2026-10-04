@@ -7,6 +7,7 @@
 //! on the job pool rather than under the terminal lock.
 
 use std::convert::Infallible;
+use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -345,14 +346,14 @@ impl Graphics {
         }
     }
 
-    /// DECALN filled the screen of `lines` by `columns` cells with `E`. Sixel
-    /// images lose every cell on screen, as if each `E` was printed, while
-    /// kitty placements stay, as in kitty and Ghostty.
-    pub fn fill_screen(&mut self, lines: usize, columns: usize) {
+    /// The screen cells in `lines` by `columns` were blanked by EL, ECH, ED 0
+    /// or ED 1, or filled by DECALN. Sixel images lose those cells, as if text
+    /// was printed into each; kitty placements stay, as in kitty and Ghostty.
+    pub fn erase(&mut self, lines: Range<usize>, columns: Range<usize>) {
         let cell = self.cell;
         let store = self.active_mut();
         if store.has_sixels() {
-            store.fill_screen((lines, columns), cell);
+            store.erase(lines, columns, cell);
         }
     }
 
