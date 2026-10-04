@@ -330,8 +330,7 @@ pub struct Term<T> {
     /// Config directly for the terminal.
     config: Config,
 
-    /// Kitty graphics protocol images, which the grid changes below move
-    /// and clear.
+    /// kitty and sixel images, which the grid changes below move and clear.
     graphics: Graphics,
 }
 
@@ -455,7 +454,7 @@ impl<T> Term<T> {
         }
     }
 
-    /// The kitty graphics protocol images.
+    /// The kitty and sixel images.
     pub fn graphics(&self) -> &Graphics {
         &self.graphics
     }
