@@ -167,15 +167,44 @@ pub(super) fn attention_mark(
     resp
 }
 
+/// The loader frame showing `since_epoch` into the Unix epoch, and how long
+/// until the next one.
+///
+/// Phased off the wall clock rather than egui's `i.time`, which starts at zero
+/// with each window: two alacritree windows listing the same agents then step
+/// their loaders together, and the repaint lands on the step rather than one
+/// frame length after whenever this one happened to paint.
+fn loader_phase(since_epoch: Duration) -> (usize, Duration) {
+    let (now, step) = (since_epoch.as_nanos(), LOADER_FRAME.as_nanos());
+    let frame = (now / step % CODEX_LOADER_FRAMES.len() as u128) as usize;
+    (frame, Duration::from_nanos((step - now % step) as u64))
+}
+
+/// The wall clock as of this pass, read once so that a step falling while the
+/// pass paints cannot leave its loaders on two different frames.
+fn loader_clock(ctx: &egui::Context) -> Duration {
+    let sample =
+        || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    let pass = ctx.cumulative_pass_nr();
+    ctx.data_mut(|d| {
+        let id = egui::Id::new("braille_loader_clock");
+        let (at, now) = d.get_temp_mut_or_insert_with(id, || (pass, sample()));
+        if *at != pass {
+            (*at, *now) = (pass, sample());
+        }
+        *now
+    })
+}
+
 /// Match Codex's own six-dot Braille cycle so working sessions keep the same
 /// visual signal in the terminal and sidebar.
 fn paint_braille_loader(ui: &mut egui::Ui, rect: egui::Rect, size: f32, color: Color32) {
     if !ui.is_rect_visible(rect) {
         return;
     }
-    ui.ctx().request_repaint_after(LOADER_FRAME);
+    let (frame, until_next) = loader_phase(loader_clock(ui.ctx()));
+    ui.ctx().request_repaint_after(until_next);
 
-    let frame = ui.input(|i| (i.time / LOADER_FRAME.as_secs_f64()) as usize);
     ui.painter().text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
@@ -754,6 +783,36 @@ mod tests {
         let frames: Vec<&str> = (0..CODEX_LOADER_FRAMES.len()).map(loader_glyph).collect();
         assert_eq!(frames, ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]);
         assert_eq!(loader_glyph(CODEX_LOADER_FRAMES.len()), "⠋");
+    }
+
+    /// Two windows opened at different times agree on the frame because it
+    /// comes from the wall clock, and each repaints on the shared step.
+    #[test]
+    fn loader_phase_follows_the_wall_clock() {
+        let step = LOADER_FRAME;
+        let at = |frames: u32, into: Duration| loader_phase(step * frames + into);
+
+        assert_eq!(at(0, Duration::ZERO), (0, step));
+        assert_eq!(at(3, Duration::from_millis(20)), (3, step - Duration::from_millis(20)));
+        assert_eq!(at(3, step - Duration::from_nanos(1)), (3, Duration::from_nanos(1)));
+        assert_eq!(at(CODEX_LOADER_FRAMES.len() as u32 + 2, Duration::ZERO).0, 2);
+    }
+
+    /// Every loader a pass paints reads the clock that pass sampled first, so
+    /// none of them lands on the next frame while the rest show this one.
+    #[test]
+    fn loader_clock_holds_still_within_a_pass() {
+        let ctx = egui::Context::default();
+        let mut sampled = Vec::new();
+        for _ in 0..2 {
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                let first = loader_clock(ctx);
+                std::thread::sleep(Duration::from_millis(2));
+                assert_eq!(loader_clock(ctx), first);
+                sampled.push(first);
+            });
+        }
+        assert!(sampled[1] > sampled[0], "the next pass samples the clock afresh");
     }
 
     /// Every emphasis combination must resolve to a registered face; falling back
