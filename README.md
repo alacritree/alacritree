@@ -18,7 +18,7 @@ Minimalist approach, with the terminal at the center:
 - **Sessions per workspace.** Each worktree keeps its own terminal sessions. Switching worktrees leaves them running, scrollback and all.
 - **Git status panel.** The right sidebar shows the branch, staged and unstaged files, and the changes against the base branch, refreshed in the background. Clicking a file opens its diff, in [Delta] by default.
 - **Workspace scratchpads.** `Ctrl+Backtick` opens a minimal Markdown editor with one file per workspace. It saves every change, and agents read it over MCP.
-- **Integrations.** Alacritree works with other diff viewers, task stores, multiplexers such as herdr and zellij, and checkout hooks. [`docs/integrations.md`](docs/integrations.md) lists them.
+- **Integrations.** Alacritree works with other diff viewers, task stores, multiplexers such as herdr and zellij, checkout hooks, and the sub-agents Claude Code and Codex run, listed under the session that started them. [`docs/integrations.md`](docs/integrations.md) lists them.
 - **Scriptable.** An MCP server and a CLI create worktrees, open sessions, type into them and read their screens from outside the window.
 
 No Chromium, no bundled agents, no telemetry. No company behind it, and there never will be.
@@ -171,7 +171,7 @@ It exits non-zero only when something is broken. A missing optional tool is a wa
 
 ## Documentation
 
-- [`docs/alacritree.md`](docs/alacritree.md) is the full feature reference: workspaces and sessions, the project and worktree sidebar, checkout hooks, task lists, herdr agents, the git status panel, the terminal grid, the two-file config model, the MCP server, and how Alacritree compares with other tools in the space.
+- [`docs/alacritree.md`](docs/alacritree.md) is the full feature reference: workspaces and sessions, the project and worktree sidebar, checkout hooks, task lists, herdr agents, sub-agents, the git status panel, the terminal grid, the two-file config model, the MCP server, and how Alacritree compares with other tools in the space.
 - [`docs/integrations.md`](docs/integrations.md) lists the tools Alacritree integrates with, grouped by type, with links to each one's config and behavior.
 - [`docs/config-reference.md`](docs/config-reference.md) lists every config key with its type, default and effect. The doc comments that produce the JSON Schema produce it too, so the two always agree.
 - [`docs/keyboard-shortcuts.md`](docs/keyboard-shortcuts.md) lists every key binding the app understands, the `action = "..."` values `[[keyboard.bindings]]` accepts, and which Alacritty actions are intentionally not wired up.

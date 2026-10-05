@@ -193,9 +193,16 @@ One hook: the program to run, and its arguments for each worktree event.
 
 ### `[integrations.claude]`
 
-Claude Code settings written into each new worktree.
+Claude Code settings written into each new worktree, and its sub-agents in the sidebar.
 
+- `subagents` (boolean, default `false`): List the sub-agents each Claude Code session has running, workflow agents included, in the sidebar under that session's row, or under its workspace's row when the session is the only one there. They are read from the transcripts Claude Code keeps in `CLAUDE_CONFIG_DIR` or `~/.claude`, so a session running inside WSL lists none.
 - `terminal_bell` (boolean, default `true`): Set `preferredNotifChannel` to `terminal_bell` in each new worktree's `.claude/settings.local.json`, so Claude Code rings the bell when it waits on input. Other keys in the file are kept.
+
+### `[integrations.codex]`
+
+Codex's sub-agents in the sidebar.
+
+- `subagents` (boolean, default `false`): List the sub-agents each Codex session has running in the sidebar, under that session's row, or under its workspace's row when the session is the only one there. They are read from the rollouts Codex keeps in `CODEX_HOME` or `~/.codex` and matched to a session by the directory Codex started in, so two Codex sessions in one directory list none, and a session running inside WSL lists none.
 
 ### `[integrations.delta]`
 

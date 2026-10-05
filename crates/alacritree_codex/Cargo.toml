@@ -1,15 +1,13 @@
 [package]
-name = "alacritree_claude"
+name = "alacritree_codex"
 version = "0.0.0"
 license = "Apache-2.0"
-description = "Sets up Claude Code in alacritree's new worktrees and reads its sub-agents"
+description = "Reads the sub-agents Codex runs, for alacritree's sidebar"
 edition.workspace = true
 rust-version.workspace = true
 publish = false
 
 [dependencies]
-alacritree_checkout_hooks.workspace = true
-alacritree_common.workspace = true
 alacritree_subagents.workspace = true
 home = "0.5.5"
 schemars = "1.2"

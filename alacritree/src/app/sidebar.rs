@@ -401,6 +401,9 @@ impl AlacritreeApp {
         // over projects in the paint pass isn't blocked from calling back
         // into `&self` helpers.
         let mut listed = self.listed_workspace_rows();
+        // Taken before the filter prunes, so a session the filter hides takes
+        // its sub-agents with it rather than handing them to its workspace row.
+        let folded = self.folded_subagents(&listed);
         // The cursor can only reach a row the nav model listed, so paint keeps
         // exactly that set: a session the filter dropped would strand just
         // like an unlisted agent, so both are pruned by row membership here.
@@ -420,7 +423,7 @@ impl AlacritreeApp {
         } else {
             self.workspace_status(&None)
         };
-        let projects = self.project_views(ctx, &listed);
+        let projects = self.project_views(ctx, &listed, &folded);
 
         SidebarView {
             theme: self.theme,
@@ -435,6 +438,7 @@ impl AlacritreeApp {
             membership,
             filtered_empty,
             home_rows,
+            home_subagents: folded.get(&None).cloned().unwrap_or_default(),
             home_active: self.current_workspace.is_none(),
             home_status,
             projects,
@@ -473,6 +477,7 @@ impl AlacritreeApp {
         &mut self,
         ctx: &Context,
         listed: &sidebar_nav::ListedRows,
+        folded: &HashMap<WorkspaceKey, Vec<SubagentRowData>>,
     ) -> Vec<ProjectView> {
         let pr_enabled = self.config.integrations.gh.pr_status;
         let any_pr_toggle =
@@ -518,6 +523,7 @@ impl AlacritreeApp {
                     missing: self.liveness.missing(&wt.path),
                     pr,
                     rows,
+                    subagents: folded.get(&ws).cloned().unwrap_or_default(),
                 });
             }
             let integrations = &self.config.integrations;
@@ -677,6 +683,8 @@ struct SidebarView {
     membership: FilterMembership,
     filtered_empty: bool,
     home_rows: Vec<WorkspaceRowData>,
+    /// Sub-agents of the home session folded into the home row.
+    home_subagents: Vec<SubagentRowData>,
     home_active: bool,
     home_status: RowStatus<'static>,
     projects: Vec<ProjectView>,
@@ -806,6 +814,8 @@ struct WorktreeView {
     label: String,
     pr: Option<PrInfo>,
     rows: Vec<WorkspaceRowData>,
+    /// Sub-agents of the session folded into this row.
+    subagents: Vec<SubagentRowData>,
     status: RowStatus<'static>,
     is_active: bool,
     /// What the liveness probe has seen since discovery ran, if anything.
@@ -962,7 +972,30 @@ fn paint_home_group(ui: &mut egui::Ui, paint: SidebarPaint<'_>, requests: &mut S
         requests.spawn_shell = Some(None);
     }
     session_drop_target(ui, paint, action.rect, &None, None, requests);
+    for row in &paint.view.home_subagents {
+        paint_subagent(ui, paint, row, FOLDED_SUBAGENT_INDENT, &None, requests);
+    }
     paint_workspace_children(ui, paint, &paint.view.home_rows, &None, requests);
+}
+
+/// A sub-agent row under a session row, one level deeper than it.
+const LISTED_SUBAGENT_INDENT: i8 = 40;
+
+/// A sub-agent row under a workspace row its only session is folded into,
+/// at the depth that session's own row would take.
+const FOLDED_SUBAGENT_INDENT: i8 = 28;
+
+fn paint_subagent(
+    ui: &mut egui::Ui,
+    paint: SidebarPaint<'_>,
+    row: &SubagentRowData,
+    indent: i8,
+    ws: &WorkspaceKey,
+    requests: &mut SidebarRequests,
+) {
+    if subagent_row(ui, row, indent, paint.icons, &paint.view.theme) {
+        requests.activate_session = Some((ws.clone(), row.session));
+    }
 }
 
 /// The session and pane rows listed under the workspace `ws`.
@@ -1003,6 +1036,9 @@ fn paint_workspace_children(
                     session_drop_target(ui, paint, act.rect, ws, Some((slot, row.id)), requests);
                     slot += 1;
                 }
+            },
+            WorkspaceRowData::Subagent(row) => {
+                paint_subagent(ui, paint, row, LISTED_SUBAGENT_INDENT, ws, requests);
             },
             WorkspaceRowData::Pane(row) => {
                 let is_cursor = matches!(
@@ -1366,6 +1402,9 @@ fn paint_worktree(
     }
     let ws = Some(wt.path.clone());
     session_drop_target(ui, paint, action.rect, &ws, None, requests);
+    for row in &state.subagents {
+        paint_subagent(ui, paint, row, FOLDED_SUBAGENT_INDENT, &ws, requests);
+    }
     paint_workspace_children(ui, paint, &state.rows, &ws, requests);
 }
 
@@ -2144,6 +2183,54 @@ pub(super) fn pane_row(
     PaneRowAction { attach: resp.clicked() }
 }
 
+/// A sub-agent's row, `indent` from the panel's edge.  It stands for work its
+/// session's agent handed off, not for a terminal, so it has no close button,
+/// no drag and no cursor stop, and a click brings its session on screen.
+/// Every listed sub-agent is running, so it always draws the working mark.
+pub(super) fn subagent_row(
+    ui: &mut egui::Ui,
+    row: &SubagentRowData,
+    indent: i8,
+    icons: &PaintedIcons,
+    theme: &Theme,
+) -> bool {
+    // Reserve a slot *before* the label so the hover bg paints beneath it.
+    let bg_idx = ui.painter().add(egui::Shape::Noop);
+    let panel_x = ui.max_rect().x_range();
+    let mut elided = false;
+    let frame = Frame::default().inner_margin(Margin { left: indent, right: 0, top: 2, bottom: 2 });
+    let resp = frame
+        .show(ui, |ui| {
+            row_with_trailing(
+                ui,
+                |ui| {
+                    let (rect, _) =
+                        ui.allocate_exact_size(row_status_icon_size(theme), egui::Sense::hover());
+                    paint_status_mark(ui, ShownState::Working, icons, rect, theme);
+                    let text = RichText::new(&row.name).small().color(theme.text_dim);
+                    let (_, galley) =
+                        truncating_label(ui, text, theme.text_dim, egui::Sense::hover());
+                    elided = galley.elided;
+                },
+                |_ui| {},
+            );
+        })
+        .response
+        .interact(egui::Sense::click());
+    let resp = match &row.detail {
+        Some(detail) => {
+            name_tooltip(resp, &format!("{}\n{detail}", row.name), elided, theme.sidebar_tooltips)
+        },
+        None => name_tooltip(resp, &row.name, elided, theme.sidebar_tooltips),
+    };
+
+    let full_rect = egui::Rect::from_x_y_ranges(panel_x, resp.rect.y_range());
+    if resp.hovered() {
+        ui.painter().set(bg_idx, egui::Shape::rect_filled(full_rect, 0.0, theme.row_hover_bg));
+    }
+    resp.clicked()
+}
+
 impl AlacritreeApp {
     fn toggle_project_filter(&mut self, action: NamedAction) {
         if let Some(key) = project_filter_identity(action) {
@@ -2474,7 +2561,19 @@ pub(super) struct SessionRowData {
 /// as one list rather than as two blocks that would reorder on attach.
 pub(super) enum WorkspaceRowData {
     Session(SessionRowData),
+    /// A sub-agent of the session row right above it.
+    Subagent(SubagentRowData),
     Pane(PaneRowData),
+}
+
+/// A sub-agent a session's coding agent runs, listed under that session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct SubagentRowData {
+    /// The session it runs under, which a click brings on screen.
+    pub(super) session: SessionId,
+    pub(super) name: String,
+    /// What the harness says about it beyond its name, for hover text.
+    pub(super) detail: Option<String>,
 }
 
 impl WorkspaceRowData {

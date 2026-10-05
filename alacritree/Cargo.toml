@@ -18,6 +18,7 @@ dist = true
 [dependencies]
 alacritree_checkout_hooks.workspace = true
 alacritree_claude.workspace = true
+alacritree_codex.workspace = true
 alacritree_common.workspace = true
 alacritree_diff_viewer.workspace = true
 alacritree_doppler.workspace = true
@@ -27,6 +28,7 @@ alacritree_gh.workspace = true
 alacritree_git.workspace = true
 alacritree_herdr.workspace = true
 alacritree_multiplexer.workspace = true
+alacritree_subagents.workspace = true
 alacritree_tasks.workspace = true
 alacritree_taskwarrior.workspace = true
 alacritree_vcs.workspace = true
@@ -98,6 +100,7 @@ alacritree_forge = { workspace = true, features = ["test-support"] }
 alacritree_git = { workspace = true, features = ["test-support"] }
 alacritree_herdr = { workspace = true, features = ["test-support"] }
 alacritree_multiplexer = { workspace = true, features = ["test-support"] }
+alacritree_subagents = { workspace = true, features = ["test-support"] }
 alacritree_tasks = { workspace = true, features = ["test-support"] }
 alacritree_vcs = { workspace = true, features = ["test-support"] }
 alacritree_zellij = { workspace = true, features = ["test-support"] }

@@ -1,0 +1,19 @@
+[package]
+name = "alacritree_subagents"
+version = "0.0.0"
+license = "Apache-2.0"
+description = "What alacritree asks a coding agent about the sub-agents it runs"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[features]
+# The fake source, for other crates' tests.
+test-support = []
+
+[dependencies]
+ambassador.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
