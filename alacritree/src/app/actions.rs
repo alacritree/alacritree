@@ -233,6 +233,18 @@ impl Action for action::SelectPreviousSession {
     }
 }
 
+impl Action for action::SelectNextAgentSession {
+    fn run(&self, app: &mut AlacritreeApp, ctx: &Context, _: ActionOrigin) {
+        app.cycle_agent_sessions(ctx, 1);
+    }
+}
+
+impl Action for action::SelectPreviousAgentSession {
+    fn run(&self, app: &mut AlacritreeApp, ctx: &Context, _: ActionOrigin) {
+        app.cycle_agent_sessions(ctx, -1);
+    }
+}
+
 impl Action for action::SelectNextWorkspace {
     fn run(&self, app: &mut AlacritreeApp, ctx: &Context, _: ActionOrigin) {
         app.cycle_workspaces(ctx, 1);

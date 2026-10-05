@@ -37,6 +37,8 @@ unit_actions!(
     SelectLastTab,
     SelectNextSession,
     SelectPreviousSession,
+    SelectNextAgentSession,
+    SelectPreviousAgentSession,
     ToggleLeftSidebar,
     ToggleRightSidebar,
     ToggleTasksSidebar,
