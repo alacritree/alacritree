@@ -16,6 +16,7 @@ extern crate self as alacritree_subagents;
 
 #[cfg(any(test, feature = "test-support"))]
 mod fake;
+pub mod follow;
 pub mod tail;
 
 use std::io;

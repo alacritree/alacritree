@@ -12,10 +12,13 @@
 //! skipped rather than failing the scan, and only the fields named here are
 //! read.
 //!
-//! A sub-agent counts as running until its transcript's last turn ends: an
-//! assistant message that stopped without calling a tool, a tool result
-//! Claude Code marks `toolEndsTurn`, or the marker it writes when the user
-//! interrupts one.
+//! A sub-agent counts as running until it hands its report back, which ends
+//! its run with a tool result Claude Code marks `toolEndsTurn`, or until the
+//! user interrupts it. A plain reply also stops it, unless background work it
+//! started is still out: it is then waiting on that work, whose report comes
+//! back as a `<task-notification>` and resumes it. Telling the two apart takes
+//! the transcript's whole history, so each one is folded line by line, and a
+//! scan reads only what was appended since the last.
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -23,7 +26,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use alacritree_subagents::tail::Endings;
+use alacritree_subagents::follow::Follow;
 use alacritree_subagents::{Host, Lineage, Scan, Subagent, SubagentError, SubagentSource};
 use serde::Deserialize;
 
@@ -112,7 +115,7 @@ pub struct ClaudeSubagents {
     dir: Option<PathBuf>,
     /// Each session's folder under `projects/`, once found.
     folders: HashMap<String, PathBuf>,
-    endings: Endings,
+    progress: Follow<Progress>,
 }
 
 impl ClaudeSubagents {
@@ -122,7 +125,7 @@ impl ClaudeSubagents {
     }
 
     pub fn at(dir: Option<PathBuf>) -> Self {
-        Self { dir, folders: HashMap::new(), endings: Endings::default() }
+        Self { dir, folders: HashMap::new(), progress: Follow::default() }
     }
 }
 
@@ -156,7 +159,7 @@ impl SubagentSource for ClaudeSubagents {
                 Err(e) => scan.errors.push(e),
             }
         }
-        self.endings.sweep();
+        self.progress.sweep();
         self.folders.retain(|id, _| reached.contains(id));
         scan
     }
@@ -232,7 +235,8 @@ impl ClaudeSubagents {
             else {
                 continue;
             };
-            if !self.endings.running(&path, turn_running) {
+            let running = self.progress.read(&path, Progress::fold).is_some_and(Progress::running);
+            if !running {
                 continue;
             }
             let (meta, started) = read_meta(&dir.join(format!("agent-{id}.meta.json")));
@@ -278,27 +282,80 @@ fn read_meta(path: &Path) -> (Meta, Option<SystemTime>) {
     (serde_json::from_str(&text).unwrap_or_default(), started)
 }
 
-/// Whether the entry on `line` leaves its turn open, or `None` for one that
-/// is not a turn at all: attachments, summaries, and a line still being
-/// written.
-fn turn_running(line: &[u8]) -> Option<bool> {
-    let entry: Entry = serde_json::from_slice(line).ok()?;
-    let message = entry.message.unwrap_or_default();
-    match entry.kind.as_str() {
-        "assistant" => {
-            let calls_tool = message.blocks().any(|block| block.kind == "tool_use");
-            let stopped = matches!(
-                message.stop_reason.as_deref(),
-                Some("end_turn" | "stop_sequence" | "refusal")
-            );
-            Some(calls_tool || !stopped)
-        },
-        "user" => {
-            let interrupted = message.texts().any(|text| text.starts_with(INTERRUPTED));
-            Some(entry.tool_ends_turn != Some(true) && !interrupted)
-        },
-        _ => None,
+/// How far a sub-agent has got, folded from its transcript.
+#[derive(Debug, Default)]
+struct Progress {
+    turn: Turn,
+    /// Background work it started that has not reported back, by the id the
+    /// report will name.
+    pending: HashSet<String>,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum Turn {
+    /// No turn yet: the agent has only just started.
+    #[default]
+    Starting,
+    /// A reply still streaming, or a tool call out.
+    Open,
+    /// Stopped with a plain reply.
+    Parked,
+    /// Handed its report back, or interrupted.
+    Ended,
+}
+
+impl Progress {
+    fn running(&self) -> bool {
+        match self.turn {
+            Turn::Starting | Turn::Open => true,
+            Turn::Parked => !self.pending.is_empty(),
+            Turn::Ended => false,
+        }
     }
+
+    /// Fold in the entry on `line`. One that is not a turn, an attachment or
+    /// a summary, changes nothing, and neither does one that does not parse.
+    fn fold(&mut self, line: &[u8]) {
+        let Ok(entry) = serde_json::from_slice::<Entry>(line) else {
+            return;
+        };
+        let message = entry.message.unwrap_or_default();
+        match entry.kind.as_str() {
+            "assistant" => {
+                let calls_tool = message.blocks().any(|block| block.kind == "tool_use");
+                let stopped = matches!(
+                    message.stop_reason.as_deref(),
+                    Some("end_turn" | "stop_sequence" | "refusal")
+                );
+                self.turn = if stopped && !calls_tool { Turn::Parked } else { Turn::Open };
+            },
+            "user" => {
+                for text in message.texts() {
+                    for id in notified_tasks(text) {
+                        self.pending.remove(id);
+                    }
+                }
+                if let Some(id) = entry.tool_use_result.and_then(Launched::id) {
+                    self.pending.insert(id);
+                }
+                let interrupted = message.texts().any(|text| text.starts_with(INTERRUPTED));
+                self.turn = if entry.tool_ends_turn == Some(true) || interrupted {
+                    Turn::Ended
+                } else {
+                    Turn::Open
+                };
+            },
+            _ => {},
+        }
+    }
+}
+
+/// The ids of the background work a `<task-notification>` reports on.
+fn notified_tasks(text: &str) -> impl Iterator<Item = &str> {
+    let body = text.find("<task-notification>").map_or("", |at| &text[at..]);
+    body.split("<task-id>")
+        .skip(1)
+        .filter_map(|rest| rest.split_once("</task-id>").map(|(id, _)| id.trim()))
 }
 
 #[derive(Deserialize)]
@@ -309,6 +366,41 @@ struct Entry {
     message: Option<Message>,
     #[serde(default, rename = "toolEndsTurn")]
     tool_ends_turn: Option<bool>,
+    #[serde(default, rename = "toolUseResult", deserialize_with = "launched")]
+    tool_use_result: Option<Launched>,
+}
+
+/// What a tool's result says it left running: a background command, or an
+/// agent or workflow launched to run on its own.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+struct Launched {
+    background_task_id: Option<String>,
+    status: Option<String>,
+    agent_id: Option<String>,
+    task_id: Option<String>,
+}
+
+impl Launched {
+    fn id(self) -> Option<String> {
+        let launched = self.status.as_deref() == Some("async_launched");
+        self.background_task_id.or(if launched { self.agent_id.or(self.task_id) } else { None })
+    }
+}
+
+/// A `toolUseResult`, which is an object for most tools but a bare string
+/// for an error, so any shape but the one read here counts as none.
+fn launched<'de, D: serde::Deserializer<'de>>(de: D) -> Result<Option<Launched>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Shape {
+        Launched(Launched),
+        Other(serde::de::IgnoredAny),
+    }
+    Ok(match Shape::deserialize(de)? {
+        Shape::Launched(launched) => Some(launched),
+        Shape::Other(_) => None,
+    })
 }
 
 #[derive(Default, Deserialize)]
@@ -373,10 +465,6 @@ fn text_or_none<'de, D: serde::Deserializer<'de>>(de: D) -> Result<Option<String
 
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
-
-    use alacritree_subagents::tail::last_turn_running;
-
     use super::*;
 
     const SESSION: &str = "0b4c3662-b176-4e0f-8efa-42b2e70d80de";
@@ -403,10 +491,37 @@ mod tests {
         r#"{"type":"user","message":{"role":"user","content":"Map the service install"}}"#;
 
     fn running(lines: &[&str]) -> bool {
-        let text = lines.iter().map(|line| format!("{line}\n")).collect::<String>();
-        last_turn_running(&mut Cursor::new(text.as_bytes()), text.len() as u64, turn_running)
-            .unwrap()
+        let mut progress = Progress::default();
+        for line in lines {
+            progress.fold(line.as_bytes());
+        }
+        progress.running()
     }
+
+    fn running_owned(lines: &[String]) -> bool {
+        running(&lines.iter().map(String::as_str).collect::<Vec<_>>())
+    }
+
+    fn launched_in_background(id: &str) -> String {
+        format!(
+            r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"t","content":"Command running in background with ID: {id}."}}]}},"toolUseResult":{{"stdout":"","stderr":"","interrupted":false,"backgroundTaskId":"{id}"}}}}"#
+        )
+    }
+
+    fn agent_launched(id: &str) -> String {
+        format!(
+            r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"t","content":"Async agent launched"}}]}},"toolUseResult":{{"isAsync":true,"status":"async_launched","agentId":"{id}"}}}}"#
+        )
+    }
+
+    fn notified(id: &str) -> String {
+        format!(
+            r#"{{"type":"user","message":{{"role":"user","content":"[SYSTEM NOTIFICATION - NOT USER INPUT]\n\n<task-notification>\n<task-id>{id}</task-id>\n<status>completed</status>\n</task-notification>"}}}}"#
+        )
+    }
+
+    /// A tool error, whose `toolUseResult` is a bare string.
+    const BLOCKED: &str = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":"Blocked","is_error":true}]},"toolUseResult":"Error: Blocked: standalone sleep 60."}"#;
 
     #[test]
     fn a_turn_ends_on_a_reply_that_calls_no_tool() {
@@ -439,6 +554,57 @@ mod tests {
             !running(&[PROMPT, &assistant(Some("end_turn"), TEXT), r#"{"type":"assist"#]),
             "a line still being written"
         );
+    }
+
+    /// The run that showed a turn's end is not the agent's: it started a
+    /// background `sleep`, stopped with a plain reply to wait on it, was woken
+    /// by its report, and only then handed back.
+    #[test]
+    fn an_agent_waiting_on_its_own_background_work_is_still_running() {
+        let bash = assistant(Some("tool_use"), TOOL_USE);
+        let mut lines = vec![
+            PROMPT.to_owned(),
+            bash.clone(),
+            BLOCKED.to_owned(),
+            bash,
+            launched_in_background("b3hklaplj"),
+            assistant(Some("end_turn"), TEXT),
+        ];
+        assert!(running_owned(&lines), "parked on its background sleep");
+        lines.push(notified("b3hklaplj"));
+        assert!(running_owned(&lines), "woken by the sleep's report");
+        lines.extend([assistant(Some("tool_use"), TOOL_USE), tool_result(true)]);
+        assert!(!running_owned(&lines), "handed back");
+    }
+
+    #[test]
+    fn a_plain_reply_with_every_report_in_has_finished() {
+        assert!(!running_owned(&[
+            PROMPT.to_owned(),
+            agent_launched("a9416fcb657e364d1"),
+            notified("a9416fcb657e364d1"),
+            assistant(Some("end_turn"), TEXT),
+        ]));
+        assert!(running_owned(&[
+            PROMPT.to_owned(),
+            agent_launched("a9416fcb657e364d1"),
+            assistant(Some("end_turn"), TEXT),
+        ]));
+    }
+
+    #[test]
+    fn handing_back_or_an_interrupt_ends_the_run_whatever_is_still_out() {
+        let out = launched_in_background("b1");
+        assert!(!running(&[PROMPT, &out, &tool_result(true)]));
+        assert!(!running(&[PROMPT, &out, INTERRUPT]));
+    }
+
+    #[test]
+    fn a_notification_names_each_task_it_reports() {
+        let text = "<task-notification>\n<task-id>a</task-id>\n</task-notification>\n\
+                    <task-notification>\n<task-id> b </task-id>";
+        assert_eq!(notified_tasks(text).collect::<Vec<_>>(), ["a", "b"]);
+        assert_eq!(notified_tasks("<task-id>x</task-id>, outside any notification").count(), 0);
     }
 
     #[test]
