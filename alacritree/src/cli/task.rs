@@ -17,7 +17,8 @@ use crate::tasks::facts;
 pub(super) enum TaskCommand {
     /// Print the project an agent in this directory writes its tasks to.
     Scope,
-    /// Declare the `subof` and `order` UDAs in the taskrc on every side.
+    /// Declare the `subof` and `order` UDAs in the taskrc on every side,
+    /// creating an empty taskrc where a side has none.
     Setup,
 }
 
