@@ -120,13 +120,14 @@ impl Taskwarrior {
     }
 
     /// Writes each UDA declaration `side`'s taskrc lacks, and returns the
-    /// keys it wrote.
+    /// keys it wrote. Creates the taskrc first when `side` has none.
     pub fn declare_fields(
         &self,
         side: Side,
         blocking: &Blocking,
     ) -> Result<Vec<&'static str>, TaskError> {
         let cli = self.on(side, blocking);
+        cli.ensure_taskrc()?;
         let mut written = Vec::new();
         for (key, value) in UDA_DECLARATIONS {
             if cli.rc_value(key)?.as_deref() != Some(value) {
@@ -387,6 +388,35 @@ impl Cli<'_> {
         let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
         Ok((!value.is_empty()).then_some(value))
     }
+
+    /// Taskwarrior offers to write a taskrc on its first run, and with no
+    /// terminal to accept the offer it refuses every command instead. Setup
+    /// accepts on the user's behalf with an empty one, which keeps every
+    /// default. A shell on the same side creates it, so it lands where that
+    /// side's `task` looks.
+    fn ensure_taskrc(&self) -> Result<(), TaskError> {
+        let probe = self.spawn(&["_version".into()])?;
+        if probe.success() || !lacks_taskrc(&String::from_utf8_lossy(&probe.stderr)) {
+            return Ok(());
+        }
+        let shell = Cli { side: self.side.clone(), program: "sh".into(), env: self.env };
+        let created = shell.spawn(&["-c".into(), CREATE_TASKRC.into()])?;
+        if created.success() {
+            return Ok(());
+        }
+        let stderr = String::from_utf8_lossy(&created.stderr).into_owned();
+        Err(TaskError::Failed { program: shell.program, stderr })
+    }
+}
+
+/// With no taskrc at `$XDG_CONFIG_HOME/task/taskrc` either, taskwarrior reads
+/// `$TASKRC`, else `~/.taskrc`. Appending never truncates one that appeared
+/// since the probe.
+const CREATE_TASKRC: &str = r#": >>"${TASKRC:-$HOME/.taskrc}""#;
+
+/// Taskwarrior's refusal to run without a taskrc.
+fn lacks_taskrc(stderr: &str) -> bool {
+    stderr.contains("Cannot proceed without rc file")
 }
 
 /// With neither, native stays so the error names the program that is missing.
@@ -562,6 +592,17 @@ mod tests {
         assert!(jobs::on_this_thread(declared));
         let again = jobs::on_this_thread(|b| tw.declare_fields(side.clone(), b)).unwrap();
         assert!(again.is_empty(), "{again:?}");
+    }
+
+    #[test]
+    fn setup_creates_a_missing_taskrc() {
+        let Some((dir, side, tw)) = private() else { return };
+        let taskrc = dir.path().join("taskrc");
+        std::fs::remove_file(&taskrc).expect("the private taskrc");
+        let written = jobs::on_this_thread(|b| tw.declare_fields(side.clone(), b)).unwrap();
+        assert_eq!(written.len(), UDA_DECLARATIONS.len());
+        let declared = std::fs::read_to_string(&taskrc).expect("setup created the taskrc");
+        assert!(declared.contains("uda.subof.type=uuid"), "{declared}");
     }
 
     #[test]
