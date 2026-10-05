@@ -71,6 +71,8 @@
                 "SelectLastTab",
                 "SelectNextSession",
                 "SelectPreviousSession",
+                "SelectNextAgentSession",
+                "SelectPreviousAgentSession",
                 "SelectNextWorkspace",
                 "SelectPreviousWorkspace",
                 "OpenScratchpad",

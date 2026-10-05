@@ -46,6 +46,8 @@ below is hard-coded.
 | `Ctrl+Shift+Tab`     | Cycle to the previous session                         |
 | `Alt+Right`          | Switch to the next workspace (home / worktrees)       |
 | `Alt+Left`           | Switch to the previous workspace                      |
+| `Shift+Alt+Down`     | Cycle to the next running agent, across workspaces    |
+| `Shift+Alt+Up`       | Cycle to the previous running agent                   |
 | `Ctrl+Shift+O`       | Add a project to the sidebar                          |
 | `Ctrl+Q`             | Open the quit confirmation dialog                     |
 | `Ctrl+Backtick`      | Toggle the workspace's persistent scratchpad tab      |
@@ -154,6 +156,13 @@ entry. Names match alacritty's own action names, so existing configs port over.
   mods = "Control|Shift"
   action = "SelectNextSession"
   ```
+- `SelectNextAgentSession` / `SelectPreviousAgentSession` — the same ring,
+  visiting only sessions with an agent running in them: the rows that draw an
+  agent mark in the sidebar, whether the agent is idle, working or blocked.
+  Plain shells, diffs, the scratchpad and tasks tabs, and exited sessions are
+  skipped, as are multiplexer panes no session is attached to. From a shell,
+  the press lands on the nearest agent in its direction. Default:
+  `Shift+Alt+Down` / `Shift+Alt+Up`.
 - `SelectTab1` … `SelectTab9` — select the Nth session in the current
   workspace. Out-of-range indices are ignored.
 - `SelectLastTab` — select the last session in the current workspace.

@@ -2054,8 +2054,36 @@ impl AlacritreeApp {
     }
 
     fn cycle_sessions(&mut self, ctx: &Context, delta: i32) {
-        let ring: Vec<(WorkspaceKey, SessionId)> = self
-            .workspace_order()
+        let ring = self.flat_session_ring();
+        let current = self.active_session_index().map(|i| self.sessions[i].id);
+        if let Some((ws, id)) = session_ring_target(&ring, current, delta) {
+            self.show_ring_session(ctx, ws, id);
+        }
+    }
+
+    /// `cycle_sessions` over running agents only. Whether a session holds one
+    /// is the sidebar's own reading, a multiplexer's status included, so the
+    /// press visits exactly the rows that draw an agent mark. An exited
+    /// session can keep an agent's title, and is skipped all the same.
+    fn cycle_agent_sessions(&mut self, ctx: &Context, delta: i32) {
+        let ring = self.flat_session_ring();
+        let agents: HashSet<SessionId> = self
+            .sessions
+            .iter()
+            .filter(|s| !s.is_exited() && self.session_activity(s).is_agent())
+            .map(|s| s.id)
+            .collect();
+        let current = self.active_session_index().map(|i| self.sessions[i].id);
+        if let Some((ws, id)) = agent_ring_target(&ring, current, delta, |id| agents.contains(&id))
+        {
+            self.show_ring_session(ctx, ws, id);
+        }
+    }
+
+    /// Every open session, workspaces in sidebar order and each workspace's
+    /// sessions in the order its rows are drawn.
+    fn flat_session_ring(&self) -> Vec<(WorkspaceKey, SessionId)> {
+        self.workspace_order()
             .into_iter()
             .flat_map(|ws| {
                 let entries: Vec<_> = self
@@ -2065,15 +2093,14 @@ impl AlacritreeApp {
                     .collect();
                 entries
             })
-            .collect();
-        let current = self.active_session_index().map(|i| self.sessions[i].id);
-        let Some((target_ws, id)) = session_ring_target(&ring, current, delta) else {
-            return;
-        };
+            .collect()
+    }
+
+    fn show_ring_session(&mut self, ctx: &Context, ws: WorkspaceKey, id: SessionId) {
         // Record the target before switching: ensure_active_session would
         // otherwise re-adopt the workspace's previously active session.
-        self.sessions.set_active(target_ws.clone(), id);
-        match target_ws {
+        self.sessions.set_active(ws.clone(), id);
+        match ws {
             None => self.activate_home(ctx),
             Some(path) => self.activate_worktree(ctx, &path),
         }
@@ -4285,6 +4312,34 @@ fn session_ring_target(
     let pos = ring.iter().position(|(_, id)| *id == current)?;
     let next = (pos as i32 + delta).rem_euclid(ring.len() as i32) as usize;
     Some(ring[next].clone())
+}
+
+/// The agent a SelectNextAgentSession/SelectPreviousAgentSession press lands
+/// on: the nearest entry of `session_ring_target`'s ring that `is_agent`
+/// keeps, walking from the active session in `delta`'s direction. A shell on
+/// screen starts the walk from its own place, so the press reaches the agent
+/// beside it rather than the first one. With no active session, the first
+/// agent going forward and the last going back. `None` means stay put: no
+/// other agent, or an active session missing from the ring.
+fn agent_ring_target(
+    ring: &[(WorkspaceKey, SessionId)],
+    current: Option<SessionId>,
+    delta: i32,
+    is_agent: impl Fn(SessionId) -> bool,
+) -> Option<(WorkspaceKey, SessionId)> {
+    let len = ring.len() as i32;
+    let start = match current {
+        Some(current) => ring.iter().position(|(_, id)| *id == current)? as i32,
+        // One step before the first entry going forward, one past the last
+        // going back.
+        None if delta > 0 => -1,
+        None => len,
+    };
+    (1..=len)
+        .map(|step| &ring[(start + step * delta.signum()).rem_euclid(len) as usize])
+        // A path two projects list repeats its sessions, the active one too.
+        .find(|(_, id)| Some(*id) != current && is_agent(*id))
+        .cloned()
 }
 
 /// The activity a session's row paints.  A session attached to a
@@ -7781,6 +7836,49 @@ mod tests {
         assert_eq!(session_ring_target(&ring, None, 1), Some((None, 1)));
         // An active session missing from the ring does nothing.
         assert_eq!(session_ring_target(&ring, Some(9), 1), None);
+    }
+
+    #[test]
+    fn agent_ring_skips_every_session_without_a_running_agent() {
+        let ring = [(None, 1), (None, 2), (ws("a"), 3), (ws("a"), 4), (ws("b"), 5)];
+        let agents = |id| [2, 4].contains(&id);
+        // From one agent to the next, over a shell, across a boundary…
+        assert_eq!(agent_ring_target(&ring, Some(2), 1, agents), Some((ws("a"), 4)));
+        assert_eq!(agent_ring_target(&ring, Some(4), -1, agents), Some((None, 2)));
+        // …and wrapping at both ends.
+        assert_eq!(agent_ring_target(&ring, Some(4), 1, agents), Some((None, 2)));
+        assert_eq!(agent_ring_target(&ring, Some(2), -1, agents), Some((ws("a"), 4)));
+    }
+
+    #[test]
+    fn agent_ring_leaves_a_shell_for_the_agent_beside_it() {
+        let ring = [(None, 1), (None, 2), (ws("a"), 3), (ws("a"), 4), (ws("b"), 5)];
+        let agents = |id| [2, 4].contains(&id);
+        assert_eq!(agent_ring_target(&ring, Some(3), 1, agents), Some((ws("a"), 4)));
+        assert_eq!(agent_ring_target(&ring, Some(3), -1, agents), Some((None, 2)));
+        assert_eq!(agent_ring_target(&ring, Some(5), 1, agents), Some((None, 2)));
+        // A lone agent is still a place to go from a shell.
+        assert_eq!(agent_ring_target(&ring, Some(1), -1, |id| id == 4), Some((ws("a"), 4)));
+    }
+
+    #[test]
+    fn agent_ring_stays_put_with_no_other_agent() {
+        let ring = [(None, 1), (ws("a"), 2), (ws("b"), 1)];
+        // The only agent is on screen, even where its path repeats.
+        assert_eq!(agent_ring_target(&ring, Some(1), 1, |id| id == 1), None);
+        assert_eq!(agent_ring_target(&ring, Some(1), -1, |id| id == 1), None);
+        assert_eq!(agent_ring_target(&ring, Some(2), 1, |_| false), None);
+        assert_eq!(agent_ring_target(&[], None, 1, |_| true), None);
+        // An active session missing from the ring does nothing.
+        assert_eq!(agent_ring_target(&ring, Some(9), 1, |_| true), None);
+    }
+
+    #[test]
+    fn agent_ring_with_nothing_on_screen_starts_from_the_end_it_faces() {
+        let ring = [(None, 1), (None, 2), (ws("a"), 3), (ws("b"), 4)];
+        let agents = |id| [2, 3].contains(&id);
+        assert_eq!(agent_ring_target(&ring, None, 1, agents), Some((None, 2)));
+        assert_eq!(agent_ring_target(&ring, None, -1, agents), Some((ws("a"), 3)));
     }
 
     fn entry(project: Option<&str>, workspace: &str, id: SessionId) -> RingEntry {

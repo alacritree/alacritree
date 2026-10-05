@@ -242,6 +242,10 @@ pub enum NamedAction {
     /// open session: crossing a workspace boundary switches workspaces.
     SelectNextSession(action::SelectNextSession),
     SelectPreviousSession(action::SelectPreviousSession),
+    /// The same ring, stepping over every session no running agent holds:
+    /// shells, diffs, scratchpads, tasks tabs and exited sessions.
+    SelectNextAgentSession(action::SelectNextAgentSession),
+    SelectPreviousAgentSession(action::SelectPreviousAgentSession),
     SelectNextWorkspace(action::SelectNextWorkspace),
     SelectPreviousWorkspace(action::SelectPreviousWorkspace),
     /// Open/select the current workspace's scratchpad, or close it when active.
@@ -556,6 +560,12 @@ impl NamedAction {
             },
             Self::SelectPreviousSession(_) => {
                 "Cycle to the previous session, continuing across workspaces".into()
+            },
+            Self::SelectNextAgentSession(_) => {
+                "Cycle to the next running agent, continuing across workspaces".into()
+            },
+            Self::SelectPreviousAgentSession(_) => {
+                "Cycle to the previous running agent, continuing across workspaces".into()
             },
             Self::ToggleLeftSidebar(_) => "Toggle the projects sidebar".into(),
             Self::ToggleRightSidebar(_) => "Toggle the git sidebar".into(),
@@ -903,6 +913,20 @@ fn default_bindings() -> Vec<KeyBinding> {
             key: Key::ArrowLeft,
             mods: alt,
             action: BindingAction::Named(SelectPreviousWorkspace(action::SelectPreviousWorkspace)),
+        },
+        // Up and Down, because the ring follows the sidebar's rows top to
+        // bottom.
+        KeyBinding {
+            key: Key::ArrowDown,
+            mods: alt_shift,
+            action: BindingAction::Named(SelectNextAgentSession(action::SelectNextAgentSession)),
+        },
+        KeyBinding {
+            key: Key::ArrowUp,
+            mods: alt_shift,
+            action: BindingAction::Named(SelectPreviousAgentSession(
+                action::SelectPreviousAgentSession,
+            )),
         },
         KeyBinding {
             key: Key::O,
@@ -1857,6 +1881,7 @@ mod tests {
         let ctrl = Modifiers::CTRL;
         let ctrl_shift = Modifiers::CTRL | Modifiers::SHIFT;
         let alt = Modifiers::ALT;
+        let alt_shift = Modifiers::ALT | Modifiers::SHIFT;
         let b = parse_bindings(Vec::new());
         for (key, mods, expected) in [
             (Key::B, ctrl, ToggleLeftSidebar(action::ToggleLeftSidebar)),
@@ -1867,6 +1892,12 @@ mod tests {
             (Key::Tab, ctrl_shift, SelectPreviousTab(action::SelectPreviousTab)),
             (Key::ArrowRight, alt, SelectNextWorkspace(action::SelectNextWorkspace)),
             (Key::ArrowLeft, alt, SelectPreviousWorkspace(action::SelectPreviousWorkspace)),
+            (Key::ArrowDown, alt_shift, SelectNextAgentSession(action::SelectNextAgentSession)),
+            (
+                Key::ArrowUp,
+                alt_shift,
+                SelectPreviousAgentSession(action::SelectPreviousAgentSession),
+            ),
             (Key::O, ctrl_shift, AddProject(action::AddProject)),
             (Key::T, ctrl, SpawnNewInstance(action::SpawnNewInstance)),
             (Key::Q, ctrl, Quit(action::Quit)),
@@ -1953,6 +1984,14 @@ mod tests {
             (
                 "SelectPreviousSession",
                 NamedAction::SelectPreviousSession(action::SelectPreviousSession),
+            ),
+            (
+                "SelectNextAgentSession",
+                NamedAction::SelectNextAgentSession(action::SelectNextAgentSession),
+            ),
+            (
+                "SelectPreviousAgentSession",
+                NamedAction::SelectPreviousAgentSession(action::SelectPreviousAgentSession),
             ),
         ] {
             assert!(

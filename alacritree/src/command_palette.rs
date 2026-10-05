@@ -111,6 +111,7 @@ fn section_of(a: NamedAction) -> PaletteSection {
         AttachAllMultiplexerPanes(_) | DetachAllMultiplexerPanes(_) => Sessions,
         SelectNextTab(_) | SelectPreviousTab(_) | SelectTab(_) | SelectLastTab(_) => Sessions,
         SelectNextSession(_) | SelectPreviousSession(_) => Sessions,
+        SelectNextAgentSession(_) | SelectPreviousAgentSession(_) => Sessions,
         ToggleSessionRows(_) | ToggleSessionTabs(_) | ToggleSessionDrag(_) => Sessions,
         MoveSessionUp(_) | MoveSessionDown(_) => Sessions,
         IndentTask(_) | DedentTask(_) | MoveTaskUp(_) | MoveTaskDown(_) => Tasks,
