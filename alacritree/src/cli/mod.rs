@@ -12,6 +12,7 @@
 mod config_reference;
 mod crashes;
 mod doctor;
+mod hook;
 mod install;
 mod offline;
 mod render;
@@ -146,9 +147,10 @@ enum Command {
     },
 
     /// Run what a harness hook event needs. Called from Claude Code's and
-    /// codex's hook config; prints one JSON object or nothing.
+    /// codex's hook config. The task and tool events print one JSON object or
+    /// nothing; `worktree-create` prints the new worktree's path.
     Hook {
-        event: crate::tasks::hook::Event,
+        event: hook::Event,
         /// Which harness is calling. Hook processes do not inherit the
         /// variables a harness gives its own shell commands, so this cannot
         /// be read from the environment.
@@ -368,24 +370,9 @@ pub fn run(cli: Cli) -> Option<i32> {
         Command::Task { command } => {
             return Some(task::run(command, cli.json, cli.config_dir.as_deref(), &cli.options));
         },
-        // A harness waits on this before the model sees the turn, so it
-        // answers from disk with no window and never fails the hook.
         Command::Hook { event, harness } => {
-            let mut stdin = String::new();
-            let _ = std::io::Read::read_to_string(&mut std::io::stdin(), &mut stdin);
-            let harness = alacritree_tasks::scope::Harness::parse(&harness)
-                .expect("clap restricts --harness to known names");
-            let integrations = task::configure_tools(cli.config_dir.as_deref(), &cli.options);
-            let state_dir = cli.config_dir.clone().or_else(crate::state::config_dir);
-            let backend = crate::tasks::backend::Backend::from_config(&integrations);
-            let state_dir = state_dir.as_deref();
-            let backends = crate::vcs::backends(&integrations);
-            if let Some(out) =
-                crate::tasks::hook::run(&backend, event, harness, &stdin, state_dir, &backends)
-            {
-                println!("{out}");
-            }
-            return Some(0);
+            let config = ConfigSource { dir: cli.config_dir.as_deref(), overrides: &cli.options };
+            return Some(hook::run(event, &harness, cli.socket.as_deref(), config));
         },
         // Reads files rather than asking an instance, so it answers when
         // nothing is running, which is exactly when a crash is being chased.

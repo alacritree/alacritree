@@ -1,5 +1,7 @@
 //! `alacritree hook` as a harness runs it: a fresh process, a payload on
-//! stdin, JSON or nothing on stdout, and exit 0 whatever happens.
+//! stdin, and what the harness reads on stdout. The task and tool events
+//! print JSON or nothing and exit 0 whatever happens; the worktree events
+//! print a path or fail.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -223,11 +225,95 @@ fn a_task_command_answers_the_hook() {
 #[test]
 fn garbage_stdin_exits_zero() {
     let sandbox = without_task();
-    for stdin in ["", "not json", "{}", "[1,2]"] {
-        let out = hook(&sandbox, &["hook", "session-start", "--harness", "codex"], stdin);
-        assert!(out.status.success(), "{stdin:?}");
-        if !out.stdout.is_empty() {
-            serde_json::from_slice::<serde_json::Value>(&out.stdout).expect("JSON when printed");
+    for event in ["session-start", "pre-tool-use"] {
+        for stdin in ["", "not json", "{}", "[1,2]"] {
+            let out = hook(&sandbox, &["hook", event, "--harness", "codex"], stdin);
+            assert!(out.status.success(), "{event} {stdin:?}");
+            if !out.stdout.is_empty() {
+                serde_json::from_slice::<serde_json::Value>(&out.stdout)
+                    .expect("JSON when printed");
+            }
         }
+    }
+}
+
+/// With no window listening, Claude Code's worktree comes from the offline
+/// create, under `[workspace] worktree_dir`, and stdout is its path alone.
+#[test]
+fn worktree_create_prints_the_path_it_made() {
+    let state = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let repo = alacritree_git::test_support::clone_with_origin(work.path());
+    let sandbox = Sandbox { state, _work: work, repo, env: Vec::new() };
+    // An explicit socket that nothing listens on keeps the developer's own
+    // window out of the test.
+    let socket = sandbox.state.path().join("no-window.sock");
+    let worktrees = sandbox.state.path().join("worktrees");
+    let worktree_dir = format!("workspace.worktree_dir='{}'", worktrees.display());
+    let args = [
+        "--socket",
+        socket.to_str().unwrap(),
+        "-o",
+        &worktree_dir,
+        "hook",
+        "worktree-create",
+        "--harness",
+        "claude",
+    ];
+    let out = hook(&sandbox, &args, &fixture("claude-worktree-create.json", &sandbox.repo));
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    let path = Path::new(stdout.trim_end());
+    assert_eq!(stdout.lines().count(), 1, "{stdout:?}");
+    assert!(path.starts_with(&worktrees), "{path:?}");
+    assert!(path.join(".git").exists(), "{path:?} is a checkout");
+}
+
+#[test]
+fn worktree_create_outside_a_repository_fails_with_the_reason() {
+    let sandbox = without_task();
+    let elsewhere = sandbox.state.path().join("plain");
+    std::fs::create_dir(&elsewhere).unwrap();
+    let socket = sandbox.state.path().join("no-window.sock");
+    let args =
+        ["--socket", socket.to_str().unwrap(), "hook", "worktree-create", "--harness", "claude"];
+    let out = hook(&sandbox, &args, &fixture("claude-worktree-create.json", &elsewhere));
+    assert_eq!(out.status.code(), Some(1));
+    assert!(out.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("not a"), "names why");
+}
+
+/// A remove fails so Claude Code keeps the worktree rather than falling back
+/// to its own `git worktree remove`.
+#[test]
+fn worktree_remove_keeps_the_worktree() {
+    let sandbox = without_task();
+    let stdin = r#"{"hook_event_name":"WorktreeRemove","worktree_path":"/w/topic"}"#;
+    let out = hook(&sandbox, &["hook", "worktree-remove", "--harness", "claude"], stdin);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("/w/topic"));
+}
+
+#[test]
+fn pre_tool_use_denies_a_shell_worktree_add_for_both_harnesses() {
+    let sandbox = without_task();
+    let call = |command: &str| {
+        serde_json::json!({
+            "hook_event_name": "PreToolUse",
+            "cwd": sandbox.repo,
+            "tool_name": "Bash",
+            "tool_input": { "command": command },
+        })
+        .to_string()
+    };
+    for harness in ["claude", "codex"] {
+        let args = ["hook", "pre-tool-use", "--harness", harness];
+        let out = hook(&sandbox, &args, &call("git worktree add ../topic"));
+        assert!(out.status.success());
+        let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(json["hookSpecificOutput"]["permissionDecision"], "deny", "{harness}");
+        let out = hook(&sandbox, &args, &call("git worktree list"));
+        assert!(out.status.success());
+        assert!(out.stdout.is_empty(), "{harness} lets other git through");
     }
 }
