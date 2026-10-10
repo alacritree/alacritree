@@ -1515,10 +1515,13 @@ impl<R: Repaint> Session<R> {
         self.probe.signals().nav_tui
     }
 
-    /// The shell this session's probe reads, for a test that drives a real
-    /// one through the PTY.
-    #[cfg(all(test, target_os = "macos"))]
+    /// The shell this session's PTY started, where the platform says.  A
+    /// scratchpad, a tasks tab and a shimmed WSL session have none whose
+    /// descendants alacritree can see, so they answer `None`.
     pub(crate) fn shell_pid(&self) -> Option<u32> {
+        if self.scratchpad.is_some() || self.tasks.is_some() || self.wsl_probe.is_some() {
+            return None;
+        }
         self.probe.shell_pid()
     }
 
