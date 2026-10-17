@@ -236,44 +236,53 @@ while IFS=$TAB read -r id kind rest; do
     ) &
     ;;
   PROBE)
-    comm=
-    p=$(cat "$rt/session-$rest.pid" 2>/dev/null)
-    case $p in ''|*[!0-9]*) p= ;; esac
-    if [ -n "$p" ] && [ -d "/proc/$p" ]; then
-      stat=$(cat "/proc/$p/stat" 2>/dev/null)
-      after=${stat##*')'}
-      set -- $after
-      pgrp=${3:-}
-      tpgid=${6:-}
-      case $tpgid in ''|*[!0-9]*) tpgid= ;; esac
-      if [ -n "$tpgid" ] && [ "$tpgid" != "$pgrp" ]; then
-        comm=$(cat "/proc/$tpgid/comm" 2>/dev/null)
-        # A launcher (chezmoi edit, git commit) stays the group leader while
-        # the editor it spawned shares its group; when the leader is not itself
-        # a nav TUI, scan the group so the nvim on screen is still recognized.
-        case $comm in
-        nvim*|vim*|tmux*|zellij*|herdr*) ;;
-        *)
-          for sf in /proc/[0-9]*/stat; do
-            gs=$(cat "$sf" 2>/dev/null) || continue
-            set -- ${gs##*')'}
-            [ "${3:-}" = "$tpgid" ] || continue
-            m=$(cat "${sf%/stat}/comm" 2>/dev/null)
-            case $m in nvim*|vim*|tmux*|zellij*|herdr*) comm=$m; break;; esac
-          done
-          ;;
-        esac
-      elif [ -n "$tpgid" ]; then
-        # An attach that execs straight into its TUI leaves the TUI as its own
-        # group leader, so the tty's foreground group is the pidfile process
-        # itself.  Only a nav TUI counts here: an idle shell is its own leader
-        # too, and reporting its comm would read as a foreground job.
-        m=$(cat "/proc/$tpgid/comm" 2>/dev/null)
-        case $m in nvim*|vim*|tmux*|zellij*|herdr*) comm=$m ;; esac
+    # In the background, and reading /proc with the read builtin, so a probe
+    # that scans every process neither forks per process nor holds up the
+    # requests queued behind it.
+    (
+      comm= p= stat=
+      read -r p 2>/dev/null < "$rt/session-$rest.pid"
+      case $p in ''|*[!0-9]*) p= ;; esac
+      if [ -n "$p" ] && [ -d "/proc/$p" ]; then
+        read -r stat 2>/dev/null < "/proc/$p/stat"
+        after=${stat##*')'}
+        set -- $after
+        pgrp=${3:-}
+        tpgid=${6:-}
+        case $tpgid in ''|*[!0-9]*) tpgid= ;; esac
+        if [ -n "$tpgid" ] && [ "$tpgid" != "$pgrp" ]; then
+          read -r comm 2>/dev/null < "/proc/$tpgid/comm"
+          # A launcher (chezmoi edit, git commit) stays the group leader while
+          # the editor it spawned shares its group; when the leader is not itself
+          # a nav TUI, scan the group so the nvim on screen is still recognized.
+          case $comm in
+          nvim*|vim*|tmux*|zellij*|herdr*) ;;
+          *)
+            for sf in /proc/[0-9]*/stat; do
+              gs=
+              read -r gs 2>/dev/null < "$sf"
+              [ -n "$gs" ] || continue
+              set -- ${gs##*')'}
+              [ "${3:-}" = "$tpgid" ] || continue
+              m=
+              read -r m 2>/dev/null < "${sf%/stat}/comm"
+              case $m in nvim*|vim*|tmux*|zellij*|herdr*) comm=$m; break;; esac
+            done
+            ;;
+          esac
+        elif [ -n "$tpgid" ]; then
+          # An attach that execs straight into its TUI leaves the TUI as its own
+          # group leader, so the tty's foreground group is the pidfile process
+          # itself. Only a nav TUI counts here: an idle shell is its own leader
+          # too, and reporting its comm would read as a foreground job.
+          m=
+          read -r m 2>/dev/null < "/proc/$tpgid/comm"
+          case $m in nvim*|vim*|tmux*|zellij*|herdr*) comm=$m ;; esac
+        fi
       fi
-    fi
-    printf %s "$comm" > "$t/$id.out"
-    printf '%s 0\n' "$id" >> "$t/done"
+      printf %s "$comm" > "$t/$id.out"
+      printf '%s 0\n' "$id" >> "$t/done"
+    ) &
     ;;
   PING) printf '0 0\n' >> "$t/done" & ;;
   esac
@@ -1891,28 +1900,10 @@ rm -rf "$XDG_RUNTIME_DIR"
     #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn the_pixel_size_script_keeps_the_grid_times_the_cell_on_the_tty() {
-        let harness = PIXEL_SIZE_HARNESS.replace("{script}", PIXEL_SIZE_SCRIPT);
-        let mut command = std::process::Command::new(if cfg!(windows) { "wsl.exe" } else { "sh" });
-        if cfg!(windows) {
-            command.args(["-e", "sh"]);
-        }
-        command.arg("-s").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
-        let Ok(mut child) = command.spawn() else {
-            eprintln!("skipped: no sh to run the script in");
+        let Some(lines) = run_in_linux(&PIXEL_SIZE_HARNESS.replace("{script}", PIXEL_SIZE_SCRIPT))
+        else {
             return;
         };
-        child.stdin.take().expect("piped stdin").write_all(harness.as_bytes()).unwrap();
-        let output = child.wait_with_output().unwrap();
-        let stdout = String::from_utf8_lossy(&output.stdout);
-
-        let Some(lines) = stdout.strip_prefix("harness\n") else {
-            eprintln!("skipped: no Linux to run the script in: {stdout:?}");
-            return;
-        };
-        if let Some(reason) = lines.strip_prefix("skip: ") {
-            eprintln!("skipped: {reason}");
-            return;
-        }
         let sizes: Vec<&str> = lines.lines().collect();
         let expected = [
             "30 90 900 600",
@@ -1923,5 +1914,86 @@ rm -rf "$XDG_RUNTIME_DIR"
             "watcher gone",
         ];
         assert_eq!(sizes, expected);
+    }
+
+    /// What a harness printed after its `harness` line, run by `sh` on Linux
+    /// and through WSL's default distro on Windows. `None` is a skip, with
+    /// the reason printed: no Linux to run it in, or the harness's own
+    /// `skip: ` line.
+    #[cfg(any(windows, target_os = "linux"))]
+    fn run_in_linux(harness: &str) -> Option<String> {
+        let mut command = std::process::Command::new(if cfg!(windows) { "wsl.exe" } else { "sh" });
+        if cfg!(windows) {
+            command.args(["-e", "sh"]);
+        }
+        command.arg("-s").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+        let Ok(mut child) = command.spawn() else {
+            eprintln!("skipped: no sh to run the script in");
+            return None;
+        };
+        child.stdin.take().expect("piped stdin").write_all(harness.as_bytes()).unwrap();
+        let output = child.wait_with_output().unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+
+        let Some(lines) = stdout.strip_prefix("harness\n") else {
+            eprintln!("skipped: no Linux to run the script in: {stdout:?}");
+            return None;
+        };
+        if let Some(reason) = lines.strip_prefix("skip: ") {
+            eprintln!("skipped: {reason}");
+            return None;
+        }
+        Some(lines.to_string())
+    }
+
+    /// Runs `HELPER_SCRIPT` on pipes and probes a session whose pidfile is a
+    /// FIFO nobody writes, so the probe cannot finish, then sends a `RUN`.
+    /// The FIFO is made after the hello, since the startup sweep reads every
+    /// pidfile too. The helper runs under `setsid` because its EXIT trap
+    /// signals its whole process group.
+    const PROBE_QUEUE_HARNESS: &str = r##"echo harness
+command -v setsid >/dev/null && command -v base64 >/dev/null || { echo "skip: needs setsid and base64"; exit 0; }
+helper_script=$(cat <<'EOF_HELPER_SCRIPT'
+{script}
+EOF_HELPER_SCRIPT
+)
+XDG_RUNTIME_DIR=$(mktemp -d)
+export XDG_RUNTIME_DIR
+d=$XDG_RUNTIME_DIR/alacritree
+mkfifo "$XDG_RUNTIME_DIR/in"
+setsid sh -c "$helper_script" sh < "$XDG_RUNTIME_DIR/in" > "$XDG_RUNTIME_DIR/out" 2>/dev/null &
+exec 4> "$XDG_RUNTIME_DIR/in"
+answered() {
+  i=0
+  while [ $i -lt 50 ]; do
+    grep -q "^$1	" "$XDG_RUNTIME_DIR/out" 2>/dev/null && return 0
+    sleep 0.1
+    i=$((i + 1))
+  done
+  return 1
+}
+answered hello || { echo "skip: the helper never said hello"; exit 0; }
+mkfifo "$d/session-k.pid"
+printf '1\tPROBE\tk\n' >&4
+printf '2\tRUN\t%s\n' "$(printf 'echo ran' | base64)" >&4
+answered 2 && echo "run answered" || echo "run waited on the probe"
+: > "$d/session-k.pid" &
+answered 1 && echo "probe answered" || echo "probe never answered"
+kill $! 2>/dev/null
+exec 4>&-
+sleep 0.2
+rm -rf "$XDG_RUNTIME_DIR"
+"##;
+
+    /// A `RUN` answers while a probe ahead of it is still stuck, and the
+    /// probe answers once it comes unstuck.
+    #[cfg(any(windows, target_os = "linux"))]
+    #[test]
+    fn a_stuck_probe_does_not_hold_up_a_run_behind_it() {
+        let Some(lines) = run_in_linux(&PROBE_QUEUE_HARNESS.replace("{script}", HELPER_SCRIPT))
+        else {
+            return;
+        };
+        assert_eq!(lines.lines().collect::<Vec<_>>(), ["run answered", "probe answered"]);
     }
 }
