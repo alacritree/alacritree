@@ -971,6 +971,16 @@ pub struct Watch {
     pub generation: u64,
 }
 
+/// A shared watch that failed, with the generation of that failure. A caller
+/// stores it and names it on the next arm, so the same failure is heard once.
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("{}", .error)]
+pub struct WatchError {
+    #[source]
+    pub error: TransportError,
+    pub generation: u64,
+}
+
 /// Which event one watch of a replica directory found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WatchKind {
@@ -1030,6 +1040,9 @@ pub fn requests_sent(distro: &str) -> u64 {
 /// many tabs show it.
 #[cfg(any(test, feature = "test-support"))]
 pub fn watches_sent(distro: &str) -> u64 {
+    if let Some(client) = watch_override().lock().unwrap_or_else(PoisonError::into_inner).clone() {
+        return client.watches_sent.load(Ordering::Relaxed);
+    }
     match lock(registry()).get(distro) {
         Some(Slot::Live(client)) => client.watches_sent.load(Ordering::Relaxed),
         _ => 0,
@@ -1045,8 +1058,7 @@ struct SharedWatch {
     /// The last change of this replica. `0` before the first one. A failure
     /// moves it too, so a tab that missed the failure still hears it.
     generation: u64,
-    /// A change or a failure a caller has not asked for yet. The generation
-    /// is what says who has heard it, so the answer itself is not kept.
+    /// The last change or failure. Dropped when a caller names its generation.
     held: Option<Result<WatchKind, TransportError>>,
 }
 
@@ -1091,6 +1103,59 @@ fn watch_override() -> &'static Mutex<Option<Arc<HelperClient>>> {
 #[cfg(any(test, feature = "test-support"))]
 pub fn set_watch_client(client: Option<Arc<HelperClient>>) {
     *watch_override().lock().unwrap_or_else(PoisonError::into_inner) = client;
+}
+
+/// A helper that has said hello and then waits. `watches_sent` is how a
+/// test sees the request a tab sends after a failure.
+#[cfg(any(test, feature = "test-support"))]
+pub fn silent_helper() -> Arc<HelperClient> {
+    struct Hold(mpsc::Receiver<Vec<u8>>, Vec<u8>);
+
+    impl Read for Hold {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.1.is_empty() {
+                // The hello is the only line. After it, the read parks so
+                // the helper stays up while a watch is open.
+                self.1 = self.0.recv().unwrap_or_default();
+            }
+            if self.1.is_empty() {
+                std::thread::sleep(Duration::from_secs(3600));
+                return Ok(0);
+            }
+            let n = self.1.len().min(buf.len());
+            buf[..n].copy_from_slice(&self.1[..n]);
+            self.1.drain(..n);
+            Ok(n)
+        }
+    }
+
+    struct Keep;
+
+    impl Write for Keep {
+        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+            Ok(data.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let (hello_tx, hello_rx) = mpsc::channel();
+    hello_tx.send(b"hello\t3\t\t\t\t\t\t\t\t\t\n".to_vec()).expect("the client has not started");
+    std::mem::forget(hello_tx);
+    let client = HelperClient::over(
+        "silent",
+        Box::new(Hold(hello_rx, Vec::new())),
+        Box::new(Keep),
+        Timing::DEFAULT,
+    );
+    let ready_by = Instant::now() + Duration::from_secs(5);
+    while !client.is_ready() {
+        assert!(Instant::now() < ready_by, "the silent helper never said hello");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    client
 }
 
 /// A helper that has said hello and then refuses every write, so a watch
@@ -1143,10 +1208,10 @@ pub fn refusing_client() -> Arc<HelperClient> {
 /// first request.
 struct Waiter {
     seen: u64,
-    tx: mpsc::Sender<Result<Watch, TransportError>>,
+    tx: mpsc::Sender<Result<Watch, WatchError>>,
 }
 
-type Answer = Result<Watch, TransportError>;
+type Answer = Result<Watch, WatchError>;
 
 /// The shared watch of `path` inside `distro`, or `None` before a request.
 /// `seen` is the generation the caller last heard, `0` for a first request.
@@ -1155,7 +1220,7 @@ pub fn watch(
     distro: &str,
     path: &str,
     seen: u64,
-) -> Option<(u64, mpsc::Receiver<Result<Watch, TransportError>>)> {
+) -> Option<(u64, mpsc::Receiver<Result<Watch, WatchError>>)> {
     let client = watch_client(distro)?;
     let key = (distro.to_string(), path.to_string());
     let (tx, rx) = mpsc::channel();
@@ -1166,16 +1231,18 @@ pub fn watch(
             generation: 0,
             held: None,
         });
-        // A change the caller has not heard answers at once. The generation
-        // says who has heard it, so a second caller of the same number waits
-        // instead of taking the same answer.
-        if shared.generation > seen {
+        // `0` is a first request. A caller that names this generation has heard it.
+        if seen > 0 && shared.generation == seen {
+            shared.held = None;
+        } else if shared.generation > seen {
             if let Some(held) = shared.held.clone() {
-                let _ = tx.send(watch_answer(held, shared.generation));
-                return Some((shared.generation, rx));
+                let generation = shared.generation;
+                let _ = tx.send(watch_answer(held, generation));
+                return Some((generation, rx));
             }
         }
-        let start = shared.waiters.is_empty();
+        // A caller that already names this generation starts the next watch.
+        let start = shared.waiters.iter().all(|waiter| waiter.seen < shared.generation);
         shared.waiters.push(Waiter { seen, tx });
         start
     };
@@ -1195,20 +1262,25 @@ pub fn watch(
                 for (tx, answer) in waiters {
                     let _ = tx.send(answer);
                 }
-                // A caller that arrived while the answer was being handed out
-                // still names the generation it saw, so it hears this one too.
+                // A caller that arrived during the hand-out still names the
+                // generation it saw. One that names it already drops the answer.
                 let late = {
                     let mut watches = lock(watches());
                     watches.get_mut(&owner).map(|shared| {
                         let found =
                             shared.held.clone().map(|held| watch_answer(held, shared.generation));
                         let Some(found) = found else { return Vec::new() };
-                        let (due, waiting) = std::mem::take(&mut shared.waiters)
-                            .into_iter()
-                            .partition(|waiter| match &found {
-                                Ok(watch) => watch.generation > waiter.seen,
-                                Err(_) => true,
+                        let (due, waiting): (Vec<Waiter>, Vec<Waiter>) =
+                            std::mem::take(&mut shared.waiters).into_iter().partition(|waiter| {
+                                match &found {
+                                    Ok(watch) => watch.generation > waiter.seen,
+                                    Err(error) => error.generation > waiter.seen,
+                                }
                             });
+                        let heard = waiting.iter().any(|waiter| waiter.seen >= shared.generation);
+                        if heard && waiting.iter().all(|waiter| waiter.seen >= shared.generation) {
+                            shared.held = None;
+                        }
                         shared.waiters = waiting;
                         due.into_iter().map(|waiter| (waiter.tx, found.clone())).collect()
                     })
@@ -1225,12 +1297,15 @@ pub fn watch(
             return None;
         }
     }
-    Some((0, rx))
+    Some((seen, rx))
 }
 
 /// Hands `found` to every waiter that has not heard it, and keeps the
 /// generation so a later caller of an older number hears it at once.
-fn deliver(shared: &mut SharedWatch, found: Answer) -> Vec<(mpsc::Sender<Answer>, Answer)> {
+fn deliver(
+    shared: &mut SharedWatch,
+    found: Result<Watch, TransportError>,
+) -> Vec<(mpsc::Sender<Answer>, Answer)> {
     let kind = match found {
         Ok(watch) => {
             // A quiet wait found nothing, so the generation stays and the
@@ -1251,7 +1326,7 @@ fn deliver(shared: &mut SharedWatch, found: Answer) -> Vec<(mpsc::Sender<Answer>
 }
 
 fn watch_answer(kind: Result<WatchKind, TransportError>, generation: u64) -> Answer {
-    kind.map(|kind| Watch { kind, generation })
+    kind.map(|kind| Watch { kind, generation }).map_err(|error| WatchError { error, generation })
 }
 
 /// Resident-first transport for `wsl::run_batch`. `None` = helper
@@ -1629,10 +1704,11 @@ mod tests {
         };
         let two = watch("refused", "/r", 0).expect("the helper is up").1;
         let second = two.try_recv().expect("a late caller missed the refused write");
-        let (Err(TransportError::NotWritten(first)), Err(TransportError::NotWritten(second))) =
-            (first, second)
-        else {
+        let Err(WatchError { error: TransportError::NotWritten(first), .. }) = first else {
             panic!("a caller did not get the typed write error");
+        };
+        let Err(WatchError { error: TransportError::NotWritten(second), .. }) = second else {
+            panic!("a late caller did not get the typed write error");
         };
         assert!(first.to_string().contains("refused"), "first: {first}; second: {second}");
         assert!(
@@ -1695,9 +1771,7 @@ mod tests {
     }
 
     /// The answer on `rx`, waiting until the watch thread delivers it.
-    fn await_watch(
-        rx: &mpsc::Receiver<Result<Watch, TransportError>>,
-    ) -> Result<Watch, TransportError> {
+    fn await_watch(rx: &mpsc::Receiver<Result<Watch, WatchError>>) -> Result<Watch, WatchError> {
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
             if let Ok(answer) = rx.try_recv() {
@@ -1839,6 +1913,45 @@ mod tests {
         assert!(again.1.try_recv().is_err(), "a tab heard the missing replica twice");
         assert!(try_read_line(&helper.from_client).is_some(), "a re-arm sent no watch");
         set_watch_client(None);
+    }
+
+    /// A refused write is heard once. The caller that takes it names that
+    /// failure, so a later arm waits for a new watch instead of taking the
+    /// same error. A caller that never heard it still gets it at once.
+    #[test]
+    fn a_failed_watch_is_heard_once_and_a_rearm_sends_a_watch() {
+        let client = refusing_client();
+        set_watch_client(Some(client.clone()));
+        reset_watches();
+        let open = watch("err", "/r", 0).expect("the helper is up");
+        let Err(WatchError { generation: heard, error }) = await_watch(&open.1) else {
+            panic!("the refused write did not answer");
+        };
+        assert!(matches!(error, TransportError::NotWritten(_)), "heard {error}");
+        assert!(heard > 0, "a failure kept generation 0");
+        let late = watch("err", "/r", 0).expect("the helper is up");
+        assert!(
+            matches!(
+                late.1.try_recv(),
+                Ok(Err(WatchError { generation, .. })) if generation == heard
+            ),
+            "a tab that missed the failure did not hear it"
+        );
+        let sent = client.watches_sent.load(Ordering::Relaxed);
+        let (back, helper) = FakeHelper::silent();
+        set_watch_client(Some(back));
+        let rearmed = watch("err", "/r", heard).expect("the helper is back");
+        assert!(rearmed.1.try_recv().is_err(), "a re-arm took the failure it already heard");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut sent_watch = client.watches_sent.load(Ordering::Relaxed) > sent;
+        while !sent_watch && try_read_line(&helper.from_client).is_none() {
+            assert!(Instant::now() < deadline, "a re-arm after the helper is back sent no watch");
+            std::thread::sleep(Duration::from_millis(5));
+            sent_watch = client.watches_sent.load(Ordering::Relaxed) > sent;
+        }
+        assert!(rearmed.1.try_recv().is_err(), "the new watch answered before the helper did");
+        set_watch_client(None);
+        reset_watches();
     }
 
     #[test]

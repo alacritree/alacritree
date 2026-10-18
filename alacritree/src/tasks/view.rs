@@ -22,7 +22,7 @@ use egui::{
 use alacritree_common::jobs::{self, Job, Priority};
 use alacritree_common::side::Side;
 use alacritree_common::wsl;
-use alacritree_common::wsl_helper::{self, Watch, WatchKind};
+use alacritree_common::wsl_helper::{self, Watch, WatchError, WatchKind};
 use alacritree_tasks::scope::{GLOBAL, Place, node};
 use alacritree_tasks::tree::{self, Landing, Row, Section, SectionKind};
 use alacritree_tasks::{Edit, Filter, NodeMatch, Status, Task, TaskBackend, TaskError};
@@ -350,7 +350,7 @@ pub(crate) struct TasksView {
     /// The open watch of that directory, shared with every other tab on it.
     /// The answer arrives on this receiver from the watch thread. `None`
     /// while no watch is open, and the stamp check runs until `watch_retry`.
-    watch: Option<mpsc::Receiver<Result<Watch, wsl_helper::TransportError>>>,
+    watch: Option<mpsc::Receiver<Result<Watch, WatchError>>>,
     /// The generation this tab last heard for that replica. `0` before the
     /// first change. The next watch asks with it, so a held answer is heard
     /// once.
@@ -917,7 +917,13 @@ impl TasksView {
                 self.watch_generation = watch.generation;
                 matches!(watch.kind, WatchKind::Changed | WatchKind::Missing)
             },
-            Ok(Err(_)) | Err(mpsc::TryRecvError::Disconnected) => {
+            Ok(Err(error)) => {
+                self.watch = None;
+                self.watch_generation = error.generation;
+                self.watch_retry = Instant::now() + RELOAD_EVERY;
+                false
+            },
+            Err(mpsc::TryRecvError::Disconnected) => {
                 self.watch = None;
                 self.watch_retry = Instant::now() + RELOAD_EVERY;
                 false
@@ -934,7 +940,10 @@ impl TasksView {
         let Some((Side::Wsl(distro), dir)) = self.replica_dir.clone() else { return };
         let Some(path) = wsl::windows_to_linux(&dir) else { return };
         match wsl_helper::watch(&distro, &path, self.watch_generation) {
-            Some((_, rx)) => self.watch = Some(rx),
+            Some((generation, rx)) => {
+                self.watch_generation = generation;
+                self.watch = Some(rx);
+            },
             None => self.watch_retry = Instant::now() + RELOAD_EVERY,
         }
     }
@@ -1896,14 +1905,14 @@ mod tests {
 
     /// A watch the helper has not answered. The sender is leaked so the
     /// receiver stays open, the way a watch thread still waiting does.
-    fn pending_watch() -> mpsc::Receiver<Result<Watch, wsl_helper::TransportError>> {
+    fn pending_watch() -> mpsc::Receiver<Result<Watch, WatchError>> {
         let (tx, rx) = mpsc::channel();
         std::mem::forget(tx);
         rx
     }
 
     /// A watch whose thread ended without an answer.
-    fn dropped_watch() -> mpsc::Receiver<Result<Watch, wsl_helper::TransportError>> {
+    fn dropped_watch() -> mpsc::Receiver<Result<Watch, WatchError>> {
         let (tx, rx) = mpsc::channel();
         drop(tx);
         rx
@@ -2394,6 +2403,51 @@ mod tests {
         wsl_helper::reset_watches();
         assert!(!asked_again, "a failed watch is asked again on the next frame");
         assert!(!third, "a down helper is asked again on the frame after that");
+    }
+
+    /// A failed watch is heard once. The tab stores that failure's
+    /// generation, so the next arm asks with it instead of taking the same
+    /// error again.
+    #[cfg(windows)]
+    #[test]
+    fn a_tab_stores_the_generation_of_a_failed_watch() {
+        let _wsl = wsl_tests();
+        wsl_helper::set_watch_client(Some(wsl_helper::refusing_client()));
+        wsl_helper::reset_watches();
+        let store = FakeBackend::with_tasks(vec![task("a", "r")]);
+        store.hold_next_stamp();
+        let mut view = wsl_tab(&store);
+        view.replica_dir = Some((view.scope.side.clone(), PathBuf::from(r"C:\Users")));
+        view.tick();
+        let armed = view.watch.take().expect("the refusing helper never armed a watch");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let answer = loop {
+            if let Ok(answer) = armed.try_recv() {
+                break answer;
+            }
+            assert!(Instant::now() < deadline, "the refused write never reached the tab");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        let Err(error) = answer else { panic!("the refused write answered as a change") };
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(Err(error)).expect("the receiver is still here");
+        view.watch = Some(rx);
+        view.tick();
+        let heard = view.watch_generation;
+        view.watch_retry = Instant::now();
+        let back = wsl_helper::silent_helper();
+        wsl_helper::set_watch_client(Some(back));
+        let sent = wsl_helper::watches_sent("Ubuntu");
+        view.watch_retry = Instant::now();
+        view.tick();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while wsl_helper::watches_sent("Ubuntu") == sent {
+            assert!(Instant::now() < deadline, "a re-arm after the helper is back sent no watch");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        wsl_helper::set_watch_client(None);
+        wsl_helper::reset_watches();
+        assert!(heard > 0, "the tab stored no generation for the failure");
     }
 
     /// A watch that failed is the same wait. The next frame does not arm
