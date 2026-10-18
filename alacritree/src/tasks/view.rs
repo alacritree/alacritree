@@ -22,7 +22,7 @@ use egui::{
 use alacritree_common::jobs::{self, Job, Priority};
 use alacritree_common::side::Side;
 use alacritree_common::wsl;
-use alacritree_common::wsl_helper::{self, Watch};
+use alacritree_common::wsl_helper::{self, Watch, WatchKind};
 use alacritree_tasks::scope::{GLOBAL, Place, node};
 use alacritree_tasks::tree::{self, Landing, Row, Section, SectionKind};
 use alacritree_tasks::{Edit, Filter, NodeMatch, Status, Task, TaskBackend, TaskError};
@@ -351,6 +351,10 @@ pub(crate) struct TasksView {
     /// The answer arrives on this receiver from the watch thread. `None`
     /// while no watch is open, and the stamp check runs until `watch_retry`.
     watch: Option<mpsc::Receiver<Result<Watch, wsl_helper::TransportError>>>,
+    /// The generation this tab last heard for that replica. `0` before the
+    /// first change. The next watch asks with it, so a held answer is heard
+    /// once.
+    watch_generation: u64,
     /// The next attempt to arm a watch. A watch that ended without a change,
     /// or a helper that was not up, sets it one interval ahead so the tab
     /// does not arm again on the next frame.
@@ -429,6 +433,7 @@ impl TasksView {
             stamp_job: None,
             replica_dir: None,
             watch: None,
+            watch_generation: 0,
             watch_retry: Instant::now(),
             last_reload: None,
             stamp_retry: Instant::now(),
@@ -909,7 +914,8 @@ impl TasksView {
         match rx.try_recv() {
             Ok(Ok(watch)) => {
                 self.watch = None;
-                matches!(watch, Watch::Changed | Watch::Missing)
+                self.watch_generation = watch.generation;
+                matches!(watch.kind, WatchKind::Changed | WatchKind::Missing)
             },
             Ok(Err(_)) | Err(mpsc::TryRecvError::Disconnected) => {
                 self.watch = None;
@@ -927,8 +933,8 @@ impl TasksView {
         }
         let Some((Side::Wsl(distro), dir)) = self.replica_dir.clone() else { return };
         let Some(path) = wsl::windows_to_linux(&dir) else { return };
-        match wsl_helper::watch(&distro, &path) {
-            Some(rx) => self.watch = Some(rx),
+        match wsl_helper::watch(&distro, &path, self.watch_generation) {
+            Some((_, rx)) => self.watch = Some(rx),
             None => self.watch_retry = Instant::now() + RELOAD_EVERY,
         }
     }
@@ -2045,8 +2051,8 @@ mod tests {
             let record =
                 if log { format!("echo spawn >> {linux}/spawns.txt\n") } else { String::new() };
             let body = format!(
-                "#!/bin/sh\n{record}case $* in\n*_get*) printf {linux}/data;;\n*) printf %s \"$1\" >> \
-                 {linux}/listed.txt; printf []\nesac\n"
+                "#!/bin/sh\n{record}case $* in\n*_get*) printf {linux}/data;;\n*) printf %s \
+                 \"$1\" >> {linux}/listed.txt; printf []\nesac\n"
             );
             std::fs::write(dir.path().join("task"), body.replace("\r\n", "\n")).unwrap();
             let chmod = jobs::on_this_thread(|b| {
@@ -2207,7 +2213,10 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert_eq!(watches, 1, "two tabs opened {watches} watches");
-        assert!(landed > listed, "the write reached neither tab ({listed} listings, then {landed})");
+        assert!(
+            landed > listed,
+            "the write reached neither tab ({listed} listings, then {landed})"
+        );
     }
 
     /// A replica that does not change sends nothing through the helper after
