@@ -1262,6 +1262,14 @@ pub fn watch(
             }
         }
         if shared.generation > seen && !shared.in_flight {
+            // The last caller of an older number takes the held answer.
+            // A watch still open keeps it, so the next late caller hears it too.
+            shared.held = None;
+            return Some((shared.generation, rx));
+        }
+        if caught {
+            // The caller already has the answer. It does not wait for the
+            // quiet reply of the watch that was open when it arrived.
             return Some((shared.generation, rx));
         }
         // A watch already open stays the one watch. Waiter generations do
@@ -1270,10 +1278,6 @@ pub fn watch(
         shared.waiters.push(Waiter { seen, tx });
         if start {
             shared.in_flight = true;
-        }
-        // Only the caller that takes the held answer drops it.
-        if caught {
-            shared.held = None;
         }
         start
     };
@@ -1897,6 +1901,54 @@ mod tests {
             try_read_line(&helper.from_client).is_none(),
             "a late tab sent a watch for a change already held"
         );
+        set_watch_client(None);
+    }
+
+    /// Two late tabs subscribe during one open watch. Each hears the held
+    /// change, and a quiet reply leaves neither waiting with no watch.
+    #[test]
+    fn a_second_late_tab_hears_the_held_change() {
+        let (client, mut helper) = FakeHelper::silent();
+        let _watch = watch_tests();
+        set_watch_client(Some(client));
+        reset_watches();
+        let open = watch("twice", "/r", 0).expect("the helper is up");
+        let sent = helper.read_line();
+        let id = sent.split('\t').next().expect("a request id").trim().to_string();
+        helper.answer(&id, b"changed");
+        let Ok(heard) = await_watch(&open.1) else { panic!("the open tab missed the change") };
+        let rearmed = watch("twice", "/r", heard.generation).expect("the helper is up");
+        let resent = try_read_line(&helper.from_client).expect("a re-arm sent no watch");
+        let first = watch("twice", "/r", 0).expect("the helper is up");
+        let Ok(caught) = first.1.try_recv().expect("the first late tab waited") else {
+            panic!("the first late tab got an error");
+        };
+        assert_eq!(caught.generation, heard.generation);
+        let second = watch("twice", "/r", 0).expect("the helper is up");
+        let Ok(also) = second.1.try_recv().expect("the second late tab waited") else {
+            panic!("the second late tab got an error");
+        };
+        assert_eq!(also.generation, heard.generation, "the second late tab heard a different change");
+        drop(open);
+        drop(rearmed);
+        drop(first);
+        let quiet_id = resent.split('\t').next().expect("a request id").trim().to_string();
+        helper.answer(&quiet_id, b"same");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while watch_state("twice", "/r").is_some_and(|state| state.0) {
+            assert!(Instant::now() < deadline, "the quiet watch never finished");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            second.1.try_recv().is_err(),
+            "the second late tab heard the quiet reply as a new change"
+        );
+        let again = watch("twice", "/r", heard.generation).expect("the helper is up");
+        assert!(
+            try_read_line(&helper.from_client).is_some(),
+            "a re-arm after the quiet reply sent no watch"
+        );
+        assert!(again.1.try_recv().is_err(), "the re-arm heard a change before the write");
         set_watch_client(None);
     }
 
