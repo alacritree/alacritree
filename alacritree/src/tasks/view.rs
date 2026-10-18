@@ -1772,6 +1772,11 @@ mod tests {
         }
     }
 
+    fn due(view: &mut TasksView) {
+        view.last_reload = Some(Instant::now() - RELOAD_EVERY - Duration::from_millis(1));
+        view.tick();
+    }
+
     /// An unchanged replica lists once. Later ticks inside the reload
     /// interval, and past it, run no second export.
     #[test]
@@ -1780,21 +1785,13 @@ mod tests {
             alacritree_tasks::fake::FakeBackend::with_tasks(vec![alacritree_tasks::fake::task(
                 "a", "r",
             )]);
-        let scope = Scope { side: Side::Native, repo: Some("r".into()), workspace: None };
-        let mut view = TasksView::new(
-            Backend::Fake(store.clone()),
-            scope,
-            None,
-            Vec::new(),
-            Prefs::default(),
-            None,
-        );
+        let mut view = tab(&store);
         settle_reload(&mut view);
         assert_eq!(store.listings(), 1);
         view.tick();
         assert!(view.reload.is_none());
-        view.last_reload = Some(Instant::now() - RELOAD_EVERY - Duration::from_millis(1));
-        view.tick();
+        due(&mut view);
+        settle_reload(&mut view);
         assert!(view.reload.is_none(), "a due tick still lists");
         assert_eq!(store.listings(), 1);
     }
