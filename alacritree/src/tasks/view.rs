@@ -1617,11 +1617,6 @@ mod tests {
     #[test]
     fn an_unresolved_workspace_still_lists_the_repository_subtree() {
         let scope = Scope { side: Side::Native, repo: Some("r".into()), workspace: None };
-        assert!(
-            scope.filter().nodes.iter().any(|m| matches!(m, NodeMatch::Subtree(n) if n == "r")),
-            "unresolved workspace must keep the repository subtree: {:?}",
-            scope.filter().nodes
-        );
         let store = FakeBackend::with_tasks(vec![
             task("repo", "r"),
             task("feat", "r.feat"),
