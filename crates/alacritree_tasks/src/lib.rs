@@ -206,6 +206,40 @@ pub struct Stamp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fake::FakeBackend;
+    use alacritree_common::jobs;
+    use alacritree_common::side::Side;
+
+    #[test]
+    fn empty_blank_and_failing_inputs_do_not_break_the_store() {
+        let store = FakeBackend::default();
+        let empty = jobs::on_this_thread(|b| {
+            store.list(&Side::Native, &Filter { nodes: Vec::new() }, b)
+        })
+        .unwrap();
+        assert!(empty.is_empty());
+        jobs::on_this_thread(|b| {
+            store.apply(
+                &Side::Native,
+                &Edit::Add {
+                    project: " ".into(),
+                    description: "   ".into(),
+                    parent: None,
+                    order: 0,
+                },
+                b,
+            )
+        })
+        .unwrap();
+        assert_eq!(store.tasks()[0].description, "   ");
+        let failing = FakeBackend::default().refusing();
+        let err = jobs::on_this_thread(|b| {
+            failing.apply(&Side::Native, &Edit::Done(String::new()), b)
+        });
+        assert!(err.is_err());
+        let stamp = jobs::on_this_thread(|b| store.replica_stamp(&Side::Native, None, b)).unwrap();
+        assert!(stamp.is_some());
+    }
 
     fn on(project: Option<&str>) -> Task {
         Task {
