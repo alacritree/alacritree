@@ -21,7 +21,6 @@ use alacritree_common::wsl_helper::{self, TransportError};
 use alacritree_tasks::{Edit, Filter, NodeMatch, Status, Task, TaskBackend, TaskError};
 use serde::Deserialize;
 
-pub use self::replica::ReplicaStamp;
 pub use self::settings::{RawTaskwarrior, TaskwarriorConfig};
 
 /// A task's parent is the `subof` UDA and its place among siblings the
@@ -157,15 +156,6 @@ impl Taskwarrior {
             }
         }
         replica::Replica::locate(self, side, blocking)
-    }
-
-    /// The replica stamps, or None when the database file cannot be read.
-    pub fn replica_stamp(
-        &self,
-        side: &Side,
-        blocking: &Blocking,
-    ) -> Result<Option<ReplicaStamp>, TaskError> {
-        Ok(replica::Replica::locate(self, side, blocking)?.and_then(|r| r.stamp()))
     }
 
     /// Whether `side`'s taskrc gives both UDAs their types. Agents call `task`
