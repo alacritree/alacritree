@@ -1906,7 +1906,7 @@ mod tests {
         assert_eq!(h.view.builds(), built, "a second tab frame does not rebuild");
         let mut view = h.view;
 
-        view.finish_reload(view.reload_epoch(), Ok(vec![task("plan", "r.feat")]));
+        view.finish_reload(view.reload_epoch(), &view.scope.clone(), Ok(vec![task("plan", "r.feat")]));
         let rows: Vec<_> =
             view.sections().iter().flat_map(|b| &b.section.rows).map(|r| r.id.as_str()).collect();
         assert_eq!(rows, ["plan"]);
@@ -1932,7 +1932,7 @@ mod tests {
         let built = empty.view.builds();
         empty.frame(Vec::new());
         assert_eq!(empty.view.builds(), built, "an empty listing's second frame does not rebuild");
-        empty.view.finish_reload(empty.view.reload_epoch(), Ok(Vec::new()));
+        empty.view.finish_reload(empty.view.reload_epoch(), &empty.view.scope.clone(), Ok(Vec::new()));
         let _ = empty.view.sections().len();
         let reloaded = empty.view.builds();
         assert!(reloaded > built, "the reload builds once");
@@ -2146,7 +2146,7 @@ mod tests {
         };
         let backend = Backend::from_config(&Default::default());
         let mut view = TasksView::new(backend, scope, None, Vec::new(), Prefs::default(), None);
-        view.finish_reload(view.reload_epoch(), Ok(tasks));
+        view.finish_reload(view.reload_epoch(), &view.scope.clone(), Ok(tasks));
         view
     }
 
