@@ -1,7 +1,8 @@
 //! The tasks tab: the backend's lists for one workspace, drawn as checklist
 //! rows. Each change is a batch of edits on the pool, typed text shows at
 //! once, and a reload replaces it with what the store holds. Agents write
-//! the same store, so the tab re-lists while visible instead of trusting its
+//! the same store, so the tab checks its stamps while visible instead of
+//! trusting its
 //! own copy. The last listing is kept on disk, so the tab opens on it and the
 //! first listing only corrects it.
 
@@ -834,8 +835,8 @@ impl TasksView {
         self.cache_write = Some(job);
     }
 
-    /// Spawns queued writes, drains finished jobs, and reloads after any
-    /// write or once a second.
+    /// Spawns queued writes, drains finished jobs, and checks stamps after
+    /// any write or once a second. An export runs when the stamps differ.
     pub(crate) fn tick(&mut self) {
         if let Some(place) = self.resolving.as_mut().and_then(|r| r.poll(Instant::now())) {
             self.resolving = None;
