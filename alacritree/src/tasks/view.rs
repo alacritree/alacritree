@@ -2360,7 +2360,10 @@ mod tests {
         wsl_helper::reset_watches();
         let store = FakeBackend::with_tasks(vec![task("a", "r")]);
         let mut view = wsl_tab(&store);
-        view.replica_dir = Some((view.scope.side.clone(), PathBuf::from(r"C:\Users")));
+        // A UNC path, so Linux CI translates it the same way Windows does.
+        // A drive path has no prefix there, and the watch never arms.
+        view.replica_dir =
+            Some((view.scope.side.clone(), PathBuf::from(r"\\wsl.localhost\Ubuntu\tmp")));
         view.tick();
         let armed = view.watch.take();
         assert!(armed.is_some(), "the refusing helper never armed a watch");
@@ -2391,7 +2394,8 @@ mod tests {
     fn a_failed_watch_waits_for_the_fallback_interval() {
         let store = FakeBackend::with_tasks(vec![task("a", "r")]);
         let mut view = wsl_tab(&store);
-        view.replica_dir = Some((view.scope.side.clone(), PathBuf::from(r"\\wsl$\Ubuntu\tmp")));
+        view.replica_dir =
+            Some((view.scope.side.clone(), PathBuf::from(r"\\wsl.localhost\Ubuntu\tmp")));
         view.watch = Some(dropped_watch());
         view.tick();
         assert!(view.watch.is_none(), "a failed watch stays open");
@@ -2409,6 +2413,7 @@ mod tests {
         view.tick();
         assert!(view.stamp_job.is_none(), "a failed stamp clears its slot");
         assert!(view.reload.is_some(), "a stale tick still lists");
+        view.reload = None;
         view.tick();
         assert!(view.stamp_job.is_none(), "a failed stamp waits one interval");
         view.reload = None;
@@ -2417,6 +2422,7 @@ mod tests {
         view.tick();
         assert!(view.reload.is_some(), "a stale tick lists before the stamp");
         view.reload = None;
+        view.last_reload = Some(Instant::now() - RELOAD_EVERY - Duration::from_millis(1));
         view.tick();
         assert!(view.stamp_job.is_some(), "the next tick reads the stamp");
     }
