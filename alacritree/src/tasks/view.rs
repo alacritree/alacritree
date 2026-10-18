@@ -1963,13 +1963,15 @@ mod tests {
         )
     }
 
-    /// One frame of listing work before the sections were kept: split the
-    /// listing, then copy each section's tasks out of it.
+    /// One frame of listing work before the sections were kept: clone the
+    /// listing and lay the pending edits over it, then clone and filter that
+    /// listing again for each section the frame draws.
     fn frame_before(tasks: &[Task], repo: Option<&str>, workspace: Option<&str>) {
-        let sections = tree::sections(tasks, repo, workspace);
+        let shown = tasks.to_vec();
+        let sections = tree::sections(&shown, repo, workspace);
         for section in &sections {
             let _here: Vec<Task> =
-                tasks.iter().filter(|t| t.node() == section.node).cloned().collect();
+                shown.clone().into_iter().filter(|t| t.node() == section.node).collect();
         }
     }
 
