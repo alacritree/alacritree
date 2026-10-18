@@ -1022,9 +1022,11 @@ impl Drop for SectionHold {
 }
 
 #[cfg(test)]
+type DrawnRow = std::sync::Arc<dyn Fn(&TasksView, usize, &Row) + Send + Sync>;
+
+#[cfg(test)]
 thread_local! {
-    static DRAWN_ROW: std::cell::RefCell<Option<std::sync::Arc<dyn Fn(&TasksView, usize, &Row) + Send + Sync>>> =
-        const { std::cell::RefCell::new(None) };
+    static DRAWN_ROW: std::cell::RefCell<Option<DrawnRow>> = const { std::cell::RefCell::new(None) };
     static STALE_INDEX: std::cell::RefCell<Option<(usize, String)>> = const { std::cell::RefCell::new(None) };
 }
 
@@ -2129,9 +2131,12 @@ mod tests {
 
     /// The WSL tests share one helper and one watch table, so they run one at
     /// a time. A second test resetting the table would answer the first's watch.
-    fn wsl_tests() -> std::sync::MutexGuard<'static, ()> {
+    /// The watch client is the same global the helper tests set, so this holds
+    /// that lock too.
+    fn wsl_tests() -> (std::sync::MutexGuard<'static, ()>, std::sync::MutexGuard<'static, ()>) {
+        let watch = wsl_helper::watch_tests();
         static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+        (LOCK.lock().unwrap_or_else(|e| e.into_inner()), watch)
     }
 
     /// A write to the replica reaches the open tab on the next tick, before

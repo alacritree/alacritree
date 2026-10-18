@@ -1105,6 +1105,15 @@ pub fn set_watch_client(client: Option<Arc<HelperClient>>) {
     *watch_override().lock().unwrap_or_else(PoisonError::into_inner) = client;
 }
 
+/// The watch client and the watch table are process-global. Tests that set
+/// either hold this lock for the whole test, so a parallel test cannot clear
+/// the client between two `watch` calls.
+#[cfg(any(test, feature = "test-support"))]
+pub fn watch_tests() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// A helper that has said hello and then waits. `watches_sent` is how a
 /// test sees the request a tab sends after a failure.
 #[cfg(any(test, feature = "test-support"))]
@@ -1656,6 +1665,7 @@ mod tests {
     /// the call, so no pool worker is held for the hour the helper may take.
     #[test]
     fn a_watch_returns_before_the_helper_answers() {
+        let _watch = watch_tests();
         let (client, mut helper) = FakeHelper::silent();
         *watch_override().lock().unwrap_or_else(PoisonError::into_inner) = Some(client);
         reset_watches();
@@ -1691,6 +1701,7 @@ mod tests {
     fn a_refused_write_keeps_its_io_source_across_the_fan_out() {
         use std::error::Error;
         let client = refusing_client();
+        let _watch = watch_tests();
         set_watch_client(Some(client));
         reset_watches();
         let one = watch("refused", "/r", 0).expect("the helper is up").1;
@@ -1722,6 +1733,7 @@ mod tests {
     /// sees one `WATCH`, and both callers hear the one answer.
     #[test]
     fn two_callers_of_one_replica_share_one_watch() {
+        let _watch = watch_tests();
         let (client, mut helper) = FakeHelper::silent();
         *watch_override().lock().unwrap_or_else(PoisonError::into_inner) = Some(client);
         reset_watches();
@@ -1787,6 +1799,7 @@ mod tests {
     #[test]
     fn two_tabs_each_reload_once_per_change() {
         let (client, mut helper) = FakeHelper::silent();
+        let _watch = watch_tests();
         set_watch_client(Some(client));
         reset_watches();
         let first = watch("gen", "/r", 0).expect("the helper is up");
@@ -1832,6 +1845,7 @@ mod tests {
     #[test]
     fn a_tab_that_subscribes_after_a_change_gets_it_at_once() {
         let (client, mut helper) = FakeHelper::silent();
+        let _watch = watch_tests();
         set_watch_client(Some(client));
         reset_watches();
         let open = watch("late", "/r", 0).expect("the helper is up");
@@ -1857,6 +1871,7 @@ mod tests {
     #[test]
     fn a_tab_that_rearms_after_its_answer_waits_for_the_next_change() {
         let (client, mut helper) = FakeHelper::silent();
+        let _watch = watch_tests();
         set_watch_client(Some(client));
         reset_watches();
         let open = watch("rearm", "/r", 0).expect("the helper is up");
@@ -1875,6 +1890,7 @@ mod tests {
     #[test]
     fn a_quiet_watch_keeps_the_generation_and_starts_again() {
         let (client, mut helper) = FakeHelper::silent();
+        let _watch = watch_tests();
         set_watch_client(Some(client));
         reset_watches();
         let open = watch("quiet", "", 0).expect("the helper is up");
@@ -1896,6 +1912,7 @@ mod tests {
     #[test]
     fn a_missing_replica_is_a_change_heard_once() {
         let (client, mut helper) = FakeHelper::silent();
+        let _watch = watch_tests();
         set_watch_client(Some(client));
         reset_watches();
         let open = watch("gone", "/missing", 0).expect("the helper is up");
@@ -1921,6 +1938,7 @@ mod tests {
     #[test]
     fn a_failed_watch_is_heard_once_and_a_rearm_sends_a_watch() {
         let client = refusing_client();
+        let _watch = watch_tests();
         set_watch_client(Some(client.clone()));
         reset_watches();
         let open = watch("err", "/r", 0).expect("the helper is up");
