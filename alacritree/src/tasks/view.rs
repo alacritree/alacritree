@@ -1954,10 +1954,10 @@ mod tests {
         );
         settle_reload(&mut view);
         let after_listing = std::fs::read_to_string(&log).unwrap_or_default().lines().count();
-        view.last_reload = Some(Instant::now() - RELOAD_EVERY - Duration::from_millis(1));
-        view.tick();
-        view.last_reload = Some(Instant::now() - RELOAD_EVERY - Duration::from_millis(1));
-        view.tick();
+        due(&mut view);
+        settle_reload(&mut view);
+        due(&mut view);
+        settle_reload(&mut view);
         let after_ticks = std::fs::read_to_string(&log).unwrap_or_default().lines().count();
         alacritree_common::wsl_helper::set_enabled(was_enabled);
         alacritree_common::tools::configure(saved);
