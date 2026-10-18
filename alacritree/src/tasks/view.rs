@@ -1923,10 +1923,14 @@ mod tests {
              {linux}/data;;\n*) printf []\nesac\n"
         );
         std::fs::write(dir.path().join("task"), body.replace("\r\n", "\n")).unwrap();
-        alacritree_common::command_ext::hidden("wsl.exe")
-            .args(["-d", &distro, "--exec", "chmod", "+x", &script])
-            .output()
-            .unwrap();
+        let chmod = jobs::on_this_thread(|b| {
+            b.run_cancellable(
+                alacritree_common::command_ext::hidden("wsl.exe")
+                    .args(["-d", &distro, "--exec", "chmod", "+x", &script]),
+            )
+        })
+        .expect("chmod runs");
+        assert!(chmod.status.success(), "chmod exited {}", chmod.status);
         let _guard = alacritree_common::tools::test_configuration_lock().lock().unwrap();
         let saved = alacritree_common::tools::test_configuration();
         let mut paths = saved.clone();
