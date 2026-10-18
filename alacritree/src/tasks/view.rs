@@ -340,6 +340,8 @@ pub(crate) struct TasksView {
     write_error: Option<String>,
     reload: Option<PendingReload>,
     listed: Option<String>,
+    /// A stamp read in flight. The frame only polls it.
+    stamp_job: Option<Job<(Option<String>, Option<PathBuf>)>>,
     /// The replica directory last located for this side. A later tick stats it.
     replica_dir: Option<(Side, PathBuf)>,
     last_reload: Option<Instant>,
@@ -411,6 +413,7 @@ impl TasksView {
             write_error: None,
             reload: None,
             listed: None,
+            stamp_job: None,
             replica_dir: None,
             last_reload: None,
             stale: false,
@@ -860,16 +863,28 @@ impl TasksView {
     }
 
     /// Lists when the replica changed, when our own write finished, or when
-    /// the stamp cannot be read. An unchanged stamp runs no export.
+    /// the stamp cannot be read. An unchanged stamp runs no export. The stamp
+    /// read, including a locate after a missing file, runs on a pool job.
     fn reload_if_changed(&mut self) {
-        let (store, side) = (self.backend.clone(), self.scope.side.clone());
-        let known = self
-            .replica_dir
-            .as_ref()
-            .filter(|(cached, _)| cached == &side)
-            .map(|(_, dir)| dir.clone());
-        let (stamp, dir) =
-            jobs::on_this_thread(|b| backend::replica_stamp(&store, &side, known.as_deref(), b));
+        if self.stamp_job.is_none() {
+            let (store, side) = (self.backend.clone(), self.scope.side.clone());
+            let known = self
+                .replica_dir
+                .as_ref()
+                .filter(|(cached, _)| cached == &side)
+                .map(|(_, dir)| dir.clone());
+            self.stamp_job = Some(jobs::pool().spawn(Priority::Background, move |b| {
+                backend::replica_stamp(&store, &side, known.as_deref(), b)
+            }));
+        }
+        let Some(job) = self.stamp_job.as_ref() else { return };
+        let read = job.poll();
+        if read.is_none() && !job.failed() {
+            return;
+        }
+        self.stamp_job = None;
+        let Some((stamp, dir)) = read else { return };
+        let side = self.scope.side.clone();
         self.replica_dir = dir.map(|dir| (side.clone(), dir));
         let changed = self.stale || stamp.is_none() || stamp != self.listed;
         self.last_reload = Some(Instant::now());
@@ -878,7 +893,7 @@ impl TasksView {
         }
         self.stale = false;
         self.listed = stamp;
-        let scope = self.scope.clone();
+        let (store, scope) = (self.backend.clone(), self.scope.clone());
         let listed = scope.clone();
         let job = jobs::pool().spawn(Priority::Background, move |b| {
             store.list(&listed.side, &listed.filter(), b)
@@ -1732,7 +1747,7 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             view.tick();
-            if view.reload.is_none() {
+            if view.reload.is_none() && view.stamp_job.is_none() {
                 return;
             }
             assert!(Instant::now() < deadline, "the listing never landed");
