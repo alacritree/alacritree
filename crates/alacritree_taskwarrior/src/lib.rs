@@ -3,6 +3,7 @@
 //! them never folds `subof:` into a description, and turns off prompts, since
 //! there is no terminal to answer them.
 
+mod replica;
 mod settings;
 
 use std::io;
@@ -18,6 +19,7 @@ use alacritree_common::wsl_helper::{self, TransportError};
 use alacritree_tasks::{Edit, Filter, NodeMatch, Status, Task, TaskBackend, TaskError};
 use serde::Deserialize;
 
+pub use self::replica::ReplicaStamp;
 pub use self::settings::{RawTaskwarrior, TaskwarriorConfig};
 
 /// A task's parent is the `subof` UDA and its place among siblings the
@@ -141,6 +143,15 @@ impl Taskwarrior {
     /// Whether `side`'s taskrc gives both UDAs their types. Agents call `task`
     /// directly, and without them `subof:` and `order:` land in the
     /// description.
+    /// The replica stamps, or None when the database file cannot be read.
+    pub fn replica_stamp(
+        &self,
+        side: &Side,
+        blocking: &Blocking,
+    ) -> Result<Option<ReplicaStamp>, TaskError> {
+        Ok(replica::Replica::locate(self, side, blocking)?.and_then(|r| r.stamp()))
+    }
+
     pub fn fields_declared(&self, side: Side, blocking: &Blocking) -> Result<bool, TaskError> {
         let cli = self.on(side, blocking);
         for (key, value) in UDA_DECLARATIONS.iter().filter(|(key, _)| key.ends_with(".type")) {
@@ -341,6 +352,7 @@ impl Cli<'_> {
     fn run(&self, args: &[String]) -> Result<Ran, TaskError> {
         let mut argv: Vec<String> =
             UDA_DECLARATIONS.iter().map(|(k, v)| format!("rc.{k}={v}")).collect();
+        argv.push("rc.gc=off".into());
         argv.push("rc.confirmation=off".into());
         argv.extend(args.iter().cloned());
         let mut retries = BUSY_RETRIES.iter();
@@ -605,6 +617,17 @@ mod tests {
         assert!(declared.contains("uda.subof.type=uuid"), "{declared}");
     }
 
+    #[test]
+    fn an_export_leaves_the_replica_stamps() {
+        let Some((dir, side, tw)) = private() else { return };
+        let data = dir.path().join("data");
+        let before = replica::Replica { dir: data.clone() }.stamp();
+        assert!(before.is_some(), "no taskchampion.sqlite3");
+        let filter = Filter { nodes: vec![NodeMatch::Exact("r".into())] };
+        jobs::on_this_thread(|b| tw.list(&side, &filter, b)).unwrap();
+        let after = replica::Replica { dir: data }.stamp();
+        assert_eq!(after, before);
+    }
     #[test]
     fn a_listing_larger_than_a_pipe_buffer_is_read_whole() {
         let Some((_dir, side, tw)) = private() else { return };

@@ -32,6 +32,18 @@ impl Backend {
     }
 }
 
+pub(crate) fn replica_stamp(backend: &Backend, side: &Side, blocking: &Blocking) -> Option<String> {
+    match backend {
+        Backend::Taskwarrior(tw) => taskwarrior_stamp(tw, side, blocking),
+        Backend::Command(_) => None,
+        #[cfg(test)]
+        Backend::Fake(fake) => fake.has_stamp().then(|| fake.stamp().to_string()),
+    }
+}
+fn taskwarrior_stamp(tw: &Taskwarrior, side: &Side, blocking: &Blocking) -> Option<String> {
+    tw.replica_stamp(side, blocking).ok().flatten().map(|stamp| format!("{stamp:?}"))
+}
+
 /// Applies `edits` in order and stops at the first that fails, since a later
 /// edit may place a task relative to one the failed edit was to move.
 pub(crate) fn apply_all(

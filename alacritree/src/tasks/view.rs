@@ -339,6 +339,7 @@ pub(crate) struct TasksView {
     /// A failed add has no row to show on; it stays until the next write.
     write_error: Option<String>,
     reload: Option<PendingReload>,
+    listed: Option<String>,
     last_reload: Option<Instant>,
     /// Set when a write finishes, so the export after it is not skipped
     /// while an older one is still running.
@@ -407,6 +408,7 @@ impl TasksView {
             load_error: None,
             write_error: None,
             reload: None,
+            listed: None,
             last_reload: None,
             stale: false,
             writes_finished: 0,
@@ -830,6 +832,14 @@ impl TasksView {
             });
             self.writes.push((row, job));
         }
+        let due = self.last_reload.is_none_or(|t| t.elapsed() >= RELOAD_EVERY);
+        if let Some(pending) = self.reload.take() {
+            match pending.job.poll() {
+                Some(result) => self.finish_reload(pending.epoch, &pending.scope, result),
+                None if pending.job.failed() => {},
+                None => self.reload = Some(pending),
+            }
+        }
         let mut finished = Vec::new();
         self.writes.retain(|(row, job)| match job.poll() {
             Some(result) => {
@@ -841,25 +851,29 @@ impl TasksView {
         for (row, result) in finished {
             self.finish_write(row, result);
         }
-        if let Some(pending) = self.reload.take() {
-            match pending.job.poll() {
-                Some(result) => self.finish_reload(pending.epoch, &pending.scope, result),
-                None if pending.job.failed() => {},
-                None => self.reload = Some(pending),
-            }
-        }
-        let due = self.last_reload.is_none_or(|t| t.elapsed() >= RELOAD_EVERY);
         if self.reload.is_none() && (self.stale || due) {
-            self.stale = false;
-            let store = self.backend.clone();
-            let scope = self.scope.clone();
-            let listed = scope.clone();
-            let job = jobs::pool().spawn(Priority::Background, move |b| {
-                store.list(&listed.side, &listed.filter(), b)
-            });
-            self.reload = Some(PendingReload { epoch: self.reload_epoch(), scope, job });
-            self.last_reload = Some(Instant::now());
+            self.reload_if_changed();
         }
+    }
+
+    /// Lists when the replica changed, when our own write finished, or when
+    /// the stamp cannot be read. An unchanged stamp runs no export.
+    fn reload_if_changed(&mut self) {
+        let (store, side) = (self.backend.clone(), self.scope.side.clone());
+        let stamp = jobs::on_this_thread(|b| backend::replica_stamp(&store, &side, b));
+        let changed = self.stale || stamp.is_none() || stamp != self.listed;
+        self.last_reload = Some(Instant::now());
+        if !changed {
+            return;
+        }
+        self.stale = false;
+        self.listed = stamp;
+        let scope = self.scope.clone();
+        let listed = scope.clone();
+        let job = jobs::pool().spawn(Priority::Background, move |b| {
+            store.list(&listed.side, &listed.filter(), b)
+        });
+        self.reload = Some(PendingReload { epoch: self.reload_epoch(), scope, job });
     }
 }
 
@@ -1701,6 +1715,135 @@ mod tests {
             settle(&mut resolver, later),
             Some(Place::Workspace { repo: "myrepo".into(), branch: "trunk".into() })
         );
+    }
+
+    /// Polls until the listing in flight lands, the way frames do.
+    fn settle_reload(view: &mut TasksView) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            view.tick();
+            if view.reload.is_none() {
+                return;
+            }
+            assert!(Instant::now() < deadline, "the listing never landed");
+            std::thread::yield_now();
+        }
+    }
+
+    /// An unchanged replica lists once. Later ticks inside the reload
+    /// interval, and past it, run no second export.
+    #[test]
+    fn an_unchanged_replica_lists_once() {
+        let store =
+            alacritree_tasks::fake::FakeBackend::with_tasks(vec![alacritree_tasks::fake::task(
+                "a", "r",
+            )]);
+        let scope = Scope { side: Side::Native, repo: Some("r".into()), workspace: None };
+        let mut view = TasksView::new(
+            Backend::Fake(store.clone()),
+            scope,
+            None,
+            Vec::new(),
+            Prefs::default(),
+            None,
+        );
+        settle_reload(&mut view);
+        assert_eq!(store.listings(), 1);
+        view.tick();
+        assert!(view.reload.is_none());
+        view.last_reload = Some(Instant::now() - RELOAD_EVERY - Duration::from_millis(1));
+        view.tick();
+        assert!(view.reload.is_none(), "a due tick still lists");
+        assert_eq!(store.listings(), 1);
+    }
+
+    fn tab(store: &alacritree_tasks::fake::FakeBackend) -> TasksView {
+        let scope = Scope { side: Side::Native, repo: Some("r".into()), workspace: None };
+        TasksView::new(
+            Backend::Fake(store.clone()),
+            scope,
+            None,
+            Vec::new(),
+            Prefs::default(),
+            None,
+        )
+    }
+    fn due(view: &mut TasksView) {
+        view.last_reload = Some(Instant::now() - RELOAD_EVERY - Duration::from_millis(1));
+        view.tick();
+    }
+    #[test]
+    fn a_write_elsewhere_lists_on_the_next_due_tick() {
+        let store =
+            alacritree_tasks::fake::FakeBackend::with_tasks(vec![alacritree_tasks::fake::task(
+                "a", "r",
+            )]);
+        let mut view = tab(&store);
+        settle_reload(&mut view);
+        store.written_elsewhere(vec![alacritree_tasks::fake::task("b", "r")]);
+        due(&mut view);
+        settle_reload(&mut view);
+        assert_eq!(store.listings(), 2);
+        assert_eq!(view.tasks.len(), 1);
+    }
+    fn land(view: &mut TasksView, place: Place) {
+        view.resolving = Some(Resolver {
+            dir: PathBuf::from("."),
+            backends: Vec::new(),
+            lookup: Some(Job::ready(place)),
+            retry_at: Instant::now(),
+            backoff: FIRST_RETRY,
+        });
+        view.tick();
+    }
+    #[test]
+    fn our_own_write_lists_without_waiting_for_the_stamp() {
+        let held =
+            alacritree_tasks::fake::FakeBackend::with_tasks(vec![alacritree_tasks::fake::task(
+                "a", "r",
+            )])
+            .holding();
+        let mut view = tab(held.store());
+        settle_reload(&mut view);
+        view.write(None, vec![Edit::Done("a".into())]);
+        view.tick();
+        assert_eq!(held.store().listings(), 1);
+        held.release();
+        assert_eq!(view.writes.len(), 1);
+        held.release();
+        view.tick();
+    }
+    #[test]
+    fn a_scope_change_lists_without_waiting_for_the_stamp() {
+        let store =
+            alacritree_tasks::fake::FakeBackend::with_tasks(vec![alacritree_tasks::fake::task(
+                "a", "r",
+            )]);
+        let mut view = tab(&store);
+        settle_reload(&mut view);
+        land(&mut view, Place::Project { repo: "other".into() });
+        settle_reload(&mut view);
+        assert_eq!(store.listings(), 2);
+    }
+    #[test]
+    fn a_change_of_what_the_tab_lists_reloads_without_the_stamp() {
+        let store = alacritree_tasks::fake::FakeBackend::default();
+        let mut view = tab(&store);
+        settle_reload(&mut view);
+        view.scope.repo = Some("other".into());
+        view.stale = true;
+        view.tick();
+        settle_reload(&mut view);
+        assert_eq!(store.listings(), 2);
+    }
+    #[test]
+    fn a_replica_with_no_stamp_reloads_every_interval() {
+        let store = alacritree_tasks::fake::FakeBackend::default().unstamped();
+        let mut view = tab(&store);
+        settle_reload(&mut view);
+        due(&mut view);
+        settle_reload(&mut view);
+        assert_eq!(store.listings(), 2);
     }
 
     /// A listing that panicked frees the slot, so the next due tick lists

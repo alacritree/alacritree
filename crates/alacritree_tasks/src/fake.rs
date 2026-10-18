@@ -2,7 +2,7 @@
 //! drives a backend. Clones share one store, so a test keeps a clone to read
 //! after handing the backend away.
 
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
 use alacritree_common::jobs::Blocking;
 use alacritree_common::side::Side;
@@ -14,11 +14,29 @@ pub struct FakeBackend {
     store: Arc<Mutex<Store>>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct Store {
     tasks: Vec<Task>,
     edits: Vec<Edit>,
+    stamped: bool,
+    stamp: u64,
+    listings: u64,
+    hold: Option<Arc<(Mutex<bool>, Condvar)>>,
     refusing: bool,
+}
+
+impl Default for Store {
+    fn default() -> Self {
+        Self {
+            tasks: Vec::new(),
+            edits: Vec::new(),
+            stamped: true,
+            stamp: 0,
+            listings: 0,
+            hold: None,
+            refusing: false,
+        }
+    }
 }
 
 impl FakeBackend {
@@ -26,6 +44,13 @@ impl FakeBackend {
         let backend = Self::default();
         backend.store().tasks = tasks;
         backend
+    }
+
+    /// Holds the next apply until release, so a test can see the tick that spawned it.
+    pub fn holding(self) -> Held {
+        let gate = Arc::new((Mutex::new(true), Condvar::new()));
+        self.store().hold = Some(Arc::clone(&gate));
+        Held { store: self, gate }
     }
 
     /// Fails every edit, as a store that is down would.
@@ -43,6 +68,33 @@ impl FakeBackend {
         self.store().edits.clone()
     }
 
+    /// How many times the tab has listed this store.
+    /// The replica stamp the tab reads before a reload.
+    /// A replica whose files the tab cannot find.
+    pub fn unstamped(self) -> Self {
+        self.store().stamped = false;
+        self
+    }
+
+    pub fn has_stamp(&self) -> bool {
+        self.store().stamped
+    }
+
+    pub fn stamp(&self) -> u64 {
+        self.store().stamp
+    }
+
+    /// A write by another process: the stamp moves and the tasks change.
+    pub fn written_elsewhere(&self, tasks: Vec<Task>) {
+        let mut store = self.store();
+        store.stamp += 1;
+        store.tasks = tasks;
+    }
+
+    pub fn listings(&self) -> u64 {
+        self.store().listings
+    }
+
     fn store(&self) -> MutexGuard<'_, Store> {
         self.store.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -50,10 +102,16 @@ impl FakeBackend {
 
 impl TaskBackend for FakeBackend {
     fn list(&self, _: &Side, filter: &Filter, _: &Blocking) -> Result<Vec<Task>, TaskError> {
-        Ok(self.store().tasks.iter().filter(|t| filter.matches(t)).cloned().collect())
+        let mut store = self.store();
+        store.listings += 1;
+        Ok(store.tasks.iter().filter(|t| filter.matches(t)).cloned().collect())
     }
 
     fn apply(&self, _: &Side, edit: &Edit, _: &Blocking) -> Result<(), TaskError> {
+        if let Some(gate) = self.store().hold.clone() {
+            drop(self.store());
+            wait_out(&gate);
+        }
         let mut store = self.store();
         store.edits.push(edit.clone());
         if store.refusing {
@@ -65,6 +123,38 @@ impl TaskBackend for FakeBackend {
 
     fn agent_guide(&self, project: &str) -> String {
         format!("Write your tasks to `{project}`.\n")
+    }
+}
+
+/// A held apply. Dropping it releases the apply.
+pub struct Held {
+    store: FakeBackend,
+    gate: Arc<(Mutex<bool>, Condvar)>,
+}
+
+impl Held {
+    pub fn store(&self) -> &FakeBackend {
+        &self.store
+    }
+
+    pub fn release(&self) {
+        let (lock, cv) = &*self.gate;
+        *lock.lock().unwrap_or_else(|e| e.into_inner()) = false;
+        cv.notify_all();
+    }
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
+fn wait_out(gate: &Arc<(Mutex<bool>, Condvar)>) {
+    let (lock, cv) = &**gate;
+    let mut held = lock.lock().unwrap_or_else(|e| e.into_inner());
+    while *held {
+        held = cv.wait(held).unwrap_or_else(|e| e.into_inner());
     }
 }
 

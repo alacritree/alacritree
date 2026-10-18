@@ -97,30 +97,24 @@ mod tests {
     fn editor_edits_settle_locally_including_duplicate_descriptions() {
         let mut preview = Preview::new(Vec::new(), Scope::for_workspace(None, None));
         for _ in 0..2 {
-            preview.view.write(
-                None,
-                vec![Edit::Add {
-                    project: "global".into(),
-                    description: "Same name".into(),
-                    parent: None,
-                    order: 100,
-                }],
-            );
+            preview.view.write(None, vec![Edit::Add {
+                project: "global".into(),
+                description: "Same name".into(),
+                parent: None,
+                order: 100,
+            }]);
         }
         preview.settle();
         assert_eq!(preview.view.tasks.len(), 2);
         let first = preview.view.tasks[0].id.clone();
         let second = preview.view.tasks[1].id.clone();
         assert_ne!(first, second);
-        preview.view.write(
-            None,
-            vec![
-                Edit::Describe { id: first.clone(), description: "Edited".into() },
-                Edit::Move { id: second.clone(), parent: Some(first.clone()), order: 200 },
-                Edit::Done(first.clone()),
-                Edit::Start(second.clone()),
-            ],
-        );
+        preview.view.write(None, vec![
+            Edit::Describe { id: first.clone(), description: "Edited".into() },
+            Edit::Move { id: second.clone(), parent: Some(first.clone()), order: 200 },
+            Edit::Done(first.clone()),
+            Edit::Start(second.clone()),
+        ]);
         preview.settle();
         assert_eq!(preview.view.tasks[0].description, "Edited");
         assert_eq!(preview.view.tasks[0].status, Status::Completed);
