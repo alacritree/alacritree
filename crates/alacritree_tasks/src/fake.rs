@@ -2,7 +2,7 @@
 //! drives a backend. Clones share one store, so a test keeps a clone to read
 //! after handing the backend away.
 
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use alacritree_common::jobs::Blocking;
 use alacritree_common::side::Side;
@@ -23,8 +23,8 @@ struct Store {
     listings: u64,
     /// Edits already applied when each listing started.
     listed_after: Vec<usize>,
-    hold: Option<Arc<(Mutex<bool>, Condvar)>>,
     refusing: bool,
+    hold_stamp: bool,
 }
 
 impl Default for Store {
@@ -36,8 +36,8 @@ impl Default for Store {
             stamp: 0,
             listings: 0,
             listed_after: Vec::new(),
-            hold: None,
             refusing: false,
+            hold_stamp: false,
         }
     }
 }
@@ -47,13 +47,6 @@ impl FakeBackend {
         let backend = Self::default();
         backend.store().tasks = tasks;
         backend
-    }
-
-    /// Holds the next apply until release, so a test can see the tick that spawned it.
-    pub fn holding(self) -> Held {
-        let gate = Arc::new((Mutex::new(true), Condvar::new()));
-        self.store().hold = Some(Arc::clone(&gate));
-        Held { store: self, gate }
     }
 
     /// Fails every edit, as a store that is down would.
@@ -124,10 +117,6 @@ impl TaskBackend for FakeBackend {
     }
 
     fn apply(&self, _: &Side, edit: &Edit, _: &Blocking) -> Result<(), TaskError> {
-        if let Some(gate) = self.store().hold.clone() {
-            drop(self.store());
-            wait_out(&gate);
-        }
         let mut store = self.store();
         store.edits.push(edit.clone());
         if store.refusing {
@@ -155,38 +144,6 @@ impl TaskBackend for FakeBackend {
         Ok(store.stamped.then(|| {
             (crate::Stamp { bytes: store.stamp.to_le_bytes().to_vec() }, std::path::PathBuf::new())
         }))
-    }
-}
-
-/// A held apply. Dropping it releases the apply.
-pub struct Held {
-    store: FakeBackend,
-    gate: Arc<(Mutex<bool>, Condvar)>,
-}
-
-impl Held {
-    pub fn store(&self) -> &FakeBackend {
-        &self.store
-    }
-
-    pub fn release(&self) {
-        let (lock, cv) = &*self.gate;
-        *lock.lock().unwrap_or_else(|e| e.into_inner()) = false;
-        cv.notify_all();
-    }
-}
-
-impl Drop for Held {
-    fn drop(&mut self) {
-        self.release();
-    }
-}
-
-fn wait_out(gate: &Arc<(Mutex<bool>, Condvar)>) {
-    let (lock, cv) = &**gate;
-    let mut held = lock.lock().unwrap_or_else(|e| e.into_inner());
-    while *held {
-        held = cv.wait(held).unwrap_or_else(|e| e.into_inner());
     }
 }
 
