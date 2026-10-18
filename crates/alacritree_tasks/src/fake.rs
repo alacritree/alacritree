@@ -21,6 +21,8 @@ struct Store {
     stamped: bool,
     stamp: u64,
     listings: u64,
+    /// Edits already applied when each listing started.
+    listed_after: Vec<usize>,
     hold: Option<Arc<(Mutex<bool>, Condvar)>>,
     refusing: bool,
 }
@@ -33,6 +35,7 @@ impl Default for Store {
             stamped: true,
             stamp: 0,
             listings: 0,
+            listed_after: Vec::new(),
             hold: None,
             refusing: false,
         }
@@ -95,6 +98,11 @@ impl FakeBackend {
         self.store().listings
     }
 
+    /// How many edits were already applied when each listing started.
+    pub fn listed_after(&self) -> Vec<usize> {
+        self.store().listed_after.clone()
+    }
+
     fn store(&self) -> MutexGuard<'_, Store> {
         self.store.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -104,6 +112,8 @@ impl TaskBackend for FakeBackend {
     fn list(&self, _: &Side, filter: &Filter, _: &Blocking) -> Result<Vec<Task>, TaskError> {
         let mut store = self.store();
         store.listings += 1;
+        let applied = store.edits.len();
+        store.listed_after.push(applied);
         Ok(store.tasks.iter().filter(|t| filter.matches(t)).cloned().collect())
     }
 

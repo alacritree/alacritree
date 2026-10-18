@@ -1808,20 +1808,29 @@ mod tests {
     }
     #[test]
     fn our_own_write_lists_without_waiting_for_the_stamp() {
-        let held =
+        let store =
             alacritree_tasks::fake::FakeBackend::with_tasks(vec![alacritree_tasks::fake::task(
                 "a", "r",
-            )])
-            .holding();
-        let mut view = tab(held.store());
+            )]);
+        let mut view = tab(&store);
         settle_reload(&mut view);
+        let stamp = store.stamp();
         view.write(None, vec![Edit::Done("a".into())]);
-        view.tick();
-        assert_eq!(held.store().listings(), 1);
-        held.release();
-        assert_eq!(view.writes.len(), 1);
-        held.release();
-        view.tick();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            view.tick();
+            let written = store.edits().iter().any(|edit| matches!(edit, Edit::Done(_)));
+            let listed_after = store.listed_after().iter().any(|n| *n >= 1);
+            if written && listed_after && view.reload.is_none() {
+                break;
+            }
+            assert!(Instant::now() < deadline, "the write never reloaded");
+            std::thread::yield_now();
+        }
+        assert_eq!(store.listings(), 2, "a finished write lists at once");
+        assert_eq!(store.stamp(), stamp, "our write does not move the stamp");
+        assert_eq!(view.tasks[0].status, Status::Completed);
+        assert!(view.last_reload.is_some_and(|t| t.elapsed() < RELOAD_EVERY));
     }
     #[test]
     fn a_scope_change_lists_without_waiting_for_the_stamp() {
@@ -1837,14 +1846,35 @@ mod tests {
     }
     #[test]
     fn a_change_of_what_the_tab_lists_reloads_without_the_stamp() {
-        let store = alacritree_tasks::fake::FakeBackend::default();
-        let mut view = tab(&store);
+        let dir = tempfile::tempdir().unwrap();
+        let repo = alacritree_git::test_support::init_repo_on(&dir.path().join("other"), "trunk");
+        let store = alacritree_tasks::fake::FakeBackend::with_tasks(vec![
+            alacritree_tasks::fake::task("a", "r"),
+            alacritree_tasks::fake::task("b", "other"),
+        ]);
+        let scope = Scope { side: Side::Native, repo: Some("r".into()), workspace: None };
+        let mut view = TasksView::new(
+            Backend::Fake(store.clone()),
+            scope,
+            Some(repo),
+            crate::vcs::backends(&Default::default()),
+            Prefs::default(),
+            None,
+        );
         settle_reload(&mut view);
-        view.scope.repo = Some("other".into());
-        view.stale = true;
-        view.tick();
+        assert_eq!(view.tasks.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["a"]);
+        let stamp = store.stamp();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while view.resolving.is_some() {
+            view.tick();
+            assert!(Instant::now() < deadline, "git never named the worktree");
+            std::thread::yield_now();
+        }
         settle_reload(&mut view);
-        assert_eq!(store.listings(), 2);
+        assert_eq!(store.listings(), 2, "a new filter lists at once");
+        assert_eq!(store.stamp(), stamp, "a filter change does not move the stamp");
+        assert_eq!(view.tasks.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["b"]);
+        assert!(view.last_reload.is_some_and(|t| t.elapsed() < RELOAD_EVERY));
     }
 
     /// After the first listing, an unchanged WSL replica runs no task command.
