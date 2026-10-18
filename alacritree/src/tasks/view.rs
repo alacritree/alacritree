@@ -324,9 +324,7 @@ pub(crate) struct TasksView {
     resolving: Option<Resolver>,
     tasks: Vec<Task>,
     /// The shown tasks split into sections, built when a listing lands or a
-    /// pending edit changes what the rows show. A redraw reads it. The count
-    /// advances each time they are built, so a test can tell a rebuild from
-    /// a reuse.
+    /// pending edit changes what the rows show. A redraw reads it.
     built: OnceCell<Vec<Built>>,
     /// Whether a listing has landed, so an empty tab can say it is waiting.
     loaded: bool,
@@ -499,14 +497,13 @@ impl TasksView {
         built
     }
 
-    /// The sections the sidebar shows: those holding tasks, without the
-    /// global list once the workspace is in a repository, since that list
-    /// says nothing about the checkout.
     pub(crate) fn section(&self, index: usize) -> &Section {
         &self.sections()[index].section
     }
 
-    /// The indexes of [`Self::sections`] the sidebar draws.
+    /// The indexes of [`Self::sections`] the sidebar draws: those holding
+    /// tasks, without the global list once the workspace is in a repository,
+    /// since that list says nothing about the checkout.
     pub(crate) fn sidebar_indexes(&self) -> impl Iterator<Item = usize> + '_ {
         let in_repo = self.scope.repo.is_some();
         self.sections().iter().enumerate().filter_map(move |(i, built)| {
@@ -972,11 +969,13 @@ struct Paint<'a> {
 
 fn show_section(ui: &mut Ui, view: &mut TasksView, index: usize, paint: &Paint<'_>) {
     let c = paint.c;
-    let section = view.section(index).clone();
-    let (node, rows) = (section.node, section.rows);
+    let node = view.section(index).node.clone();
+    let (done, total) = {
+        let rows = &view.section(index).rows;
+        (rows.iter().filter(|r| r.status == Status::Completed).count(), rows.len())
+    };
     let open = !view.prefs.collapsed.contains(&node);
-    let done = rows.iter().filter(|r| r.status == Status::Completed).count();
-    let header = format!("{node}  {done}/{}", rows.len());
+    let header = format!("{node}  {done}/{total}");
     if heading(ui, open, &header, c).clicked() {
         view.toggle_collapsed(&node);
     }
@@ -984,13 +983,17 @@ fn show_section(ui: &mut Ui, view: &mut TasksView, index: usize, paint: &Paint<'
         return;
     }
     let rows = match view.prefs.hide_completed {
-        true => tree::without_completed(rows),
-        false => rows,
+        true => tree::without_completed(view.section(index).rows.clone()),
+        false => view.section(index).rows.clone(),
     };
     let collapsed = view.collapsed_tasks.clone();
-    for (row, below) in tree::fold(&rows, &collapsed) {
+    let drawn: Vec<(Row, usize)> = tree::fold(&rows, &collapsed)
+        .into_iter()
+        .map(|(row, below)| (row.clone(), below))
+        .collect();
+    for (row, below) in drawn {
         let id = row.id.clone();
-        show_row(ui, view, index, &id, below, paint);
+        show_row(ui, view, index, row, below, paint);
         let follows = |n: &NewRow| n.node == node && n.after.as_deref() == Some(&id);
         if view.new_row.as_ref().is_some_and(follows) {
             show_new_row(ui, view, index, c);
@@ -1008,17 +1011,15 @@ fn show_section(ui: &mut Ui, view: &mut TasksView, index: usize, paint: &Paint<'
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn show_row(
     ui: &mut Ui,
     view: &mut TasksView,
     index: usize,
-    id: &str,
+    row: Row,
     below: usize,
     paint: &Paint<'_>,
 ) {
     let c = paint.c;
-    let row = view.section(index).rows.iter().find(|r| r.id == id).expect("drawn").clone();
     if row.id.is_empty() {
         ui.horizontal_top(|ui| {
             ui.add_space(row.depth as f32 * INDENT);
@@ -1032,8 +1033,6 @@ fn show_row(
         return;
     }
     let node = view.section(index).node.clone();
-    let refs: Vec<Task> = view.sections()[index].tasks.clone();
-    let refs: Vec<&Task> = refs.iter().collect();
     let widget = Id::new(("task-row", &row.id));
     let mut buffer = view.drafts.get(&row.id).cloned().unwrap_or_else(|| row.text.clone());
     // Read before the text field: it would take Enter as a line break, and
@@ -1160,11 +1159,12 @@ fn show_row(
         let fill = ui.visuals().faint_bg_color;
         ui.painter().set(highlight, Shape::rect_filled(rect, 2.0, fill));
     }
-    accept_drop(ui, view, index, &refs, &row, rect, c);
+    let (id, depth) = (row.id.clone(), row.depth);
+    accept_drop(ui, view, index, row, rect, c);
     // Below the row, since the text beside it takes the full width.
-    if let Some(e) = view.row_errors.get(&row.id) {
+    if let Some(e) = view.row_errors.get(&id) {
         ui.horizontal(|ui| {
-            ui.add_space((row.depth + 1) as f32 * INDENT);
+            ui.add_space((depth + 1) as f32 * INDENT);
             ui.add(egui::Label::new(RichText::new(e).color(c.error)).wrap());
         });
     }
@@ -1375,8 +1375,7 @@ fn accept_drop(
     ui: &mut Ui,
     view: &mut TasksView,
     index: usize,
-    refs: &[&Task],
-    row: &Row,
+    row: Row,
     rect: egui::Rect,
     c: Style,
 ) {
@@ -1394,7 +1393,8 @@ fn accept_drop(
     };
     ui.painter().hline(rect.x_range(), y, Stroke::new(2.0_f32, c.text));
     if ui.input(|i| i.pointer.any_released()) {
-        let edits = tree::move_to(refs, &dragged.id, &row.id, landing);
+        let refs: Vec<&Task> = view.sections()[index].tasks.iter().collect();
+        let edits = tree::move_to(&refs, &dragged.id, &row.id, landing);
         view.rearrange(&dragged.id, edits);
         DragAndDrop::clear_payload(ui.ctx());
     }
@@ -1824,41 +1824,102 @@ mod tests {
         let (_, reread) = crate::alloc_count::measure(|| empty.sections().len());
         assert_eq!(reread.allocs, 0, "an empty listing builds once");
         empty.finish_reload(empty.reload_epoch(), Ok(Vec::new()));
-        empty.sections();
+        let (_, reloaded) = crate::alloc_count::measure(|| empty.sections().len());
+        assert!(reloaded.allocs > 0, "the reload builds once");
         let (_, reread) = crate::alloc_count::measure(|| empty.sections().len());
-        assert_eq!(reread.allocs, 0, "the same listing again does not rebuild");
+        assert_eq!(reread.allocs, 0, "the first read after the reload is reused");
     }
 
-    /// Times one frame's listing work on a cached listing.
+    /// Git's names replace the sidebar's, and the sections built under the
+    /// sidebar's names are dropped.
+    #[test]
+    fn git_names_drop_the_sections_built_under_the_sidebars() {
+        let mut view = TasksView::new(
+            Backend::from_config(&Default::default()),
+            Scope { side: Side::Native, repo: Some("feat".into()), workspace: None },
+            None,
+            Vec::new(),
+            Prefs::default(),
+            None,
+        );
+        view.tasks = vec![alacritree_tasks::fake::task("plan", "r.feat")];
+        let before: Vec<_> = view.sections().iter().map(|b| b.section.node.clone()).collect();
+        assert!(before.contains(&"feat".to_string()));
+        view.resolving = Some(Resolver {
+            dir: PathBuf::new(),
+            backends: Vec::new(),
+            lookup: Some(Job::ready(Place::Workspace { repo: "r".into(), branch: "feat".into() })),
+            retry_at: Instant::now(),
+            backoff: FIRST_RETRY,
+        });
+        view.tick();
+        let after: Vec<_> = view.sections().iter().map(|b| b.section.node.clone()).collect();
+        assert_ne!(after, before);
+        assert!(after.contains(&"r".to_string()));
+        assert!(after.contains(&"r.feat".to_string()));
+    }
+
+    /// Times one frame's listing work on a cached listing, before the
+    /// sections were kept and after.
     ///
     ///     cargo test -p alacritree --release -- --ignored task_sections_bench --nocapture
     #[test]
     #[ignore]
     fn task_sections_bench() {
-        let path = std::env::var("LOCALAPPDATA").expect("LOCALAPPDATA")
-            + r"\alacritree\tasks\wsl-kali-linux-devkit.json";
+        let dir = std::env::var("LOCALAPPDATA").expect("LOCALAPPDATA");
+        let named = PathBuf::from(&dir).join(r"alacritree\tasks\wsl-kali-linux-workcell.json");
+        let path = if named.is_file() {
+            named
+        } else {
+            let tasks = PathBuf::from(dir).join(r"alacritree\tasks");
+            std::fs::read_dir(&tasks)
+                .unwrap_or_else(|e| panic!("no cached listing in {}: {e}", tasks.display()))
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
+                .max_by_key(|path| path.metadata().ok().map(|m| m.len()))
+                .unwrap_or_else(|| panic!("no cached listing in {}", tasks.display()))
+        };
         let tasks: Vec<Task> = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        let (repo, workspace) = (Some("devkit"), Some("devkit.main"));
+        let (repo, workspace) = scope_of(&tasks);
         let nodes = scope_nodes(&tasks);
         let rows: usize =
             nodes.iter().map(|node| tasks.iter().filter(|t| t.node() == node).count()).sum();
-        let before = median(|| {
-            let _copies: Vec<Vec<Task>> = nodes
-                .iter()
-                .map(|node| tasks.iter().filter(|t| t.node() == node).cloned().collect())
-                .collect();
-        });
-        let view = in_scope(tasks.clone(), repo, workspace);
+        let before = median(|| frame_before(&tasks, repo.as_deref(), workspace.as_deref()));
+        let view = in_scope(tasks.clone(), repo.as_deref(), workspace.as_deref());
         view.sections();
         let after = median(|| {
             let _kept = view.sections().len();
         });
         println!(
-            "listing: {} tasks, {} sections, {rows} rows\nbefore: per-section copies \
-             {before:?}\nafter:  cached read {after:?}",
+            "file: {}\nlisting: {} tasks, {} sections, {rows} rows\nbefore: {:?}\nafter: {:?}",
+            path.display(),
             tasks.len(),
-            nodes.len()
+            nodes.len(),
+            before,
+            after
         );
+    }
+
+    /// One frame of listing work before the sections were kept: split the
+    /// listing, then copy each section's tasks out of it.
+    fn frame_before(tasks: &[Task], repo: Option<&str>, workspace: Option<&str>) {
+        let sections = tree::sections(tasks, repo, workspace);
+        for section in &sections {
+            let _here: Vec<Task> =
+                tasks.iter().filter(|t| t.node() == section.node).cloned().collect();
+        }
+    }
+
+    /// The repository and workspace the listing's own nodes name.
+    fn scope_of(tasks: &[Task]) -> (Option<String>, Option<String>) {
+        let mut nodes: Vec<&str> = tasks.iter().map(|t| t.node()).collect();
+        nodes.sort_by_key(|node| (node.matches('.').count(), *node));
+        let workspace = nodes.iter().copied().find(|node| node.contains('.'));
+        let repo = workspace
+            .and_then(|node| node.split('.').next())
+            .or_else(|| nodes.iter().copied().find(|node| *node != GLOBAL));
+        (repo.map(str::to_string), workspace.map(str::to_string))
     }
 
     fn median(f: impl Fn()) -> Duration {
@@ -1873,8 +1934,7 @@ mod tests {
         samples[samples.len() / 2]
     }
 
-    /// The nodes a frame copied the listing for, before the sections were
-    /// kept: the scope's own, then one per session below the workspace.
+    /// Every distinct node the listing holds.
     fn scope_nodes(tasks: &[Task]) -> Vec<String> {
         let mut nodes: Vec<String> = tasks
             .iter()

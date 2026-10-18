@@ -184,9 +184,11 @@ fn filter_button(ui: &mut egui::Ui, view: &mut TasksView, theme: &Theme) {
 /// bar of how much of it is done and the rows the filter leaves.
 pub(super) fn paint_section(ui: &mut egui::Ui, view: &mut TasksView, index: usize, theme: &Theme) {
     let (s, c) = (theme.ui_scale, theme.tasks_sidebar);
-    let section = view.section(index).clone();
-    let (node, rows) = (section.node, section.rows);
-    let (done, total) = (rows.iter().filter(|r| r.status == Status::Completed).count(), rows.len());
+    let node = view.section(index).node.clone();
+    let (done, total) = {
+        let rows = &view.section(index).rows;
+        (rows.iter().filter(|r| r.status == Status::Completed).count(), rows.len())
+    };
     let open = !view.is_collapsed(&node);
     ui.add_space(4.0 * s);
     let rect = row_with_trailing(
@@ -211,11 +213,17 @@ pub(super) fn paint_section(ui: &mut egui::Ui, view: &mut TasksView, index: usiz
     if !open {
         return;
     }
+    let owned;
     let rows = match view.hides_completed() {
-        true => tree::without_completed(rows),
-        false => rows,
+        true => {
+            owned = tree::without_completed(view.section(index).rows.clone());
+            &owned
+        },
+        false => &view.section(index).rows,
     };
-    rows.iter().for_each(|row| paint_row(ui, row, theme));
+    for row in rows.iter() {
+        paint_row(ui, row, theme);
+    }
 }
 
 fn paint_bar(ui: &mut egui::Ui, done: f32, c: &Colors, height: f32) {
@@ -388,7 +396,37 @@ mod tests {
     #[test]
     fn the_dock_draws_the_sections_the_tab_built() {
         let mut h = Harness::of(vec![task("plan"), task("step")]);
+        let style = crate::tasks::view::Style {
+            text: egui::Color32::WHITE,
+            dim: egui::Color32::GRAY,
+            error: egui::Color32::RED,
+            chevron: egui::Stroke::new(1.5_f32, egui::Color32::GRAY),
+            chevron_hover: egui::Color32::WHITE,
+            section_chevron: egui::Stroke::new(2.5_f32, egui::Color32::WHITE),
+            hidden_count: egui::Color32::GRAY,
+            active_marker: egui::Stroke::new(2.5_f32, egui::Color32::WHITE),
+            active_background: egui::Color32::from_rgb(40, 40, 60),
+            add_button: crate::tasks::view::ButtonStyle {
+                text: egui::Color32::LIGHT_BLUE,
+                hover_text: egui::Color32::WHITE,
+                fill: egui::Color32::DARK_BLUE,
+                hover_fill: egui::Color32::BLUE,
+                pressed_fill: egui::Color32::BLUE,
+            },
+            selection: egui::Color32::from_rgb(200, 200, 120),
+            selected_text: egui::Color32::BLACK,
+            font: 12.5,
+        };
+        let shortcuts = crate::shortcut::Shortcuts::new(&[]);
+        let view = &mut h.view;
+        let _ = h.ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let _ = crate::tasks::view::show(ui, view, true, &shortcuts, style);
+            });
+        });
+        let built = h.view.sections().as_ptr();
         h.frame(Vec::new());
+        assert_eq!(h.view.sections().as_ptr(), built, "the dock drew the tab's sections");
         let (_, redraw) = crate::alloc_count::measure(|| h.view.sidebar_indexes().count());
         assert_eq!(redraw.allocs, 0, "the dock reused the built sections");
     }
