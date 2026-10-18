@@ -100,6 +100,7 @@ pub(super) fn show(
     theme: &Theme,
     side: TasksSidebar,
 ) -> bool {
+    view.refresh_sections();
     view.tick();
     ui.ctx().request_repaint_after(tasks_view::RELOAD_EVERY);
     if view.sidebar_indexes().next().is_none() {
@@ -139,6 +140,7 @@ pub(super) fn show(
         let rows = area.show(ui, |ui| {
             let drawn: Vec<_> =
                 view.sidebar_indexes().map(|i| (i, view.sections()[i].section.clone())).collect();
+            let _hold = view.hold_sections();
             for (_, section) in &drawn {
                 paint_section_rows(ui, view, section, theme);
             }

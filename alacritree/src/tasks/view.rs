@@ -353,6 +353,11 @@ pub(crate) struct TasksView {
     /// landed: toggled statuses, deleted rows, moved rows and added rows.
     statuses: HashMap<String, Status>,
     deleted: HashSet<String>,
+    /// A delete landed while a frame held section indexes. The sections
+    /// stay as drawn until the next frame starts.
+    sections_stale: bool,
+    /// Set while this view's draw loop holds section indexes.
+    sections_held: std::rc::Rc<std::cell::Cell<bool>>,
     moves: Vec<Edit>,
     added: Vec<NewRow>,
     new_row: Option<NewRow>,
@@ -411,6 +416,8 @@ impl TasksView {
             drafts: HashMap::new(),
             statuses: HashMap::new(),
             deleted: HashSet::new(),
+            sections_stale: false,
+            sections_held: std::rc::Rc::new(std::cell::Cell::new(false)),
             moves: Vec::new(),
             added: Vec::new(),
             new_row: None,
@@ -441,6 +448,33 @@ impl TasksView {
 
     fn show_deleted(&mut self, ids: impl IntoIterator<Item = String>) {
         self.deleted.extend(ids);
+        self.mark_sections_stale();
+    }
+
+    /// A delete during a frame marks the sections stale. The rebuild waits
+    /// for the next frame, which no longer holds the old indexes.
+    fn mark_sections_stale(&mut self) {
+        if self.sections_held.get() {
+            self.sections_stale = true;
+        } else {
+            self.rebuild();
+        }
+    }
+
+    /// Holds this view's section indexes until the guard drops, including
+    /// when a row panics. The guard does not borrow the view.
+    pub(crate) fn hold_sections(&self) -> SectionHold {
+        self.sections_held.set(true);
+        SectionHold(std::rc::Rc::clone(&self.sections_held))
+    }
+
+    /// Rebuilds sections a delete marked stale, before this frame reads
+    /// their indexes.
+    pub(crate) fn refresh_sections(&mut self) {
+        if !self.sections_stale {
+            return;
+        }
+        self.sections_stale = false;
         self.rebuild();
     }
 
@@ -829,6 +863,45 @@ impl TasksView {
     }
 }
 
+/// Clears one view's section hold when its draw loop ends, including on panic.
+pub(crate) struct SectionHold(std::rc::Rc<std::cell::Cell<bool>>);
+
+impl Drop for SectionHold {
+    fn drop(&mut self) {
+        self.0.set(false);
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static DRAWN_ROW: std::cell::RefCell<Option<std::sync::Arc<dyn Fn(&TasksView, usize, &Row) + Send + Sync>>> =
+        const { std::cell::RefCell::new(None) };
+    static STALE_INDEX: std::cell::RefCell<Option<(usize, String)>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn stale_section_index() -> Option<(usize, String)> {
+    STALE_INDEX.with(|slot| slot.borrow().clone())
+}
+
+#[cfg(test)]
+fn check_drawn_row(view: &TasksView, index: usize, rows: &[Row]) {
+    let Some(check) = DRAWN_ROW.with(|slot| slot.borrow().clone()) else { return };
+    for row in rows {
+        check(view, index, row);
+    }
+}
+
+#[cfg(test)]
+fn set_drawn_row_check(check: impl Fn(&TasksView, usize, &Row) + Send + Sync + 'static) {
+    DRAWN_ROW.with(|slot| *slot.borrow_mut() = Some(std::sync::Arc::new(check)));
+}
+
+#[cfg(test)]
+fn clear_drawn_row_check() {
+    DRAWN_ROW.with(|slot| *slot.borrow_mut() = None);
+}
+
 #[cfg(test)]
 impl TasksView {
     /// A tab showing `tasks` with `current` as the row actions run on, and no
@@ -903,6 +976,7 @@ fn draw(
     shortcuts: &Shortcuts,
     style: Style,
 ) -> Response {
+    view.refresh_sections();
     // Registered before the rows: egui gives a click to the last widget
     // registered under the pointer, so every row widget wins over this.
     let background = ui.interact(ui.max_rect(), ui.id().with("tasks-tab"), Sense::click());
@@ -927,8 +1001,11 @@ fn draw(
             // Taken once: a drop rebuilds the sections, and the rows being
             // drawn have to outlive that.
             let drawn = view.sections().to_vec();
+            let _hold = view.hold_sections();
             for (i, built) in drawn.iter().enumerate() {
                 show_section(ui, view, i, built, &paint);
+                #[cfg(test)]
+                check_drawn_row(view, i, &built.section.rows);
             }
         });
     });
@@ -2643,6 +2720,47 @@ mod tests {
         h.press(h.text("one").center(), PointerButton::Secondary);
         h.click(h.text("Delete").center());
         assert_eq!(h.edits(), [&Edit::Delete("a".into())]);
+    }
+
+    /// A delete from a row menu lands while later rows of the same frame are
+    /// still drawn from the indexes taken at the start. Those indexes stay
+    /// valid, and the next frame shows the row gone.
+    #[test]
+    fn a_delete_during_drawing_keeps_later_row_indexes_valid() {
+        let task = |id: &str, node: &str| {
+            let mut task = pending(id, id);
+            task.project = Some(node.into());
+            task
+        };
+        let mut h = Harness::with_view(in_workspace(vec![
+            task("keep", "r.feat"),
+            task("gone", "r.feat.claude-1"),
+            task("after", "r.feat.claude-2"),
+        ]));
+        h.press(h.text("gone").center(), PointerButton::Secondary);
+        let delete = h.text("Delete").center();
+        set_drawn_row_check(|view, index, row| {
+            let held = view
+                .sections()
+                .get(index)
+                .is_some_and(|built| built.section.rows.iter().any(|r| r.id == row.id));
+            if !held {
+                STALE_INDEX.with(|slot| *slot.borrow_mut() = Some((index, row.id.clone())));
+            }
+        });
+        h.click(delete);
+        clear_drawn_row_check();
+        assert_eq!(stale_section_index(), None, "a drawn row's section index went stale");
+        assert!(h.visible("gone").is_none(), "the next frame shows the row gone");
+        h.text("keep");
+        h.text("after");
+
+        let built = h.view.builds();
+        h.view.delete(&[]);
+        h.view.delete(&["gone".into(), "  ".into()]);
+        assert_eq!(h.view.builds(), built, "a blank or repeated delete does not rebuild");
+        h.frame(Vec::new());
+        assert_eq!(h.view.plain_lines().iter().filter(|l| l.contains("gone")).count(), 0);
     }
 
     fn three_selectable_rows() -> Harness {
