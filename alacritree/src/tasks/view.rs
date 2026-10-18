@@ -8,6 +8,7 @@
 pub(crate) mod preview;
 
 use alacritree_vcs::Checkout;
+use std::cell::OnceCell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -258,6 +259,13 @@ impl Resolver {
 /// read before the pool runs it.
 type QueuedWrite = (Option<String>, Vec<Edit>);
 
+/// One section and the tasks it was built from. An added row has no id yet.
+/// Drawing the section reads these tasks instead of copying the listing.
+pub(crate) struct Built {
+    pub(crate) section: Section,
+    tasks: Vec<Task>,
+}
+
 /// A write in flight, with the row its failure is shown on.
 type PendingWrite = (Option<String>, Job<Result<(), TaskError>>);
 
@@ -315,6 +323,11 @@ pub(crate) struct TasksView {
     /// The worktree's names as `task scope` reads them from git.
     resolving: Option<Resolver>,
     tasks: Vec<Task>,
+    /// The shown tasks split into sections, built when a listing lands or a
+    /// pending edit changes what the rows show. A redraw reads it. The count
+    /// advances each time they are built, so a test can tell a rebuild from
+    /// a reuse.
+    built: OnceCell<Vec<Built>>,
     /// Whether a listing has landed, so an empty tab can say it is waiting.
     loaded: bool,
     cache_dir: Option<PathBuf>,
@@ -377,6 +390,7 @@ impl TasksView {
             scope,
             resolving,
             tasks: tasks.unwrap_or_default(),
+            built: OnceCell::new(),
             loaded: false,
             cache_dir,
             cache_write: None,
@@ -408,6 +422,33 @@ impl TasksView {
         }
     }
 
+    /// Drops the built sections, so the next read builds them from the
+    /// listing and the pending edits as they stand.
+    fn rebuild(&mut self) {
+        self.built.take();
+    }
+
+    /// Shows `id` as `status` until a listing started after the write lands.
+    fn show_status(&mut self, id: String, status: Status) {
+        self.statuses.insert(id, status);
+        self.rebuild();
+    }
+
+    fn show_deleted(&mut self, ids: impl IntoIterator<Item = String>) {
+        self.deleted.extend(ids);
+        self.rebuild();
+    }
+
+    fn show_moves(&mut self, edits: impl IntoIterator<Item = Edit>) {
+        self.moves.extend(edits);
+        self.rebuild();
+    }
+
+    fn show_added(&mut self, rows: impl IntoIterator<Item = NewRow>) {
+        self.added.extend(rows);
+        self.rebuild();
+    }
+
     /// The store's tasks with the unconfirmed toggles, deletes and moves
     /// laid over them.
     fn shown_tasks(&self) -> Vec<Task> {
@@ -424,13 +465,17 @@ impl TasksView {
         tasks
     }
 
-    /// The shown tasks as sections, with the added rows placed in them. An
-    /// added row has no id yet.
-    fn sections(&self) -> Vec<Section> {
+    /// The shown tasks as sections, built once per listing and pending edit.
+    pub(crate) fn sections(&self) -> &[Built] {
+        self.built.get_or_init(|| self.build_sections())
+    }
+
+    fn build_sections(&self) -> Vec<Built> {
         let tasks = self.shown_tasks();
-        let mut sections =
-            tree::sections(&tasks, self.scope.repo.as_deref(), self.scope.workspace.as_deref());
-        for section in &mut sections {
+        let split =
+            tree::sections_with(tasks, self.scope.repo.as_deref(), self.scope.workspace.as_deref());
+        let mut built = Vec::new();
+        for (mut section, here) in split {
             for add in self.added.iter().filter(|a| a.node == section.node) {
                 let rows = &section.rows;
                 let anchor =
@@ -449,18 +494,26 @@ impl TasksView {
                     subtasks: tree::Progress::default(),
                 });
             }
+            built.push(Built { section, tasks: here });
         }
-        sections
+        built
     }
 
     /// The sections the sidebar shows: those holding tasks, without the
     /// global list once the workspace is in a repository, since that list
     /// says nothing about the checkout.
-    pub(crate) fn sidebar_sections(&self) -> Vec<Section> {
+    pub(crate) fn section(&self, index: usize) -> &Section {
+        &self.sections()[index].section
+    }
+
+    /// The indexes of [`Self::sections`] the sidebar draws.
+    pub(crate) fn sidebar_indexes(&self) -> impl Iterator<Item = usize> + '_ {
         let in_repo = self.scope.repo.is_some();
-        let mut sections = self.sections();
-        sections.retain(|s| !s.rows.is_empty() && !(in_repo && s.kind == SectionKind::Global));
-        sections
+        self.sections().iter().enumerate().filter_map(move |(i, built)| {
+            let section = &built.section;
+            (!section.rows.is_empty() && !(in_repo && section.kind == SectionKind::Global))
+                .then_some(i)
+        })
     }
 
     pub(crate) fn short_name<'a>(&self, node: &'a str) -> &'a str {
@@ -481,9 +534,9 @@ impl TasksView {
 
     pub(crate) fn plain_lines(&self) -> Vec<String> {
         let mut lines = Vec::new();
-        for section in self.sections() {
-            lines.push(format!("## {}", section.node));
-            for row in section.rows {
+        for built in self.sections() {
+            lines.push(format!("## {}", built.section.node));
+            for row in &built.section.rows {
                 let mark = if row.status == Status::Completed { "x" } else { " " };
                 lines.push(format!("{}- [{mark}] {}", "  ".repeat(row.depth), row.text));
             }
@@ -561,9 +614,9 @@ impl TasksView {
         let gone = doomed(&refs, ids);
         for id in &gone {
             self.drafts.remove(id);
-            self.deleted.insert(id.clone());
             self.selected.remove(id);
         }
+        self.show_deleted(gone.iter().cloned());
         if self.current.as_ref().is_some_and(|c| gone.contains(c)) {
             self.current = None;
         }
@@ -601,7 +654,7 @@ impl TasksView {
     fn rearrange(&mut self, id: &str, edits: Vec<Edit>) {
         let placing =
             edits.iter().filter(|e| matches!(e, Edit::Move { .. } | Edit::Reorder { .. }));
-        self.moves.extend(placing.cloned());
+        self.show_moves(placing.cloned());
         self.write(Some(id.to_string()), edits);
     }
 
@@ -690,6 +743,10 @@ impl TasksView {
                     self.moves.clear();
                     self.added.clear();
                 }
+                // A settled listing drops the edits the sections were built
+                // with. An unsettled one keeps them, and the listing under
+                // them changed either way.
+                self.rebuild();
                 if tasks != self.tasks {
                     self.save_cache(&tasks);
                 }
@@ -712,6 +769,7 @@ impl TasksView {
         if let Some(place) = self.resolving.as_mut().and_then(|r| r.poll(Instant::now())) {
             self.resolving = None;
             self.scope.adopt(&place);
+            self.rebuild();
             self.stale = true;
         }
         for (row, edits) in std::mem::take(&mut self.outbox) {
@@ -849,8 +907,8 @@ fn draw(
             if !view.loaded && view.tasks.is_empty() && view.load_error.is_none() {
                 ui.label(RichText::new("loading tasks").color(style.dim));
             }
-            for section in view.sections() {
-                show_section(ui, view, &section, &paint);
+            for i in 0..view.sections().len() {
+                show_section(ui, view, i, &paint);
             }
         });
     });
@@ -912,44 +970,41 @@ struct Paint<'a> {
     c: Style,
 }
 
-fn show_section(ui: &mut Ui, view: &mut TasksView, section: &Section, paint: &Paint<'_>) {
+fn show_section(ui: &mut Ui, view: &mut TasksView, index: usize, paint: &Paint<'_>) {
     let c = paint.c;
-    let open = !view.prefs.collapsed.contains(&section.node);
-    let done = section.rows.iter().filter(|r| r.status == Status::Completed).count();
-    let header = format!("{}  {done}/{}", section.node, section.rows.len());
+    let section = view.section(index).clone();
+    let (node, rows) = (section.node, section.rows);
+    let open = !view.prefs.collapsed.contains(&node);
+    let done = rows.iter().filter(|r| r.status == Status::Completed).count();
+    let header = format!("{node}  {done}/{}", rows.len());
     if heading(ui, open, &header, c).clicked() {
-        view.toggle_collapsed(&section.node);
+        view.toggle_collapsed(&node);
     }
     if !open {
         return;
     }
-    let tasks: Vec<Task> =
-        view.shown_tasks().into_iter().filter(|t| t.node() == section.node).collect();
     let rows = match view.prefs.hide_completed {
-        true => tree::without_completed(section.rows.clone()),
-        false => section.rows.clone(),
+        true => tree::without_completed(rows),
+        false => rows,
     };
-    for (row, below) in tree::fold(&rows, &view.collapsed_tasks) {
-        show_row(ui, view, section, &tasks, row, below, paint);
-        let follows = |n: &NewRow| n.node == section.node && n.after.as_deref() == Some(&row.id);
+    let collapsed = view.collapsed_tasks.clone();
+    for (row, below) in tree::fold(&rows, &collapsed) {
+        let id = row.id.clone();
+        show_row(ui, view, index, &id, below, paint);
+        let follows = |n: &NewRow| n.node == node && n.after.as_deref() == Some(&id);
         if view.new_row.as_ref().is_some_and(follows) {
-            show_new_row(ui, view, &tasks, c);
+            show_new_row(ui, view, index, c);
         }
     }
-    let adding_first = |n: &NewRow| n.node == section.node && n.after.is_none();
+    let adding_first = |n: &NewRow| n.node == node && n.after.is_none();
     if view.new_row.as_ref().is_some_and(adding_first) {
-        show_new_row(ui, view, &tasks, c);
+        show_new_row(ui, view, index, c);
     } else if button(ui, "+ add a task", c.add_button).clicked() {
         view.clear_selection();
         // Drawn below the last root row from the next frame on.
-        let last_root = section.rows.iter().rev().find(|r| r.depth == 0).map(|r| r.id.clone());
-        view.new_row = Some(NewRow {
-            node: section.node.clone(),
-            after: last_root,
-            depth: 0,
-            text: String::new(),
-            focus: true,
-        });
+        let last_root = rows.iter().rev().find(|r| r.depth == 0).map(|r| r.id.clone());
+        view.new_row =
+            Some(NewRow { node, after: last_root, depth: 0, text: String::new(), focus: true });
     }
 }
 
@@ -957,13 +1012,13 @@ fn show_section(ui: &mut Ui, view: &mut TasksView, section: &Section, paint: &Pa
 fn show_row(
     ui: &mut Ui,
     view: &mut TasksView,
-    section: &Section,
-    tasks: &[Task],
-    row: &Row,
+    index: usize,
+    id: &str,
     below: usize,
     paint: &Paint<'_>,
 ) {
     let c = paint.c;
+    let row = view.section(index).rows.iter().find(|r| r.id == id).expect("drawn").clone();
     if row.id.is_empty() {
         ui.horizontal_top(|ui| {
             ui.add_space(row.depth as f32 * INDENT);
@@ -976,12 +1031,14 @@ fn show_row(
         });
         return;
     }
-    let refs: Vec<&Task> = tasks.iter().collect();
-    let id = Id::new(("task-row", &row.id));
+    let node = view.section(index).node.clone();
+    let refs: Vec<Task> = view.sections()[index].tasks.clone();
+    let refs: Vec<&Task> = refs.iter().collect();
+    let widget = Id::new(("task-row", &row.id));
     let mut buffer = view.drafts.get(&row.id).cloned().unwrap_or_else(|| row.text.clone());
     // Read before the text field: it would take Enter as a line break, and
     // Backspace on a row that is already empty deletes the row instead.
-    let (enter, erase) = match ui.memory(|m| m.has_focus(id)) {
+    let (enter, erase) = match ui.memory(|m| m.has_focus(widget)) {
         true => ui.input_mut(|i| {
             let enter = i.consume_key(Modifiers::NONE, Key::Enter);
             (enter, buffer.is_empty() && i.consume_key(Modifiers::NONE, Key::Backspace))
@@ -998,7 +1055,7 @@ fn show_row(
     let line = ui.horizontal_top(|ui| {
         ui.add_space(row.depth as f32 * INDENT);
         grip(ui, c, Sense::drag())
-            .dnd_set_drag_payload(DraggedTask { id: row.id.clone(), node: section.node.clone() });
+            .dnd_set_drag_payload(DraggedTask { id: row.id.clone(), node: node.clone() });
         if toggle(ui, (below > 0).then_some(!collapsed), c.chevron, c.chevron_hover)
             && !view.collapsed_tasks.remove(&row.id)
         {
@@ -1008,7 +1065,7 @@ fn show_row(
         if ui.checkbox(&mut checked, "").changed() {
             let id = row.id.clone();
             let status = if checked { Status::Completed } else { Status::Pending };
-            view.statuses.insert(id.clone(), status);
+            view.show_status(id.clone(), status);
             view.write_one(&row.id, if checked { Edit::Done(id) } else { Edit::Undone(id) });
         }
         if row.started {
@@ -1022,7 +1079,7 @@ fn show_row(
         // Locking focus keeps Tab for indenting instead of moving to the
         // next widget.
         let field = TextEdit::multiline(&mut buffer)
-            .id(id)
+            .id(widget)
             .desired_rows(1)
             .frame(false)
             .lock_focus(true)
@@ -1066,7 +1123,7 @@ fn show_row(
         // The new row takes focus next frame, and this one commits its text
         // as it loses it.
         view.new_row = Some(NewRow {
-            node: section.node.clone(),
+            node,
             after: Some(row.id.clone()),
             depth: row.depth,
             text: String::new(),
@@ -1089,7 +1146,7 @@ fn show_row(
     // Registered after the row's widgets, so it takes the click from them
     // while a selecting modifier is held and leaves it to them otherwise.
     if ui.input(|i| i.modifiers.command || i.modifiers.shift) {
-        let pick = ui.interact(rect, id.with("pick"), Sense::click_and_drag());
+        let pick = ui.interact(rect, widget.with("pick"), Sense::click_and_drag());
         if pick.clicked() {
             view.pick(&row.id, ui.input(|i| i.modifiers.shift));
             if let Some(focused) = ui.memory(|m| m.focused()) {
@@ -1103,7 +1160,7 @@ fn show_row(
         let fill = ui.visuals().faint_bg_color;
         ui.painter().set(highlight, Shape::rect_filled(rect, 2.0, fill));
     }
-    accept_drop(ui, view, section, &refs, row, rect, c);
+    accept_drop(ui, view, index, &refs, &row, rect, c);
     // Below the row, since the text beside it takes the full width.
     if let Some(e) = view.row_errors.get(&row.id) {
         ui.horizontal(|ui| {
@@ -1317,14 +1374,15 @@ fn grip(ui: &mut Ui, c: Style, sense: Sense) -> Response {
 fn accept_drop(
     ui: &mut Ui,
     view: &mut TasksView,
-    section: &Section,
+    index: usize,
     refs: &[&Task],
     row: &Row,
     rect: egui::Rect,
     c: Style,
 ) {
     let Some(dragged) = DragAndDrop::payload::<DraggedTask>(ui.ctx()) else { return };
-    if dragged.node != section.node || dragged.id == row.id {
+    let node = view.section(index).node.clone();
+    if dragged.node != node || dragged.id == row.id {
         return;
     }
     let pointer = ui.input(|i| i.pointer.interact_pos()).filter(|p| rect.contains(*p));
@@ -1375,7 +1433,7 @@ fn show_confirm(ctx: &egui::Context, view: &mut TasksView) {
 /// A store may reject an empty description, so a new row exists only here
 /// until it has text; leaving it empty drops it. Each non-empty line of the
 /// text becomes its own task, so a pasted list adds one task per line.
-fn show_new_row(ui: &mut Ui, view: &mut TasksView, tasks: &[Task], c: Style) {
+fn show_new_row(ui: &mut Ui, view: &mut TasksView, index: usize, c: Style) {
     let Some(new) = view.new_row.as_mut() else { return };
     let mut committed = None;
     let mut dropped = false;
@@ -1415,10 +1473,10 @@ fn show_new_row(ui: &mut Ui, view: &mut TasksView, tasks: &[Task], c: Style) {
     }
     if let Some(lines) = committed {
         let new = view.new_row.take().expect("present above");
-        let refs: Vec<&Task> = tasks.iter().collect();
+        let refs: Vec<&Task> = view.sections()[index].tasks.iter().collect();
         let edits = tree::insert_after(&refs, &new.node, new.after.as_deref(), &lines);
         view.write(None, edits);
-        view.added.extend(lines.into_iter().map(|text| NewRow { text, ..new.clone() }));
+        view.show_added(lines.into_iter().map(|text| NewRow { text, ..new.clone() }));
     }
 }
 
@@ -1730,6 +1788,116 @@ mod tests {
         view
     }
 
+    /// A second read of an unchanged listing returns the sections already
+    /// built. A listing or a pending edit that changes what the rows show
+    /// builds them again.
+    #[test]
+    fn a_redraw_reuses_sections_until_the_listing_or_a_pending_edit_changes() {
+        let task = alacritree_tasks::fake::task;
+        let mut view = in_workspace(vec![task("plan", "r.feat"), task("step", "r.feat.claude-1")]);
+        view.sections();
+        let (_, reread) = crate::alloc_count::measure(|| view.sections().len());
+        assert_eq!(reread.allocs, 0, "an unchanged listing builds once");
+
+        view.finish_reload(view.reload_epoch(), Ok(vec![task("plan", "r.feat")]));
+        let (_, listed) = crate::alloc_count::measure(|| view.sections().len());
+        assert!(listed.allocs > 0, "a new listing builds again");
+        let rows: Vec<_> =
+            view.sections().iter().flat_map(|b| &b.section.rows).map(|r| r.id.as_str()).collect();
+        assert_eq!(rows, ["plan"]);
+
+        view.show_status("plan".into(), Status::Completed);
+        let (_, edited) = crate::alloc_count::measure(|| view.sections().len());
+        assert!(edited.allocs > 0, "a pending edit builds again");
+        let status = view
+            .sections()
+            .iter()
+            .flat_map(|b| &b.section.rows)
+            .find(|r| r.id == "plan")
+            .map(|r| r.status);
+        assert_eq!(status, Some(Status::Completed));
+        let (_, kept) = crate::alloc_count::measure(|| view.sections().len());
+        assert_eq!(kept.allocs, 0, "the edit's sections stay built");
+
+        let mut empty = in_workspace(Vec::new());
+        empty.sections();
+        let (_, reread) = crate::alloc_count::measure(|| empty.sections().len());
+        assert_eq!(reread.allocs, 0, "an empty listing builds once");
+        empty.finish_reload(empty.reload_epoch(), Ok(Vec::new()));
+        empty.sections();
+        let (_, reread) = crate::alloc_count::measure(|| empty.sections().len());
+        assert_eq!(reread.allocs, 0, "the same listing again does not rebuild");
+    }
+
+    /// Times one frame's listing work on a cached listing.
+    ///
+    ///     cargo test -p alacritree --release -- --ignored task_sections_bench --nocapture
+    #[test]
+    #[ignore]
+    fn task_sections_bench() {
+        let path = std::env::var("LOCALAPPDATA").expect("LOCALAPPDATA")
+            + r"\alacritree\tasks\wsl-kali-linux-devkit.json";
+        let tasks: Vec<Task> = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let (repo, workspace) = (Some("devkit"), Some("devkit.main"));
+        let nodes = scope_nodes(&tasks);
+        let rows: usize =
+            nodes.iter().map(|node| tasks.iter().filter(|t| t.node() == node).count()).sum();
+        let before = median(|| {
+            let _copies: Vec<Vec<Task>> = nodes
+                .iter()
+                .map(|node| tasks.iter().filter(|t| t.node() == node).cloned().collect())
+                .collect();
+        });
+        let view = in_scope(tasks.clone(), repo, workspace);
+        view.sections();
+        let after = median(|| {
+            let _kept = view.sections().len();
+        });
+        println!(
+            "listing: {} tasks, {} sections, {rows} rows\nbefore: per-section copies \
+             {before:?}\nafter:  cached read {after:?}",
+            tasks.len(),
+            nodes.len()
+        );
+    }
+
+    fn median(f: impl Fn()) -> Duration {
+        let mut samples: Vec<Duration> = (0..50)
+            .map(|_| {
+                let started = Instant::now();
+                f();
+                started.elapsed()
+            })
+            .collect();
+        samples.sort();
+        samples[samples.len() / 2]
+    }
+
+    /// The nodes a frame copied the listing for, before the sections were
+    /// kept: the scope's own, then one per session below the workspace.
+    fn scope_nodes(tasks: &[Task]) -> Vec<String> {
+        let mut nodes: Vec<String> = tasks
+            .iter()
+            .map(|t| t.node().to_string())
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+        nodes.sort();
+        nodes
+    }
+
+    fn in_scope(tasks: Vec<Task>, repo: Option<&str>, workspace: Option<&str>) -> TasksView {
+        let scope = Scope {
+            side: Side::Native,
+            repo: repo.map(str::to_string),
+            workspace: workspace.map(str::to_string),
+        };
+        let backend = Backend::from_config(&Default::default());
+        let mut view = TasksView::new(backend, scope, None, Vec::new(), Prefs::default(), None);
+        view.finish_reload(view.reload_epoch(), Ok(tasks));
+        view
+    }
+
     #[test]
     fn the_sidebar_shows_the_checkout_sections_that_hold_tasks() {
         let view = in_workspace(vec![
@@ -1737,7 +1905,8 @@ mod tests {
             task("plan", "r.feat"),
             task("step", "r.feat.claude-1"),
         ]);
-        let nodes: Vec<String> = view.sidebar_sections().into_iter().map(|s| s.node).collect();
+        let nodes: Vec<String> =
+            view.sidebar_indexes().map(|i| view.section(i).node.clone()).collect();
         assert_eq!(nodes, ["r.feat", "r.feat.claude-1"], "no global list, no empty project");
     }
 
@@ -1754,7 +1923,8 @@ mod tests {
     fn home_shows_the_global_list_in_the_sidebar() {
         let mut view = view_with(Vec::new(), None);
         view.tasks = vec![alacritree_tasks::fake::task("errand", GLOBAL)];
-        let nodes: Vec<String> = view.sidebar_sections().into_iter().map(|s| s.node).collect();
+        let nodes: Vec<String> =
+            view.sidebar_indexes().map(|i| view.section(i).node.clone()).collect();
         assert_eq!(nodes, [GLOBAL]);
     }
 

@@ -73,26 +73,53 @@ fn present<'a>(tasks: &[&'a Task]) -> HashSet<&'a str> {
 }
 
 pub fn sections(tasks: &[Task], repo: Option<&str>, workspace: Option<&str>) -> Vec<Section> {
-    let in_node =
-        |node: &str| -> Vec<&Task> { tasks.iter().filter(|t| t.node() == node).collect() };
-    let section =
-        |node: &str, kind| Section { node: node.to_string(), kind, rows: rows(&in_node(node)) };
+    split(tasks.iter().collect(), repo, workspace).into_iter().map(|(section, _)| section).collect()
+}
+
+/// The sections and, beside each, the tasks it was built from, in listing
+/// order. One pass over the listing serves both.
+pub fn sections_with(
+    tasks: Vec<Task>,
+    repo: Option<&str>,
+    workspace: Option<&str>,
+) -> Vec<(Section, Vec<Task>)> {
+    let mut slots: Vec<Option<Task>> = tasks.into_iter().map(Some).collect();
+    let refs: Vec<&Task> = slots.iter().map(|slot| slot.as_ref().expect("present")).collect();
+    split(refs, repo, workspace)
+        .into_iter()
+        .map(|(section, indexes)| {
+            let here = indexes.into_iter().map(|i| slots[i].take().expect("once")).collect();
+            (section, here)
+        })
+        .collect()
+}
+
+fn split(
+    tasks: Vec<&Task>,
+    repo: Option<&str>,
+    workspace: Option<&str>,
+) -> Vec<(Section, Vec<usize>)> {
+    let mut by_node: HashMap<&str, Vec<usize>> = HashMap::new();
+    let mut refs: HashMap<&str, Vec<&Task>> = HashMap::new();
+    for (i, task) in tasks.into_iter().enumerate() {
+        by_node.entry(task.node()).or_default().push(i);
+        refs.entry(task.node()).or_default().push(task);
+    }
+    let mut section = |node: &str, kind| {
+        let rows = rows(refs.get(node).map_or(&[], Vec::as_slice));
+        (Section { node: node.to_string(), kind, rows }, by_node.remove(node).unwrap_or_default())
+    };
     let mut out = vec![section(GLOBAL, SectionKind::Global)];
     out.extend(repo.map(|repo| section(repo, SectionKind::Project)));
     if let Some(workspace) = workspace {
         out.push(section(workspace, SectionKind::Workspace));
         let prefix = format!("{workspace}.");
-        let mut sessions: Vec<&str> = tasks
-            .iter()
-            .map(Task::node)
-            .filter(|p| p.starts_with(&prefix))
-            .collect::<HashSet<_>>()
-            .into_iter()
-            .collect();
+        let mut sessions: Vec<&str> =
+            refs.keys().copied().filter(|node| node.starts_with(&prefix)).collect();
         // By when the session began rather than when it last changed, so a
         // section does not jump each time an agent ticks off a task.
         let began = |node: &str| {
-            tasks.iter().filter(|t| t.node() == node).filter_map(|t| t.entry.as_deref()).min()
+            refs.get(node).into_iter().flatten().filter_map(|t| t.entry.as_deref()).min()
         };
         sessions.sort_by_key(|node| (Reverse(began(node)), *node));
         out.extend(sessions.into_iter().map(|node| section(node, SectionKind::Session)));
