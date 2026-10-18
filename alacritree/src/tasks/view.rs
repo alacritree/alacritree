@@ -2353,6 +2353,8 @@ mod tests {
     /// A helper that is down, disabled or still starting answers at once.
     /// The tab waits the fallback interval before it asks again, instead of
     /// arming a new watch on every frame.
+    // `windows_to_linux` reads a path prefix, which only Windows paths have.
+    #[cfg(windows)]
     #[test]
     fn an_unavailable_watch_waits_for_the_fallback_interval() {
         let _wsl = wsl_tests();
@@ -2360,10 +2362,7 @@ mod tests {
         wsl_helper::reset_watches();
         let store = FakeBackend::with_tasks(vec![task("a", "r")]);
         let mut view = wsl_tab(&store);
-        // A UNC path, so Linux CI translates it the same way Windows does.
-        // A drive path has no prefix there, and the watch never arms.
-        view.replica_dir =
-            Some((view.scope.side.clone(), PathBuf::from(r"\\wsl.localhost\Ubuntu\tmp")));
+        view.replica_dir = Some((view.scope.side.clone(), PathBuf::from(r"C:\Users")));
         view.tick();
         let armed = view.watch.take();
         assert!(armed.is_some(), "the refusing helper never armed a watch");
@@ -2394,8 +2393,7 @@ mod tests {
     fn a_failed_watch_waits_for_the_fallback_interval() {
         let store = FakeBackend::with_tasks(vec![task("a", "r")]);
         let mut view = wsl_tab(&store);
-        view.replica_dir =
-            Some((view.scope.side.clone(), PathBuf::from(r"\\wsl.localhost\Ubuntu\tmp")));
+        view.replica_dir = Some((view.scope.side.clone(), PathBuf::from(r"\\wsl$\Ubuntu\tmp")));
         view.watch = Some(dropped_watch());
         view.tick();
         assert!(view.watch.is_none(), "a failed watch stays open");
