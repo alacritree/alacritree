@@ -1585,6 +1585,9 @@ mod tests {
         view.scope.adopt(&Place::Workspace { repo: "r".into(), branch: "feat".into() });
         let current = view.scope.clone();
         assert_ne!(started_listing, current);
+        // A due tick would start the current-scope listing in the same call
+        // that discards this one, and that listing would fill the tab.
+        view.last_reload = Some(Instant::now());
 
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
@@ -1592,12 +1595,14 @@ mod tests {
             if view.reload.is_none() {
                 break;
             }
+            view.last_reload = Some(Instant::now());
             assert!(Instant::now() < deadline, "the listing never landed");
             std::thread::yield_now();
         }
 
         let nodes: Vec<&str> = view.tasks.iter().map(Task::node).collect();
         assert!(nodes.is_empty(), "the earlier listing is not the tab's: {nodes:?}");
+        assert!(view.cache_write.is_none(), "no cache write is queued");
         assert!(!current.cache_file(dir.path()).exists(), "the workspace cache stays empty");
         assert!(!started.cache_file(dir.path()).exists(), "the old scope is not written either");
     }
@@ -1644,30 +1649,54 @@ mod tests {
     }
 
     /// A resolved worktree asks for its own sessions, never a sibling
-    /// worktree's. The listing is what the tab receives from the store.
+    /// worktree's. The listing is what the tab holds after a tick.
     #[test]
     fn a_worktree_does_not_receive_a_sibling_worktrees_session_tasks() {
-        let feat = workspace_scope("r.feat");
-        let main = workspace_scope("r.main");
-        let store = FakeBackend::with_tasks(vec![
+        let tasks = vec![
+            task("repo", "r"),
             task("plan", "r.feat"),
             task("feat-session", "r.feat.claude-1"),
+            task("feat-extra", "r.feat-extra"),
             task("main-session", "r.main.codex-9"),
             task("near", "r-web.main"),
             task("blank", ""),
-            task("errand", GLOBAL),
-        ]);
-        let listed = jobs::on_this_thread(|b| store.list(&feat.side, &feat.filter(), b)).unwrap();
-        let nodes: Vec<&str> = listed.iter().map(Task::node).collect();
-        assert!(nodes.contains(&"r.feat.claude-1"), "{nodes:?}");
-        assert!(!nodes.contains(&"r.main.codex-9"), "{nodes:?}");
-        assert!(!nodes.contains(&"r-web.main"), "{nodes:?}");
-        assert!(!nodes.contains(&""), "{nodes:?}");
-        let main_listed =
-            jobs::on_this_thread(|b| store.list(&main.side, &main.filter(), b)).unwrap();
-        let main_nodes: Vec<&str> = main_listed.iter().map(Task::node).collect();
-        assert!(!main_nodes.contains(&"r.feat.claude-1"), "{main_nodes:?}");
-        assert!(main_nodes.contains(&"r.main.codex-9"), "{main_nodes:?}");
+            Task { project: None, ..task("errand", GLOBAL) },
+        ];
+        let nodes = |workspace| {
+            let mut view = TasksView::new(
+                Backend::Fake(FakeBackend::with_tasks(tasks.clone())),
+                workspace_scope(workspace),
+                None,
+                Vec::new(),
+                Prefs::default(),
+                None,
+            );
+            view.stale = true;
+            view.last_reload = Some(Instant::now());
+            view.tick();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                view.tick();
+                if view.reload.is_none() && view.loaded {
+                    break;
+                }
+                view.last_reload = Some(Instant::now());
+                assert!(Instant::now() < deadline, "the listing never landed");
+                std::thread::yield_now();
+            }
+            view.tasks.iter().map(|t| t.node().to_string()).collect::<Vec<_>>()
+        };
+        let feat = nodes("r.feat");
+        assert!(feat.contains(&"r.feat.claude-1".to_string()), "{feat:?}");
+        assert!(feat.contains(&"r".to_string()), "{feat:?}");
+        assert!(feat.iter().any(|n| n == GLOBAL), "{feat:?}");
+        assert!(!feat.contains(&"r.main.codex-9".to_string()), "{feat:?}");
+        assert!(!feat.contains(&"r.feat-extra".to_string()), "{feat:?}");
+        assert!(!feat.contains(&"r-web.main".to_string()), "{feat:?}");
+        assert!(!feat.contains(&String::new()), "{feat:?}");
+        let main = nodes("r.main");
+        assert!(main.contains(&"r.main.codex-9".to_string()), "{main:?}");
+        assert!(!main.contains(&"r.feat.claude-1".to_string()), "{main:?}");
     }
 
     /// Git has not named the workspace yet, so the tab still asks for the
