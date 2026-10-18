@@ -89,7 +89,7 @@ The tab shows the global section, the project, the workspace, and one section fo
 
 Deleting a task that has subtasks deletes them too, after asking. The keys act on the row being edited, or the last one that was, which the tab highlights. They are the task actions under [Keyboard shortcuts](keyboard-shortcuts.md), so they can be rebound, and they fire only while the tasks tab is focused.
 
-The tab reloads from taskwarrior every second while it is shown, so tasks an agent adds appear on their own. It asks for the global list, the repository's own node, and the workspace's subtree. A worktree does not receive a sibling worktree's session tasks. Until git has named the workspace, it asks for the repository subtree. The last listing for each workspace is kept in the local state directory, so reopening the tab shows it at once while the first reload runs. Two worktrees of one repository keep separate listings. A project inside WSL reads and writes that distro's taskwarrior, through `[wsl] resident_helper` when it is on, so a call skips starting `wsl.exe`. Taskwarrior 3 has no Windows build, so a Windows project uses the default distro's taskwarrior when `task` is not on the Windows `PATH`. Linux and macOS always use the native install.
+The tab checks the replica stamps every second while it is shown, and exports when they differ, so tasks an agent adds appear on their own. It asks for the global list, the repository's own node, and the workspace's subtree. A worktree does not receive a sibling worktree's session tasks. Until git has named the workspace, it asks for the repository subtree. The last listing for each workspace is kept in the local state directory, so reopening the tab shows it at once while the first reload runs. Two worktrees of one repository keep separate listings. A project inside WSL reads and writes that distro's taskwarrior, through `[wsl] resident_helper` when it is on, so a call skips starting `wsl.exe`. Taskwarrior 3 has no Windows build, so a Windows project uses the default distro's taskwarrior when `task` is not on the Windows `PATH`. Linux and macOS always use the native install.
 
 #### Tasks in a sidebar
 
@@ -102,7 +102,7 @@ sidebar = "right"
 
 The section holds the tab's sections that have tasks, less the global list, which it shows only on Home. Each section is named below the workspace, so an agent session reads as `claude-<id>`, and carries a `done/total` count and a bar. Rows are read-only: a filled box marks a started task and a ticked one a completed task. Clicking a section header folds it in the sidebar and the tab alike. The "hide completed" button beside the heading is the tab's filter, so it hides the completed tasks in both, while the counts and bars still include them. Right-clicking the `Tasks` heading opens the workspace's tasks tab, or brings it on screen when it is already open. Drag the divider above the section to resize it, or double-click the divider to fit the section to its tasks, up to half the sidebar. `[ui.tasks.sidebar_colors]` sets every color it draws, listed in the [config reference](config-reference.md).
 
-The section lists only while its sidebar shows it, reloading every second like the tab. When the workspace's tasks tab is open, both draw the same listing.
+The section lists only while its sidebar shows it, checking stamps every second like the tab and exporting when they differ. When the workspace's tasks tab is open, both draw the same listing.
 
 #### A task store of your own
 
