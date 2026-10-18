@@ -1984,9 +1984,7 @@ mod tests {
         let rows: usize = held.iter().map(|s| s.rows.len()).sum();
         let view = in_scope(tasks, repo.as_deref(), workspace.as_deref());
         view.sections();
-        let after = median(|| {
-            let _kept = view.sections().len();
-        });
+        let after = median(|| frame_after(&view));
         format!(
             "file: {label}\nlisting: {task_count} tasks, {} project nodes, {pending} \
              pending\nworkspace {}: {} sections, {rows} rows\nbefore: {before:?}\nafter: {after:?}",
@@ -1994,6 +1992,26 @@ mod tests {
             workspace.as_deref().unwrap_or("(none)"),
             held.len(),
         )
+    }
+
+    /// One frame after the sections are kept: read them, then prepare the
+    /// rows each drawn section shows, the way a frame does before egui lays
+    /// them out.
+    fn frame_after(view: &TasksView) {
+        let drawn = view.sections().to_vec();
+        let collapsed = &view.collapsed_tasks;
+        for built in &drawn {
+            let open;
+            let rows: Vec<&Row> = match view.prefs.hide_completed {
+                true => {
+                    open = tree::open_rows(&built.section.rows);
+                    open
+                },
+                false => built.section.rows.iter().collect(),
+            };
+            let _folded = tree::fold(&rows, collapsed);
+            let _shown: Vec<&Row> = rows;
+        }
     }
 
     /// One frame of listing work before the sections were kept: clone the
