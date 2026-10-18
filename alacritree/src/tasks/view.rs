@@ -2483,12 +2483,18 @@ mod tests {
         view.tick();
         assert!(view.stamp_job.is_none(), "a failed stamp waits one interval");
         view.reload = None;
-        view.stamp_retry = Instant::now() - Duration::from_millis(1);
+        // A full interval, not 1 ms. A coarse Windows clock can land a 1 ms
+        // margin on the wrong side of the comparison.
+        view.stamp_retry = Instant::now() - RELOAD_EVERY;
         view.stale = true;
         view.tick();
         assert!(view.reload.is_some(), "a stale tick lists before the stamp");
+        // That listing clears stale, so the next tick is the interval path.
+        // The failed read set stamp_retry inside the tick above.
         view.reload = None;
-        view.last_reload = Some(Instant::now() - RELOAD_EVERY - Duration::from_millis(1));
+        view.stale = false;
+        view.stamp_retry = Instant::now() - RELOAD_EVERY;
+        view.last_reload = Some(Instant::now() - RELOAD_EVERY);
         view.tick();
         assert!(view.stamp_job.is_some(), "the next tick reads the stamp");
     }
