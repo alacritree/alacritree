@@ -1650,7 +1650,6 @@ mod tests {
 
     #[test]
     fn the_sidebar_shows_the_checkout_sections_that_hold_tasks() {
-        let task = task;
         let view = in_workspace(vec![
             task("errand", GLOBAL),
             task("plan", "r.feat"),
