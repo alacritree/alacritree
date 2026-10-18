@@ -83,7 +83,8 @@ impl Preview {
             }
             self.view.finish_write(row, Ok(()));
         }
-        self.view.finish_reload(self.view.reload_epoch(), Ok(tasks));
+        let scope = self.view.scope.clone();
+        self.view.finish_reload(self.view.reload_epoch(), &scope, Ok(tasks));
         self.view.pref_changes.clear();
     }
 }

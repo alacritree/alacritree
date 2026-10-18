@@ -76,11 +76,20 @@ impl Scope {
         }
     }
 
-    /// The global list and the repository's whole subtree, since the tab
-    /// shows the agent sessions below the workspace too.
+    /// The global list, the repository's own node, and this workspace's
+    /// subtree. A workspace git has not named yet keeps the repository
+    /// subtree, so the tab still has something to list.
     pub(crate) fn filter(&self) -> Filter {
-        let repo = self.repo.iter().map(|repo| NodeMatch::Subtree(repo.clone()));
-        Filter { nodes: repo.chain([NodeMatch::Exact(GLOBAL.to_string())]).collect() }
+        let mut nodes = vec![NodeMatch::Exact(GLOBAL.to_string())];
+        match (&self.repo, &self.workspace) {
+            (Some(repo), Some(workspace)) => {
+                nodes.push(NodeMatch::Exact(repo.clone()));
+                nodes.push(NodeMatch::Subtree(workspace.clone()));
+            },
+            (Some(repo), None) => nodes.push(NodeMatch::Subtree(repo.clone())),
+            (None, _) => {},
+        }
+        Filter { nodes }
     }
 
     /// `node` without the workspace or repository it sits under, so a
@@ -93,15 +102,17 @@ impl Scope {
             .unwrap_or(node)
     }
 
-    /// The listing's file under the cache directory. Two scopes that differ
-    /// only in characters a file name cannot hold share one file, which the
-    /// first listing corrects.
+    /// The listing's file under the cache directory. The file belongs to the
+    /// workspace, so two worktrees of one repository do not overwrite each
+    /// other. Two scopes that differ only in characters a file name cannot
+    /// hold share one file, which the first listing corrects.
     fn cache_file(&self, dir: &Path) -> PathBuf {
         let side = match &self.side {
             Side::Native => "native".to_string(),
             Side::Wsl(distro) => format!("wsl-{distro}"),
         };
-        let name: String = format!("{side}-{}", self.repo.as_deref().unwrap_or(GLOBAL))
+        let place = self.workspace.as_deref().or(self.repo.as_deref()).unwrap_or(GLOBAL);
+        let name: String = format!("{side}-{place}")
             .chars()
             .map(|c| if c.is_ascii_alphanumeric() || "-_.".contains(c) { c } else { '_' })
             .collect();
@@ -250,8 +261,14 @@ type QueuedWrite = (Option<String>, Vec<Edit>);
 /// A write in flight, with the row its failure is shown on.
 type PendingWrite = (Option<String>, Job<Result<(), TaskError>>);
 
-/// A listing in flight, with the count of writes finished when it started.
-type PendingReload = (u64, Job<Result<Vec<Task>, TaskError>>);
+/// A listing in flight: the write count and the scope it started under, and
+/// the job. A result whose scope is no longer current is discarded, because
+/// the cache write uses the scope the tab holds when the listing lands.
+struct PendingReload {
+    epoch: u64,
+    scope: Scope,
+    job: Job<Result<Vec<Task>, TaskError>>,
+}
 
 /// A row being typed that the store has not got yet.
 #[derive(Clone)]
@@ -652,7 +669,10 @@ impl TasksView {
         self.writes_finished
     }
 
-    fn finish_reload(&mut self, epoch: u64, result: Result<Vec<Task>, TaskError>) {
+    fn finish_reload(&mut self, epoch: u64, scope: &Scope, result: Result<Vec<Task>, TaskError>) {
+        if scope != &self.scope {
+            return;
+        }
         match result {
             Ok(tasks) => {
                 self.load_error = None;
@@ -712,21 +732,23 @@ impl TasksView {
         for (row, result) in finished {
             self.finish_write(row, result);
         }
-        if let Some((epoch, result)) =
-            self.reload.as_ref().and_then(|(epoch, job)| Some((*epoch, job.poll()?)))
-        {
-            self.reload = None;
-            self.finish_reload(epoch, result);
-        } else if self.reload.as_ref().is_some_and(|(_, job)| job.failed()) {
-            self.reload = None;
+        if let Some(pending) = self.reload.take() {
+            match pending.job.poll() {
+                Some(result) => self.finish_reload(pending.epoch, &pending.scope, result),
+                None if pending.job.failed() => {},
+                None => self.reload = Some(pending),
+            }
         }
         let due = self.last_reload.is_none_or(|t| t.elapsed() >= RELOAD_EVERY);
         if self.reload.is_none() && (self.stale || due) {
             self.stale = false;
-            let (store, scope) = (self.backend.clone(), self.scope.clone());
-            let job = jobs::pool()
-                .spawn(Priority::Background, move |b| store.list(&scope.side, &scope.filter(), b));
-            self.reload = Some((self.reload_epoch(), job));
+            let store = self.backend.clone();
+            let scope = self.scope.clone();
+            let listed = scope.clone();
+            let job = jobs::pool().spawn(Priority::Background, move |b| {
+                store.list(&listed.side, &listed.filter(), b)
+            });
+            self.reload = Some(PendingReload { epoch: self.reload_epoch(), scope, job });
             self.last_reload = Some(Instant::now());
         }
     }
@@ -1403,6 +1425,7 @@ fn show_new_row(ui: &mut Ui, view: &mut TasksView, tasks: &[Task], c: Style) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alacritree_tasks::fake::{FakeBackend, task};
     use std::path::PathBuf;
 
     fn project(root: &str, name: &str) -> Project {
@@ -1525,11 +1548,63 @@ mod tests {
     fn a_listing_that_panicked_does_not_stop_reloads() {
         let backend = Backend::from_config(&Default::default());
         let scope = Scope::for_workspace(None, None);
-        let mut view = TasksView::new(backend, scope, None, Vec::new(), Prefs::default(), None);
-        view.reload = Some((0, Job::panicked()));
+        let mut view =
+            TasksView::new(backend, scope.clone(), None, Vec::new(), Prefs::default(), None);
+        view.reload = Some(PendingReload { epoch: 0, scope, job: Job::panicked() });
         view.last_reload = Some(Instant::now());
         view.tick();
         assert!(view.reload.is_none());
+    }
+
+    /// A listing started for the repository subtree must not land in the
+    /// workspace cache once git has named the workspace.
+    #[test]
+    fn a_listing_from_an_earlier_scope_is_discarded() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FakeBackend::with_tasks(vec![
+            task("repo", "r"),
+            task("feat", "r.feat"),
+            task("sibling", "r.main"),
+            task("session", "r.main.codex-9"),
+        ]);
+        let started = Scope { side: Side::Native, repo: Some("r".into()), workspace: None };
+        let mut view = TasksView::new(
+            Backend::Fake(store),
+            started.clone(),
+            None,
+            Vec::new(),
+            Prefs::default(),
+            Some(dir.path().to_path_buf()),
+        );
+        view.stale = true;
+        view.last_reload = Some(Instant::now());
+        view.tick();
+        let started_listing =
+            view.reload.as_ref().expect("the repository listing is in flight").scope.clone();
+        assert_eq!(started_listing, started);
+        view.scope.adopt(&Place::Workspace { repo: "r".into(), branch: "feat".into() });
+        let current = view.scope.clone();
+        assert_ne!(started_listing, current);
+        // A due tick would start the current-scope listing in the same call
+        // that discards this one, and that listing would fill the tab.
+        view.last_reload = Some(Instant::now());
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            view.tick();
+            if view.reload.is_none() {
+                break;
+            }
+            view.last_reload = Some(Instant::now());
+            assert!(Instant::now() < deadline, "the listing never landed");
+            std::thread::yield_now();
+        }
+
+        let nodes: Vec<&str> = view.tasks.iter().map(Task::node).collect();
+        assert!(nodes.is_empty(), "the earlier listing is not the tab's: {nodes:?}");
+        assert!(view.cache_write.is_none(), "no cache write is queued");
+        assert!(!current.cache_file(dir.path()).exists(), "the workspace cache stays empty");
+        assert!(!started.cache_file(dir.path()).exists(), "the old scope is not written either");
     }
 
     #[test]
@@ -1568,9 +1643,82 @@ mod tests {
     fn a_repo_lists_its_subtree_and_the_global_list() {
         let s = Scope { side: Side::Native, repo: Some("r".into()), workspace: None };
         assert_eq!(s.filter().nodes, [
+            NodeMatch::Exact(GLOBAL.into()),
             NodeMatch::Subtree("r".into()),
-            NodeMatch::Exact(GLOBAL.into())
         ]);
+    }
+
+    /// A resolved worktree asks for its own sessions, never a sibling
+    /// worktree's. The listing is what the tab holds after a tick.
+    #[test]
+    fn a_worktree_does_not_receive_a_sibling_worktrees_session_tasks() {
+        let tasks = vec![
+            task("repo", "r"),
+            task("plan", "r.feat"),
+            task("feat-session", "r.feat.claude-1"),
+            task("feat-extra", "r.feat-extra"),
+            task("main-session", "r.main.codex-9"),
+            task("near", "r-web.main"),
+            task("blank", ""),
+            Task { project: None, ..task("errand", GLOBAL) },
+        ];
+        let nodes = |workspace| {
+            let mut view = TasksView::new(
+                Backend::Fake(FakeBackend::with_tasks(tasks.clone())),
+                workspace_scope(workspace),
+                None,
+                Vec::new(),
+                Prefs::default(),
+                None,
+            );
+            view.stale = true;
+            view.last_reload = Some(Instant::now());
+            view.tick();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                view.tick();
+                if view.reload.is_none() && view.loaded {
+                    break;
+                }
+                view.last_reload = Some(Instant::now());
+                assert!(Instant::now() < deadline, "the listing never landed");
+                std::thread::yield_now();
+            }
+            view.tasks.iter().map(|t| t.node().to_string()).collect::<Vec<_>>()
+        };
+        let feat = nodes("r.feat");
+        assert!(feat.contains(&"r.feat.claude-1".to_string()), "{feat:?}");
+        assert!(feat.contains(&"r".to_string()), "{feat:?}");
+        assert!(feat.iter().any(|n| n == GLOBAL), "{feat:?}");
+        assert!(!feat.contains(&"r.main.codex-9".to_string()), "{feat:?}");
+        assert!(!feat.contains(&"r.feat-extra".to_string()), "{feat:?}");
+        assert!(!feat.contains(&"r-web.main".to_string()), "{feat:?}");
+        assert!(!feat.contains(&String::new()), "{feat:?}");
+        let main = nodes("r.main");
+        assert!(main.contains(&"r.main.codex-9".to_string()), "{main:?}");
+        assert!(!main.contains(&"r.feat.claude-1".to_string()), "{main:?}");
+    }
+
+    /// Git has not named the workspace yet, so the tab still asks for the
+    /// repository subtree the sidebar already knows, and nothing narrower.
+    #[test]
+    fn an_unresolved_workspace_still_lists_the_repository_subtree() {
+        let scope = Scope { side: Side::Native, repo: Some("r".into()), workspace: None };
+        let store = FakeBackend::with_tasks(vec![
+            task("repo", "r"),
+            task("feat", "r.feat"),
+            task("session", "r.feat.claude-1"),
+            task("other", "other.main"),
+            task("near", "r-web"),
+            task("blank", ""),
+        ]);
+        let listed = jobs::on_this_thread(|b| store.list(&scope.side, &scope.filter(), b)).unwrap();
+        let nodes: Vec<&str> = listed.iter().map(Task::node).collect();
+        assert_eq!(nodes, ["r", "r.feat", "r.feat.claude-1"]);
+    }
+
+    fn workspace_scope(workspace: &str) -> Scope {
+        Scope { side: Side::Native, repo: Some("r".into()), workspace: Some(workspace.into()) }
     }
 
     fn in_workspace(tasks: Vec<Task>) -> TasksView {
@@ -1584,7 +1732,6 @@ mod tests {
 
     #[test]
     fn the_sidebar_shows_the_checkout_sections_that_hold_tasks() {
-        let task = alacritree_tasks::fake::task;
         let view = in_workspace(vec![
             task("errand", GLOBAL),
             task("plan", "r.feat"),
@@ -1871,10 +2018,10 @@ mod tests {
         h.click(h.checkbox("one"));
         let before_the_write = h.view.reload_epoch();
         h.view.finish_write(Some("a".into()), Ok(()));
-        h.view.finish_reload(before_the_write, Ok(vec![pending("a", "one")]));
+        h.view.finish_reload(before_the_write, &h.view.scope.clone(), Ok(vec![pending("a", "one")]));
         assert_eq!(h.view.plain_lines()[1], "- [x] one", "a reload older than the write");
         let after_the_write = h.view.reload_epoch();
-        h.view.finish_reload(after_the_write, Ok(vec![pending("a", "one")]));
+        h.view.finish_reload(after_the_write, &h.view.scope.clone(), Ok(vec![pending("a", "one")]));
         assert_eq!(h.view.plain_lines()[1], "- [ ] one", "the store has the last word");
     }
 
@@ -1941,7 +2088,7 @@ mod tests {
         let refused = TaskError::Failed { program: "task".into(), stderr: "no".into() };
         h.view.finish_write(None, Err(refused));
         let epoch = h.view.reload_epoch();
-        h.view.finish_reload(epoch, Ok(Vec::new()));
+        h.view.finish_reload(epoch, &h.view.scope.clone(), Ok(Vec::new()));
         h.frame(Vec::new());
         h.text("task failed: no");
     }
@@ -2303,6 +2450,42 @@ mod tests {
         assert_ne!(file(Side::Native, Some("r")), file(Side::Native, Some("s")));
         assert_ne!(file(Side::Native, Some("r")), file(Side::Wsl("Ubuntu".into()), Some("r")));
         assert_eq!(file(Side::Native, Some("a/b")), dir.join("native-a_b.json"));
+    }
+
+    /// Each workspace opens on its own file, so one worktree's listing does
+    /// not replace the other's.
+    #[test]
+    fn two_workspaces_of_one_repository_keep_separate_cached_listings() {
+        let dir = tempfile::tempdir().unwrap();
+        let feat = workspace_scope("r.feat");
+        let main = workspace_scope("r.main");
+        write_cache(&feat.cache_file(dir.path()), &[pending("feat", "feat task")]);
+        write_cache(&main.cache_file(dir.path()), &[pending("main", "main task")]);
+        // A blank listing and a file the tab cannot read leave that workspace
+        // empty instead of taking the sibling's listing.
+        write_cache(&workspace_scope("r.blank").cache_file(dir.path()), &[]);
+        std::fs::write(workspace_scope("r.bad").cache_file(dir.path()), b"not json").unwrap();
+
+        let opened = |scope: Scope| {
+            let backend = Backend::Fake(FakeBackend::default());
+            TasksView::new(
+                backend,
+                scope,
+                None,
+                Vec::new(),
+                Prefs::default(),
+                Some(dir.path().to_path_buf()),
+            )
+        };
+        assert!(opened(feat.clone()).plain_lines().contains(&"- [ ] feat task".to_string()));
+        assert!(!opened(feat.clone()).plain_lines().contains(&"- [ ] main task".to_string()));
+        assert!(opened(main.clone()).plain_lines().contains(&"- [ ] main task".to_string()));
+        assert!(!opened(main.clone()).plain_lines().contains(&"- [ ] feat task".to_string()));
+        assert_ne!(feat.cache_file(dir.path()), main.cache_file(dir.path()));
+        let blank = opened(workspace_scope("r.blank"));
+        let bad = opened(workspace_scope("r.bad"));
+        assert!(!blank.plain_lines().iter().any(|line| line.starts_with("- [")));
+        assert!(!bad.plain_lines().iter().any(|line| line.starts_with("- [")));
     }
 
     #[test]
