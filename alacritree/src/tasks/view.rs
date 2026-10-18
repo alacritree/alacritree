@@ -1,7 +1,8 @@
 //! The tasks tab: the backend's lists for one workspace, drawn as checklist
 //! rows. Each change is a batch of edits on the pool, typed text shows at
 //! once, and a reload replaces it with what the store holds. Agents write
-//! the same store, so the tab re-lists while visible instead of trusting its
+//! the same store, so the tab checks its stamps while visible instead of
+//! trusting its
 //! own copy. The last listing is kept on disk, so the tab opens on it and the
 //! first listing only corrects it.
 
@@ -339,7 +340,14 @@ pub(crate) struct TasksView {
     /// A failed add has no row to show on; it stays until the next write.
     write_error: Option<String>,
     reload: Option<PendingReload>,
+    listed: Option<alacritree_tasks::Stamp>,
+    /// A stamp read in flight. The frame only polls it.
+    stamp_job: Option<Job<(Option<alacritree_tasks::Stamp>, Option<PathBuf>)>>,
+    /// The replica directory last located for this side. A later tick stats it.
+    replica_dir: Option<(Side, PathBuf)>,
     last_reload: Option<Instant>,
+    /// The next stamp read waits until this instant. A failed read sets it.
+    stamp_retry: Instant,
     /// Set when a write finishes, so the export after it is not skipped
     /// while an older one is still running.
     stale: bool,
@@ -407,7 +415,11 @@ impl TasksView {
             load_error: None,
             write_error: None,
             reload: None,
+            listed: None,
+            stamp_job: None,
+            replica_dir: None,
             last_reload: None,
+            stamp_retry: Instant::now(),
             stale: false,
             writes_finished: 0,
             outbox: Vec::new(),
@@ -773,6 +785,12 @@ impl TasksView {
         self.writes_finished
     }
 
+    /// A failed or panicked listing did not export. The next due tick lists again,
+    /// and a persistent failure waits one interval.
+    fn invalidate_listing(&mut self) {
+        self.listed = None;
+    }
+
     fn finish_reload(&mut self, epoch: u64, scope: &Scope, result: Result<Vec<Task>, TaskError>) {
         if scope != &self.scope {
             return;
@@ -803,7 +821,10 @@ impl TasksView {
                 }
                 self.tasks = tasks;
             },
-            Err(e) => self.load_error = Some(e.to_string()),
+            Err(e) => {
+                self.load_error = Some(e.to_string());
+                self.invalidate_listing();
+            },
         }
     }
 
@@ -814,8 +835,8 @@ impl TasksView {
         self.cache_write = Some(job);
     }
 
-    /// Spawns queued writes, drains finished jobs, and reloads after any
-    /// write or once a second.
+    /// Spawns queued writes, drains finished jobs, and checks stamps after
+    /// any write or once a second. An export runs when the stamps differ.
     pub(crate) fn tick(&mut self) {
         if let Some(place) = self.resolving.as_mut().and_then(|r| r.poll(Instant::now())) {
             self.resolving = None;
@@ -830,6 +851,14 @@ impl TasksView {
             });
             self.writes.push((row, job));
         }
+        let due = self.last_reload.is_none_or(|t| t.elapsed() >= RELOAD_EVERY);
+        if let Some(pending) = self.reload.take() {
+            match pending.job.poll() {
+                Some(result) => self.finish_reload(pending.epoch, &pending.scope, result),
+                None if pending.job.failed() => self.invalidate_listing(),
+                None => self.reload = Some(pending),
+            }
+        }
         let mut finished = Vec::new();
         self.writes.retain(|(row, job)| match job.poll() {
             Some(result) => {
@@ -841,25 +870,73 @@ impl TasksView {
         for (row, result) in finished {
             self.finish_write(row, result);
         }
-        if let Some(pending) = self.reload.take() {
-            match pending.job.poll() {
-                Some(result) => self.finish_reload(pending.epoch, &pending.scope, result),
-                None if pending.job.failed() => {},
-                None => self.reload = Some(pending),
-            }
+        let stamp_due = self.stamp_job.is_some() || Instant::now() >= self.stamp_retry;
+        if self.reload.is_none() && (self.stale || due) && stamp_due {
+            self.reload_if_changed();
         }
-        let due = self.last_reload.is_none_or(|t| t.elapsed() >= RELOAD_EVERY);
-        if self.reload.is_none() && (self.stale || due) {
-            self.stale = false;
-            let store = self.backend.clone();
-            let scope = self.scope.clone();
-            let listed = scope.clone();
-            let job = jobs::pool().spawn(Priority::Background, move |b| {
-                store.list(&listed.side, &listed.filter(), b)
-            });
-            self.reload = Some(PendingReload { epoch: self.reload_epoch(), scope, job });
-            self.last_reload = Some(Instant::now());
+    }
+
+    /// Lists when the replica changed, when our own write finished, or when
+    /// the stamp cannot be read. An unchanged stamp runs no export. The stamp
+    /// read, including a locate after a missing file, runs on a pool job.
+    /// A stale tick lists in this call. Its stamp decides the next tick.
+    fn reload_if_changed(&mut self) {
+        self.spawn_stamp();
+        if self.stale {
+            self.start_listing();
         }
+        self.take_stamp();
+    }
+
+    fn spawn_stamp(&mut self) {
+        if self.stamp_job.is_some() {
+            return;
+        }
+        let (store, side) = (self.backend.clone(), self.scope.side.clone());
+        let known = self
+            .replica_dir
+            .as_ref()
+            .filter(|(cached, _)| cached == &side)
+            .map(|(_, dir)| dir.clone());
+        self.stamp_job = Some(jobs::pool().spawn(Priority::Background, move |b| {
+            store.replica(&side, known.as_deref(), b)
+        }));
+    }
+
+    /// Applies a stamp that has landed. A stamp still running stays in its
+    /// slot. A failed read waits one interval.
+    fn take_stamp(&mut self) {
+        let Some(job) = self.stamp_job.as_ref() else { return };
+        let read = job.poll();
+        if read.is_none() && !job.failed() {
+            return;
+        }
+        self.stamp_job = None;
+        let Some((stamp, dir)) = read else {
+            self.stamp_retry = Instant::now() + RELOAD_EVERY;
+            return;
+        };
+        let side = self.scope.side.clone();
+        self.replica_dir = dir.map(|dir| (side, dir));
+        self.last_reload = Some(Instant::now());
+        if self.reload.is_some() {
+            return;
+        }
+        if self.stale || stamp.is_none() || stamp != self.listed {
+            self.listed = stamp;
+            self.start_listing();
+        }
+    }
+
+    fn start_listing(&mut self) {
+        self.stale = false;
+        self.last_reload = Some(Instant::now());
+        let (store, scope) = (self.backend.clone(), self.scope.clone());
+        let listed = scope.clone();
+        let job = jobs::pool().spawn(Priority::Background, move |b| {
+            store.list(&listed.side, &listed.filter(), b)
+        });
+        self.reload = Some(PendingReload { epoch: self.reload_epoch(), scope, job });
     }
 }
 
@@ -1703,18 +1780,286 @@ mod tests {
         );
     }
 
-    /// A listing that panicked frees the slot, so the next due tick lists
-    /// again instead of waiting on it forever.
+    /// Polls until the listing in flight lands, the way frames do.
+    fn settle_reload(view: &mut TasksView) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            view.tick();
+            if view.reload.is_none() && view.stamp_job.is_none() {
+                return;
+            }
+            assert!(Instant::now() < deadline, "the listing never landed");
+            std::thread::yield_now();
+        }
+    }
+
+    fn due(view: &mut TasksView) {
+        view.last_reload = Some(Instant::now() - RELOAD_EVERY - Duration::from_millis(1));
+        view.tick();
+    }
+
+    /// An unchanged replica lists once. Later ticks inside the reload
+    /// interval, and past it, run no second export.
     #[test]
-    fn a_listing_that_panicked_does_not_stop_reloads() {
-        let backend = Backend::from_config(&Default::default());
-        let scope = Scope::for_workspace(None, None);
-        let mut view =
-            TasksView::new(backend, scope.clone(), None, Vec::new(), Prefs::default(), None);
-        view.reload = Some(PendingReload { epoch: 0, scope, job: Job::panicked() });
-        view.last_reload = Some(Instant::now());
+    fn an_unchanged_replica_lists_once() {
+        let store =
+            alacritree_tasks::fake::FakeBackend::with_tasks(vec![alacritree_tasks::fake::task(
+                "a", "r",
+            )]);
+        let mut view = tab(&store);
+        settle_reload(&mut view);
+        assert_eq!(store.listings(), 1);
         view.tick();
         assert!(view.reload.is_none());
+        due(&mut view);
+        settle_reload(&mut view);
+        assert!(view.reload.is_none(), "a due tick still lists");
+        assert_eq!(store.listings(), 1);
+    }
+
+    fn tab(store: &alacritree_tasks::fake::FakeBackend) -> TasksView {
+        let scope = Scope { side: Side::Native, repo: Some("r".into()), workspace: None };
+        TasksView::new(
+            Backend::Fake(store.clone()),
+            scope,
+            None,
+            Vec::new(),
+            Prefs::default(),
+            None,
+        )
+    }
+    #[test]
+    fn a_write_elsewhere_lists_on_the_next_due_tick() {
+        let store =
+            alacritree_tasks::fake::FakeBackend::with_tasks(vec![alacritree_tasks::fake::task(
+                "a", "r",
+            )]);
+        let mut view = tab(&store);
+        settle_reload(&mut view);
+        store.written_elsewhere(vec![alacritree_tasks::fake::task("b", "r")]);
+        due(&mut view);
+        settle_reload(&mut view);
+        assert_eq!(store.listings(), 2);
+        assert_eq!(view.tasks.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["b"]);
+    }
+    fn land(view: &mut TasksView, place: Place) {
+        view.resolving = Some(Resolver {
+            dir: PathBuf::from("."),
+            backends: Vec::new(),
+            lookup: Some(Job::ready(place)),
+            retry_at: Instant::now(),
+            backoff: FIRST_RETRY,
+        });
+        view.tick();
+    }
+    #[test]
+    fn our_own_write_lists_without_waiting_for_the_stamp() {
+        let store =
+            alacritree_tasks::fake::FakeBackend::with_tasks(vec![alacritree_tasks::fake::task(
+                "a", "r",
+            )]);
+        let mut view = tab(&store);
+        settle_reload(&mut view);
+        let stamp = store.stamp();
+        view.write(None, vec![Edit::Done("a".into())]);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            view.tick();
+            let written = store.edits().iter().any(|edit| matches!(edit, Edit::Done(_)));
+            let listed_after = store.listed_after().iter().any(|n| *n >= 1);
+            if written && listed_after && view.reload.is_none() {
+                break;
+            }
+            assert!(Instant::now() < deadline, "the write never reloaded");
+            std::thread::yield_now();
+        }
+        assert_eq!(store.listings(), 2, "a finished write lists at once");
+        assert_eq!(store.stamp(), stamp, "our write does not move the stamp");
+        assert_eq!(view.tasks[0].status, Status::Completed);
+        assert!(view.last_reload.is_some_and(|t| t.elapsed() < RELOAD_EVERY));
+    }
+    #[test]
+    fn a_scope_change_lists_without_waiting_for_the_stamp() {
+        let store =
+            alacritree_tasks::fake::FakeBackend::with_tasks(vec![alacritree_tasks::fake::task(
+                "a", "r",
+            )]);
+        let mut view = tab(&store);
+        settle_reload(&mut view);
+        store.hold_next_stamp();
+        land(&mut view, Place::Project { repo: "other".into() });
+        assert!(view.reload.is_some(), "a scope change lists before the stamp returns");
+        store.release_stamp();
+        settle_reload(&mut view);
+        assert_eq!(store.listings(), 2);
+    }
+    #[test]
+    fn a_change_of_what_the_tab_lists_reloads_without_the_stamp() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = alacritree_git::test_support::init_repo_on(&dir.path().join("other"), "trunk");
+        let store = alacritree_tasks::fake::FakeBackend::with_tasks(vec![
+            alacritree_tasks::fake::task("a", "r"),
+            alacritree_tasks::fake::task("b", "other"),
+        ]);
+        let scope = Scope { side: Side::Native, repo: Some("r".into()), workspace: None };
+        let mut view = TasksView::new(
+            Backend::Fake(store.clone()),
+            scope,
+            Some(repo),
+            crate::vcs::backends(&Default::default()),
+            Prefs::default(),
+            None,
+        );
+        settle_reload(&mut view);
+        assert_eq!(view.tasks.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["a"]);
+        let stamp = store.stamp();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while view.resolving.is_some() {
+            view.tick();
+            assert!(Instant::now() < deadline, "git never named the worktree");
+            std::thread::yield_now();
+        }
+        settle_reload(&mut view);
+        assert_eq!(store.listings(), 2, "a new filter lists at once");
+        assert_eq!(store.stamp(), stamp, "a filter change does not move the stamp");
+        assert_eq!(view.tasks.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["b"]);
+        assert!(view.last_reload.is_some_and(|t| t.elapsed() < RELOAD_EVERY));
+    }
+
+    /// After the first listing, an unchanged WSL replica runs no task command.
+    #[cfg(windows)]
+    #[test]
+    fn an_unchanged_wsl_replica_runs_no_task_command() {
+        let Some(distro) = wsl::distros().into_iter().find(|d| d.is_default).map(|d| d.name) else {
+            return;
+        };
+        let root = PathBuf::from(format!(r"\\wsl.localhost\{distro}\tmp"));
+        let Ok(dir) = tempfile::Builder::new().prefix("alacritree-task").tempdir_in(&root) else {
+            return;
+        };
+        let data = dir.path().join("data");
+        std::fs::create_dir(&data).unwrap();
+        std::fs::write(data.join("taskchampion.sqlite3"), b"db").unwrap();
+        let log = dir.path().join("spawns.txt");
+        let linux = wsl::windows_to_linux(dir.path()).expect("the temp dir is inside the distro");
+        let script = format!("{linux}/task");
+        let body = format!(
+            "#!/bin/sh\necho spawn >> {linux}/spawns.txt\ncase $* in\n*_get*) printf \
+             {linux}/data;;\n*) printf []\nesac\n"
+        );
+        std::fs::write(dir.path().join("task"), body.replace("\r\n", "\n")).unwrap();
+        let chmod = jobs::on_this_thread(|b| {
+            b.run_cancellable(
+                alacritree_common::command_ext::hidden("wsl.exe")
+                    .args(["-d", &distro, "--exec", "chmod", "+x", &script]),
+            )
+        })
+        .expect("chmod runs");
+        assert!(chmod.status.success(), "chmod exited {}", chmod.status);
+        let _guard = alacritree_common::tools::test_configuration_lock().lock().unwrap();
+        let saved = alacritree_common::tools::test_configuration();
+        let mut paths = saved.clone();
+        paths[alacritree_common::tools::Tool::Task as usize].wsl = Some(script);
+        alacritree_common::tools::configure(paths);
+        let was_enabled = alacritree_common::wsl_helper::enabled();
+        alacritree_common::wsl_helper::set_enabled(false);
+        let scope = Scope { side: Side::Wsl(distro), repo: Some("r".into()), workspace: None };
+        let mut view = TasksView::new(
+            Backend::Taskwarrior(alacritree_taskwarrior::Taskwarrior::default()),
+            scope,
+            None,
+            Vec::new(),
+            Prefs::default(),
+            None,
+        );
+        settle_reload(&mut view);
+        let after_listing = std::fs::read_to_string(&log).unwrap_or_default().lines().count();
+        due(&mut view);
+        settle_reload(&mut view);
+        due(&mut view);
+        settle_reload(&mut view);
+        let after_ticks = std::fs::read_to_string(&log).unwrap_or_default().lines().count();
+        alacritree_common::wsl_helper::set_enabled(was_enabled);
+        alacritree_common::tools::configure(saved);
+        assert!(view.load_error().is_none(), "{}", view.load_error().unwrap_or_default());
+        assert_eq!(after_ticks, after_listing, "unchanged ticks ran a task command");
+        assert!(after_listing >= 1, "the first listing located the replica");
+    }
+    #[test]
+    fn a_replica_with_no_stamp_reloads_every_interval() {
+        let store = alacritree_tasks::fake::FakeBackend::default().unstamped();
+        let mut view = tab(&store);
+        settle_reload(&mut view);
+        due(&mut view);
+        settle_reload(&mut view);
+        assert_eq!(store.listings(), 2);
+    }
+
+    /// A listing that panicked frees the slot and the next due tick lists
+    /// again, instead of treating the missed export as current.
+    #[test]
+    fn a_listing_that_panicked_lists_again_on_the_next_due_tick() {
+        let store = alacritree_tasks::fake::FakeBackend::default();
+        let mut view = tab(&store);
+        settle_reload(&mut view);
+        view.reload = Some(PendingReload {
+            epoch: view.reload_epoch(),
+            scope: view.scope.clone(),
+            job: Job::panicked(),
+        });
+        store.hold_next_stamp();
+        view.tick();
+        view.tick();
+        assert!(view.stamp_job.is_none(), "a panicked listing waits one interval");
+        store.release_stamp();
+        due(&mut view);
+        settle_reload(&mut view);
+        assert_eq!(store.listings(), 2, "a panicked listing is listed again");
+    }
+
+    /// A stamp read that panicked waits one interval before the next attempt.
+    #[test]
+    fn a_failed_stamp_waits_one_interval() {
+        let store = alacritree_tasks::fake::FakeBackend::default();
+        let mut view = tab(&store);
+        view.stamp_job = Some(Job::panicked());
+        view.stale = true;
+        view.tick();
+        assert!(view.stamp_job.is_none(), "a failed stamp clears its slot");
+        assert!(view.reload.is_some(), "a stale tick still lists");
+        view.tick();
+        assert!(view.stamp_job.is_none(), "a failed stamp waits one interval");
+        view.reload = None;
+        view.stamp_retry = Instant::now() - Duration::from_millis(1);
+        view.stale = true;
+        view.tick();
+        assert!(view.reload.is_some(), "a stale tick lists before the stamp");
+        view.reload = None;
+        view.tick();
+        assert!(view.stamp_job.is_some(), "the next tick reads the stamp");
+    }
+
+    /// A listing that returns an error is listed again on the next due tick.
+    #[test]
+    fn a_listing_that_fails_lists_again_on_the_next_due_tick() {
+        let store = alacritree_tasks::fake::FakeBackend::default();
+        let mut view = tab(&store);
+        settle_reload(&mut view);
+        let failed = Err(TaskError::Failed { program: "fake".into(), stderr: "down".into() });
+        view.reload = Some(PendingReload {
+            epoch: view.reload_epoch(),
+            scope: view.scope.clone(),
+            job: Job::ready(failed),
+        });
+        store.hold_next_stamp();
+        view.tick();
+        view.tick();
+        assert!(view.stamp_job.is_none(), "a failed listing waits one interval");
+        assert_eq!(store.listings(), 1, "a failed listing waits one interval");
+        store.release_stamp();
+        due(&mut view);
+        settle_reload(&mut view);
+        assert_eq!(store.listings(), 2, "a failed listing is listed again");
     }
 
     /// A listing started for the repository subtree must not land in the

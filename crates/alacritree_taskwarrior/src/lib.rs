@@ -3,10 +3,14 @@
 //! them never folds `subof:` into a description, and turns off prompts, since
 //! there is no terminal to answer them.
 
+mod replica;
 mod settings;
 
 use std::io;
+use std::path::{Path, PathBuf};
 use std::process::{Output, Stdio};
+#[cfg(test)]
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use alacritree_common::command_ext::hidden;
@@ -131,11 +135,29 @@ impl Taskwarrior {
         let mut written = Vec::new();
         for (key, value) in UDA_DECLARATIONS {
             if cli.rc_value(key)?.as_deref() != Some(value) {
-                cli.run(&["config".into(), key.to_string(), value.to_string()])?;
+                cli.run(&["config".into(), key.to_string(), value.to_string()], false)?;
                 written.push(key);
             }
         }
         Ok(written)
+    }
+
+    /// The replica located for `side`. A known directory is used while its database file is
+    /// present, and a missing file locates again.
+    fn cached_replica(
+        &self,
+        side: &Side,
+        known: Option<&Path>,
+        blocking: &Blocking,
+    ) -> Result<Option<(replica::Replica, replica::ReplicaStamp)>, TaskError> {
+        if let Some(dir) = known {
+            let replica = replica::Replica { dir: dir.to_path_buf() };
+            if let Some(stamp) = replica.stamp() {
+                return Ok(Some((replica, stamp)));
+            }
+        }
+        let replica = replica::Replica::locate(self, side, blocking)?;
+        Ok(replica.and_then(|replica| replica.stamp().map(|stamp| (replica, stamp))))
     }
 
     /// Whether `side`'s taskrc gives both UDAs their types. Agents call `task`
@@ -162,7 +184,7 @@ impl TaskBackend for Taskwarrior {
         let Some(mut args) = filter_args(filter) else { return Ok(Vec::new()) };
         args.push("export".into());
         let cli = self.for_project(side, blocking);
-        let output = cli.run(&args)?;
+        let output = cli.run(&args, true)?;
         let exported: Vec<Exported> = serde_json::from_slice(&output.stdout)
             .map_err(|source| TaskError::Malformed { program: cli.program.clone(), source })?;
         Ok(exported.into_iter().filter_map(Exported::into_task).collect())
@@ -174,8 +196,20 @@ impl TaskBackend for Taskwarrior {
             Edit::Add { project, description, parent, order } => {
                 cli.add(project, description, parent.as_deref(), *order).map(drop)
             },
-            edit => cli.run(&edit_args(edit)).map(drop),
+            edit => cli.run(&edit_args(edit), false).map(drop),
         }
+    }
+
+    fn replica_stamp(
+        &self,
+        side: &Side,
+        known: Option<&Path>,
+        blocking: &Blocking,
+    ) -> Result<Option<(alacritree_tasks::Stamp, PathBuf)>, TaskError> {
+        let Some((replica, stamp)) = self.cached_replica(side, known, blocking)? else {
+            return Ok(None);
+        };
+        Ok(Some((alacritree_tasks::Stamp { bytes: stamp.bytes() }, replica.dir)))
     }
 
     fn agent_guide(&self, project: &str) -> String {
@@ -262,6 +296,33 @@ impl Ran {
     }
 }
 
+/// Counts `task` starts for the ignored kali-linux proof. Other tests do not
+/// read it, so a shared reset cannot change what they assert.
+#[cfg(test)]
+pub mod test_support {
+    use super::*;
+
+    static TASK_RUNS: AtomicU64 = AtomicU64::new(0);
+
+    pub fn task_runs() -> u64 {
+        TASK_RUNS.load(Ordering::Relaxed)
+    }
+
+    pub fn reset_task_runs() {
+        TASK_RUNS.store(0, Ordering::Relaxed);
+    }
+
+    pub(super) fn note_task_run() {
+        TASK_RUNS.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+#[cfg(test)]
+fn is_task_program(program: &str) -> bool {
+    let name = program.rsplit(['/', '\\']).next().unwrap_or(program);
+    name.eq_ignore_ascii_case("task") || name.eq_ignore_ascii_case("task.exe")
+}
+
 /// `task` as found on one side.
 struct Cli<'a> {
     side: Side,
@@ -283,6 +344,10 @@ impl Cli<'_> {
         // A WSL login shell reports a missing program as 127, not ENOENT.
         if ran.code == Some(127) {
             return Err(TaskError::Missing { program: self.program.clone() });
+        }
+        #[cfg(test)]
+        if is_task_program(&self.program) {
+            test_support::note_task_run();
         }
         Ok(ran)
     }
@@ -338,9 +403,14 @@ impl Cli<'_> {
     }
 
     // Runs on a pool worker, where waiting out a busy lock is the point.
-    fn run(&self, args: &[String]) -> Result<Ran, TaskError> {
+    fn run(&self, args: &[String], report: bool) -> Result<Ran, TaskError> {
         let mut argv: Vec<String> =
             UDA_DECLARATIONS.iter().map(|(k, v)| format!("rc.{k}={v}")).collect();
+        // Garbage collection writes the database on a report, which moves the
+        // stamps. A write keeps taskwarrior's own collection.
+        if report {
+            argv.push("rc.gc=off".into());
+        }
         argv.push("rc.confirmation=off".into());
         argv.extend(args.iter().cloned());
         let mut retries = BUSY_RETRIES.iter();
@@ -374,7 +444,7 @@ impl Cli<'_> {
         args.extend(parent.map(|p| format!("subof:{p}")));
         args.push("--".into());
         args.push(escaped(description));
-        let output = self.run(&args)?;
+        let output = self.run(&args, false)?;
         created_uuid(&String::from_utf8_lossy(&output.stdout)).ok_or_else(|| TaskError::Failed {
             program: self.program.clone(),
             stderr: "add printed no uuid".into(),
@@ -489,7 +559,7 @@ mod tests {
             // Probed on exactly this side: the backend's own fallback to a
             // distro would carry a native path there. Only a missing program
             // skips; any other failure is the adapter's.
-            match jobs::on_this_thread(|b| tw.on(side.clone(), b).run(&["export".into()])) {
+            match jobs::on_this_thread(|b| tw.on(side.clone(), b).run(&["export".into()], true)) {
                 Err(TaskError::Missing { .. }) => None,
                 result => {
                     Some(result.map(|_| (dir, side, tw)).expect("a private taskwarrior exports"))
@@ -605,6 +675,40 @@ mod tests {
         assert!(declared.contains("uda.subof.type=uuid"), "{declared}");
     }
 
+    /// Several unchanged stamp reads of the kali-linux replica start one task.
+    #[ignore = "runs task inside kali-linux and prints the process count"]
+    #[cfg(windows)]
+    #[test]
+    fn unchanged_kali_stamp_reads_start_one_task() {
+        let side = Side::Wsl("kali-linux".into());
+        let tw = Taskwarrior::default();
+        let mut known = None;
+        test_support::reset_task_runs();
+        let mut stamps = Vec::new();
+        for _ in 0..4 {
+            let located = jobs::on_this_thread(|b| tw.cached_replica(&side, known.as_deref(), b))
+                .ok()
+                .flatten();
+            stamps.push(located.is_some());
+            known = located.map(|(replica, _)| replica.dir);
+        }
+        let runs = test_support::task_runs();
+        println!("kali-linux task processes: {runs}");
+        assert!(stamps.iter().all(|found| *found), "a tick found no replica");
+        assert_eq!(runs, 1);
+    }
+
+    #[test]
+    fn an_export_leaves_the_replica_stamps() {
+        let Some((dir, side, tw)) = private() else { return };
+        let data = dir.path().join("data");
+        let before = replica::Replica { dir: data.clone() }.stamp();
+        assert!(before.is_some(), "no taskchampion.sqlite3");
+        let filter = Filter { nodes: vec![NodeMatch::Exact("r".into())] };
+        jobs::on_this_thread(|b| tw.list(&side, &filter, b)).unwrap();
+        let after = replica::Replica { dir: data }.stamp();
+        assert_eq!(after, before);
+    }
     #[test]
     fn a_listing_larger_than_a_pipe_buffer_is_read_whole() {
         let Some((_dir, side, tw)) = private() else { return };
@@ -622,7 +726,7 @@ mod tests {
     fn a_missing_program_is_reported_as_missing() {
         let cli =
             Cli { side: Side::Native, program: "alacritree-no-such-task-binary".into(), env: &[] };
-        let err = cli.run(&["export".into()]).unwrap_err();
+        let err = cli.run(&["export".into()], true).unwrap_err();
         assert!(matches!(err, TaskError::Missing { .. }), "{err}");
     }
 
@@ -678,8 +782,9 @@ mod tests {
         let location = jobs::on_this_thread(|b| tw.on(side.clone(), b).rc_value("data.location"));
         assert_eq!(location.unwrap(), data);
         let missing = "00000000-0000-0000-0000-000000000000".to_string();
-        let err = jobs::on_this_thread(|b| tw.on(side.clone(), b).run(&[missing, "info".into()]))
-            .unwrap_err();
+        let err =
+            jobs::on_this_thread(|b| tw.on(side.clone(), b).run(&[missing, "info".into()], false))
+                .unwrap_err();
         assert!(
             matches!(&err, TaskError::Failed { stderr, .. } if stderr.contains("No matches")),
             "{err}"

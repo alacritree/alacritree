@@ -14,11 +14,32 @@ pub struct FakeBackend {
     store: Arc<Mutex<Store>>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct Store {
     tasks: Vec<Task>,
     edits: Vec<Edit>,
+    stamped: bool,
+    stamp: u64,
+    listings: u64,
+    /// Edits already applied when each listing started.
+    listed_after: Vec<usize>,
     refusing: bool,
+    hold_stamp: bool,
+}
+
+impl Default for Store {
+    fn default() -> Self {
+        Self {
+            tasks: Vec::new(),
+            edits: Vec::new(),
+            stamped: true,
+            stamp: 0,
+            listings: 0,
+            listed_after: Vec::new(),
+            refusing: false,
+            hold_stamp: false,
+        }
+    }
 }
 
 impl FakeBackend {
@@ -43,6 +64,44 @@ impl FakeBackend {
         self.store().edits.clone()
     }
 
+    /// The next stamp read waits until release.
+    pub fn hold_next_stamp(&self) {
+        self.store().hold_stamp = true;
+    }
+
+    /// Lets a held stamp read return.
+    pub fn release_stamp(&self) {
+        self.store().hold_stamp = false;
+    }
+
+    /// A replica whose files the tab cannot find.
+    pub fn unstamped(self) -> Self {
+        self.store().stamped = false;
+        self
+    }
+
+    /// The replica stamp the tab reads before a reload.
+    pub fn stamp(&self) -> u64 {
+        self.store().stamp
+    }
+
+    /// A write by another process. The stamp moves and the tasks change.
+    pub fn written_elsewhere(&self, tasks: Vec<Task>) {
+        let mut store = self.store();
+        store.stamp += 1;
+        store.tasks = tasks;
+    }
+
+    /// How many times the tab has listed this store.
+    pub fn listings(&self) -> u64 {
+        self.store().listings
+    }
+
+    /// How many edits were already applied when each listing started.
+    pub fn listed_after(&self) -> Vec<usize> {
+        self.store().listed_after.clone()
+    }
+
     fn store(&self) -> MutexGuard<'_, Store> {
         self.store.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -50,7 +109,11 @@ impl FakeBackend {
 
 impl TaskBackend for FakeBackend {
     fn list(&self, _: &Side, filter: &Filter, _: &Blocking) -> Result<Vec<Task>, TaskError> {
-        Ok(self.store().tasks.iter().filter(|t| filter.matches(t)).cloned().collect())
+        let mut store = self.store();
+        store.listings += 1;
+        let applied = store.edits.len();
+        store.listed_after.push(applied);
+        Ok(store.tasks.iter().filter(|t| filter.matches(t)).cloned().collect())
     }
 
     fn apply(&self, _: &Side, edit: &Edit, _: &Blocking) -> Result<(), TaskError> {
@@ -65,6 +128,22 @@ impl TaskBackend for FakeBackend {
 
     fn agent_guide(&self, project: &str) -> String {
         format!("Write your tasks to `{project}`.\n")
+    }
+
+    fn replica_stamp(
+        &self,
+        _: &Side,
+        _: Option<&std::path::Path>,
+        _: &Blocking,
+    ) -> Result<Option<(crate::Stamp, std::path::PathBuf)>, TaskError> {
+        while self.store().hold_stamp {
+            drop(self.store());
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let store = self.store();
+        Ok(store.stamped.then(|| {
+            (crate::Stamp { bytes: store.stamp.to_le_bytes().to_vec() }, std::path::PathBuf::new())
+        }))
     }
 }
 
