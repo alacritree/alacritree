@@ -76,11 +76,20 @@ impl Scope {
         }
     }
 
-    /// The global list and the repository's whole subtree, since the tab
-    /// shows the agent sessions below the workspace too.
+    /// The global list, the repository's own node, and this workspace's
+    /// subtree. A workspace git has not named yet keeps the repository
+    /// subtree, so the tab still has something to list.
     pub(crate) fn filter(&self) -> Filter {
-        let repo = self.repo.iter().map(|repo| NodeMatch::Subtree(repo.clone()));
-        Filter { nodes: repo.chain([NodeMatch::Exact(GLOBAL.to_string())]).collect() }
+        let mut nodes = vec![NodeMatch::Exact(GLOBAL.to_string())];
+        match (&self.repo, &self.workspace) {
+            (Some(repo), Some(workspace)) => {
+                nodes.push(NodeMatch::Exact(repo.clone()));
+                nodes.push(NodeMatch::Subtree(workspace.clone()));
+            },
+            (Some(repo), None) => nodes.push(NodeMatch::Subtree(repo.clone())),
+            (None, _) => {},
+        }
+        Filter { nodes }
     }
 
     /// `node` without the workspace or repository it sits under, so a
@@ -93,15 +102,17 @@ impl Scope {
             .unwrap_or(node)
     }
 
-    /// The listing's file under the cache directory. Two scopes that differ
-    /// only in characters a file name cannot hold share one file, which the
-    /// first listing corrects.
+    /// The listing's file under the cache directory. The file belongs to the
+    /// workspace, so two worktrees of one repository do not overwrite each
+    /// other. Two scopes that differ only in characters a file name cannot
+    /// hold share one file, which the first listing corrects.
     fn cache_file(&self, dir: &Path) -> PathBuf {
         let side = match &self.side {
             Side::Native => "native".to_string(),
             Side::Wsl(distro) => format!("wsl-{distro}"),
         };
-        let name: String = format!("{side}-{}", self.repo.as_deref().unwrap_or(GLOBAL))
+        let place = self.workspace.as_deref().or(self.repo.as_deref()).unwrap_or(GLOBAL);
+        let name: String = format!("{side}-{place}")
             .chars()
             .map(|c| if c.is_ascii_alphanumeric() || "-_.".contains(c) { c } else { '_' })
             .collect();
@@ -1403,6 +1414,7 @@ fn show_new_row(ui: &mut Ui, view: &mut TasksView, tasks: &[Task], c: Style) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alacritree_tasks::fake::{FakeBackend, task};
     use std::path::PathBuf;
 
     fn project(root: &str, name: &str) -> Project {
@@ -1568,9 +1580,63 @@ mod tests {
     fn a_repo_lists_its_subtree_and_the_global_list() {
         let s = Scope { side: Side::Native, repo: Some("r".into()), workspace: None };
         assert_eq!(s.filter().nodes, [
+            NodeMatch::Exact(GLOBAL.into()),
             NodeMatch::Subtree("r".into()),
-            NodeMatch::Exact(GLOBAL.into())
         ]);
+    }
+
+    /// A resolved worktree asks for its own sessions, never a sibling
+    /// worktree's. The listing is what the tab receives from the store.
+    #[test]
+    fn a_worktree_does_not_receive_a_sibling_worktrees_session_tasks() {
+        let feat = workspace_scope("r.feat");
+        let main = workspace_scope("r.main");
+        let store = FakeBackend::with_tasks(vec![
+            task("plan", "r.feat"),
+            task("feat-session", "r.feat.claude-1"),
+            task("main-session", "r.main.codex-9"),
+            task("near", "r-web.main"),
+            task("blank", ""),
+            task("errand", GLOBAL),
+        ]);
+        let listed = jobs::on_this_thread(|b| store.list(&feat.side, &feat.filter(), b)).unwrap();
+        let nodes: Vec<&str> = listed.iter().map(Task::node).collect();
+        assert!(nodes.contains(&"r.feat.claude-1"), "{nodes:?}");
+        assert!(!nodes.contains(&"r.main.codex-9"), "{nodes:?}");
+        assert!(!nodes.contains(&"r-web.main"), "{nodes:?}");
+        assert!(!nodes.contains(&""), "{nodes:?}");
+        let main_listed =
+            jobs::on_this_thread(|b| store.list(&main.side, &main.filter(), b)).unwrap();
+        let main_nodes: Vec<&str> = main_listed.iter().map(Task::node).collect();
+        assert!(!main_nodes.contains(&"r.feat.claude-1"), "{main_nodes:?}");
+        assert!(main_nodes.contains(&"r.main.codex-9"), "{main_nodes:?}");
+    }
+
+    /// Git has not named the workspace yet, so the tab still asks for the
+    /// repository subtree the sidebar already knows, and nothing narrower.
+    #[test]
+    fn an_unresolved_workspace_still_lists_the_repository_subtree() {
+        let scope = Scope { side: Side::Native, repo: Some("r".into()), workspace: None };
+        assert!(
+            scope.filter().nodes.iter().any(|m| matches!(m, NodeMatch::Subtree(n) if n == "r")),
+            "unresolved workspace must keep the repository subtree: {:?}",
+            scope.filter().nodes
+        );
+        let store = FakeBackend::with_tasks(vec![
+            task("repo", "r"),
+            task("feat", "r.feat"),
+            task("session", "r.feat.claude-1"),
+            task("other", "other.main"),
+            task("near", "r-web"),
+            task("blank", ""),
+        ]);
+        let listed = jobs::on_this_thread(|b| store.list(&scope.side, &scope.filter(), b)).unwrap();
+        let nodes: Vec<&str> = listed.iter().map(Task::node).collect();
+        assert_eq!(nodes, ["r", "r.feat", "r.feat.claude-1"]);
+    }
+
+    fn workspace_scope(workspace: &str) -> Scope {
+        Scope { side: Side::Native, repo: Some("r".into()), workspace: Some(workspace.into()) }
     }
 
     fn in_workspace(tasks: Vec<Task>) -> TasksView {
@@ -1584,7 +1650,7 @@ mod tests {
 
     #[test]
     fn the_sidebar_shows_the_checkout_sections_that_hold_tasks() {
-        let task = alacritree_tasks::fake::task;
+        let task = task;
         let view = in_workspace(vec![
             task("errand", GLOBAL),
             task("plan", "r.feat"),
@@ -2303,6 +2369,42 @@ mod tests {
         assert_ne!(file(Side::Native, Some("r")), file(Side::Native, Some("s")));
         assert_ne!(file(Side::Native, Some("r")), file(Side::Wsl("Ubuntu".into()), Some("r")));
         assert_eq!(file(Side::Native, Some("a/b")), dir.join("native-a_b.json"));
+    }
+
+    /// Each workspace opens on its own file, so one worktree's listing does
+    /// not replace the other's.
+    #[test]
+    fn two_workspaces_of_one_repository_keep_separate_cached_listings() {
+        let dir = tempfile::tempdir().unwrap();
+        let feat = workspace_scope("r.feat");
+        let main = workspace_scope("r.main");
+        write_cache(&feat.cache_file(dir.path()), &[pending("feat", "feat task")]);
+        write_cache(&main.cache_file(dir.path()), &[pending("main", "main task")]);
+        // A blank listing and a file the tab cannot read leave that workspace
+        // empty instead of taking the sibling's listing.
+        write_cache(&workspace_scope("r.blank").cache_file(dir.path()), &[]);
+        std::fs::write(workspace_scope("r.bad").cache_file(dir.path()), b"not json").unwrap();
+
+        let opened = |scope: Scope| {
+            let backend = Backend::Fake(FakeBackend::default());
+            TasksView::new(
+                backend,
+                scope,
+                None,
+                Vec::new(),
+                Prefs::default(),
+                Some(dir.path().to_path_buf()),
+            )
+        };
+        assert!(opened(feat.clone()).plain_lines().contains(&"- [ ] feat task".to_string()));
+        assert!(!opened(feat.clone()).plain_lines().contains(&"- [ ] main task".to_string()));
+        assert!(opened(main.clone()).plain_lines().contains(&"- [ ] main task".to_string()));
+        assert!(!opened(main.clone()).plain_lines().contains(&"- [ ] feat task".to_string()));
+        assert_ne!(feat.cache_file(dir.path()), main.cache_file(dir.path()));
+        let blank = opened(workspace_scope("r.blank"));
+        let bad = opened(workspace_scope("r.bad"));
+        assert!(!blank.plain_lines().iter().any(|line| line.starts_with("- [")));
+        assert!(!bad.plain_lines().iter().any(|line| line.starts_with("- [")));
     }
 
     #[test]
