@@ -345,6 +345,8 @@ pub(crate) struct TasksView {
     /// The replica directory last located for this side. A later tick stats it.
     replica_dir: Option<(Side, PathBuf)>,
     last_reload: Option<Instant>,
+    /// The next stamp read waits until this instant. A failed read sets it.
+    stamp_retry: Instant,
     /// Set when a write finishes, so the export after it is not skipped
     /// while an older one is still running.
     stale: bool,
@@ -416,6 +418,7 @@ impl TasksView {
             stamp_job: None,
             replica_dir: None,
             last_reload: None,
+            stamp_retry: Instant::now(),
             stale: false,
             writes_finished: 0,
             outbox: Vec::new(),
@@ -866,7 +869,8 @@ impl TasksView {
         for (row, result) in finished {
             self.finish_write(row, result);
         }
-        if self.reload.is_none() && (self.stale || due) {
+        let stamp_due = self.stamp_job.is_some() || Instant::now() >= self.stamp_retry;
+        if self.reload.is_none() && (self.stale || due) && stamp_due {
             self.reload_if_changed();
         }
     }
@@ -882,9 +886,10 @@ impl TasksView {
                 .as_ref()
                 .filter(|(cached, _)| cached == &side)
                 .map(|(_, dir)| dir.clone());
-            self.stamp_job = Some(jobs::pool().spawn(Priority::Background, move |b| {
-                store.replica(&side, known.as_deref(), b)
-            }));
+            self.stamp_job =
+                Some(jobs::pool().spawn(Priority::Background, move |b| {
+                    store.replica(&side, known.as_deref(), b)
+                }));
         }
         let Some(job) = self.stamp_job.as_ref() else { return };
         let read = job.poll();
@@ -892,7 +897,10 @@ impl TasksView {
             return;
         }
         self.stamp_job = None;
-        let Some((stamp, dir)) = read else { return };
+        let Some((stamp, dir)) = read else {
+            self.stamp_retry = Instant::now() + RELOAD_EVERY;
+            return;
+        };
         let side = self.scope.side.clone();
         self.replica_dir = dir.map(|dir| (side.clone(), dir));
         let changed = self.stale || stamp.is_none() || stamp != self.listed;
