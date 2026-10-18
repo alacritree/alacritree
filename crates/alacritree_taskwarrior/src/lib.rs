@@ -22,7 +22,6 @@ use alacritree_common::wsl_helper::{self, TransportError};
 use alacritree_tasks::{Edit, Filter, NodeMatch, Status, Task, TaskBackend, TaskError};
 use serde::Deserialize;
 
-pub use self::replica::ReplicaStamp;
 pub use self::settings::{RawTaskwarrior, TaskwarriorConfig};
 
 /// A task's parent is the `subof` UDA and its place among siblings the
@@ -145,7 +144,7 @@ impl Taskwarrior {
 
     /// The replica located for `side`. A known directory is used while its database file is
     /// present, and a missing file locates again.
-    pub fn cached_replica(
+    fn cached_replica(
         &self,
         side: &Side,
         known: Option<&Path>,
