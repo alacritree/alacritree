@@ -136,7 +136,7 @@ impl Taskwarrior {
         let mut written = Vec::new();
         for (key, value) in UDA_DECLARATIONS {
             if cli.rc_value(key)?.as_deref() != Some(value) {
-                cli.run(&["config".into(), key.to_string(), value.to_string()])?;
+                cli.run(&["config".into(), key.to_string(), value.to_string()], false)?;
                 written.push(key);
             }
         }
@@ -185,7 +185,7 @@ impl TaskBackend for Taskwarrior {
         let Some(mut args) = filter_args(filter) else { return Ok(Vec::new()) };
         args.push("export".into());
         let cli = self.for_project(side, blocking);
-        let output = cli.run(&args)?;
+        let output = cli.run(&args, true)?;
         let exported: Vec<Exported> = serde_json::from_slice(&output.stdout)
             .map_err(|source| TaskError::Malformed { program: cli.program.clone(), source })?;
         Ok(exported.into_iter().filter_map(Exported::into_task).collect())
@@ -197,7 +197,7 @@ impl TaskBackend for Taskwarrior {
             Edit::Add { project, description, parent, order } => {
                 cli.add(project, description, parent.as_deref(), *order).map(drop)
             },
-            edit => cli.run(&edit_args(edit)).map(drop),
+            edit => cli.run(&edit_args(edit), false).map(drop),
         }
     }
 
@@ -404,12 +404,12 @@ impl Cli<'_> {
     }
 
     // Runs on a pool worker, where waiting out a busy lock is the point.
-    fn run(&self, args: &[String]) -> Result<Ran, TaskError> {
+    fn run(&self, args: &[String], report: bool) -> Result<Ran, TaskError> {
         let mut argv: Vec<String> =
             UDA_DECLARATIONS.iter().map(|(k, v)| format!("rc.{k}={v}")).collect();
         // Garbage collection writes the database on a report, which moves the
         // stamps. A write keeps taskwarrior's own collection.
-        if args.iter().any(|arg| arg == "export") {
+        if report {
             argv.push("rc.gc=off".into());
         }
         argv.push("rc.confirmation=off".into());
@@ -445,7 +445,7 @@ impl Cli<'_> {
         args.extend(parent.map(|p| format!("subof:{p}")));
         args.push("--".into());
         args.push(escaped(description));
-        let output = self.run(&args)?;
+        let output = self.run(&args, false)?;
         created_uuid(&String::from_utf8_lossy(&output.stdout)).ok_or_else(|| TaskError::Failed {
             program: self.program.clone(),
             stderr: "add printed no uuid".into(),
@@ -560,7 +560,7 @@ mod tests {
             // Probed on exactly this side: the backend's own fallback to a
             // distro would carry a native path there. Only a missing program
             // skips; any other failure is the adapter's.
-            match jobs::on_this_thread(|b| tw.on(side.clone(), b).run(&["export".into()])) {
+            match jobs::on_this_thread(|b| tw.on(side.clone(), b).run(&["export".into()], true)) {
                 Err(TaskError::Missing { .. }) => None,
                 result => {
                     Some(result.map(|_| (dir, side, tw)).expect("a private taskwarrior exports"))
@@ -727,7 +727,7 @@ mod tests {
     fn a_missing_program_is_reported_as_missing() {
         let cli =
             Cli { side: Side::Native, program: "alacritree-no-such-task-binary".into(), env: &[] };
-        let err = cli.run(&["export".into()]).unwrap_err();
+        let err = cli.run(&["export".into()], true).unwrap_err();
         assert!(matches!(err, TaskError::Missing { .. }), "{err}");
     }
 
@@ -783,8 +783,9 @@ mod tests {
         let location = jobs::on_this_thread(|b| tw.on(side.clone(), b).rc_value("data.location"));
         assert_eq!(location.unwrap(), data);
         let missing = "00000000-0000-0000-0000-000000000000".to_string();
-        let err = jobs::on_this_thread(|b| tw.on(side.clone(), b).run(&[missing, "info".into()]))
-            .unwrap_err();
+        let err =
+            jobs::on_this_thread(|b| tw.on(side.clone(), b).run(&[missing, "info".into()], false))
+                .unwrap_err();
         assert!(
             matches!(&err, TaskError::Failed { stderr, .. } if stderr.contains("No matches")),
             "{err}"
