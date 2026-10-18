@@ -137,8 +137,10 @@ pub(super) fn show(
         let above = ui.cursor().top() - top;
         let area = ScrollArea::vertical().auto_shrink([false, false]).min_scrolled_height(0.0);
         let rows = area.show(ui, |ui| {
-            for i in view.sidebar_indexes().collect::<Vec<_>>() {
-                paint_section(ui, view, i, theme);
+            let drawn: Vec<_> =
+                view.sidebar_indexes().map(|i| (i, view.sections()[i].section.clone())).collect();
+            for (_, section) in &drawn {
+                paint_section_rows(ui, view, section, theme);
             }
         });
         above + rows.content_size.y
@@ -183,12 +185,20 @@ fn filter_button(ui: &mut egui::Ui, view: &mut TasksView, theme: &Theme) {
 /// A heading that folds the section, the same fold the tab shows, then a
 /// bar of how much of it is done and the rows the filter leaves.
 pub(super) fn paint_section(ui: &mut egui::Ui, view: &mut TasksView, index: usize, theme: &Theme) {
+    let section = view.section(index).clone();
+    paint_section_rows(ui, view, &section, theme);
+}
+
+fn paint_section_rows(
+    ui: &mut egui::Ui,
+    view: &mut TasksView,
+    section: &tree::Section,
+    theme: &Theme,
+) {
     let (s, c) = (theme.ui_scale, theme.tasks_sidebar);
-    let node = view.section(index).node.clone();
-    let (done, total) = {
-        let rows = &view.section(index).rows;
-        (rows.iter().filter(|r| r.status == Status::Completed).count(), rows.len())
-    };
+    let node = section.node.clone();
+    let (done, total) =
+        (section.rows.iter().filter(|r| r.status == Status::Completed).count(), section.rows.len());
     let open = !view.is_collapsed(&node);
     ui.add_space(4.0 * s);
     let rect = row_with_trailing(
@@ -213,15 +223,11 @@ pub(super) fn paint_section(ui: &mut egui::Ui, view: &mut TasksView, index: usiz
     if !open {
         return;
     }
-    let owned;
-    let rows = match view.hides_completed() {
-        true => {
-            owned = tree::without_completed(view.section(index).rows.clone());
-            &owned
-        },
-        false => &view.section(index).rows,
+    let shown = match view.hides_completed() {
+        true => tree::open_rows(&section.rows),
+        false => section.rows.iter().collect(),
     };
-    for row in rows.iter() {
+    for row in &shown {
         paint_row(ui, row, theme);
     }
 }

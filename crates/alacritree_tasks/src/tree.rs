@@ -192,27 +192,27 @@ pub fn descendants(rows: &[Row], i: usize) -> usize {
 
 /// The rows left showing when each row in `collapsed` hides the ones below
 /// it, each with its descendant count.
-pub fn fold<'a>(rows: &'a [Row], collapsed: &HashSet<String>) -> Vec<(&'a Row, usize)> {
+pub fn fold<'a>(rows: &[&'a Row], collapsed: &HashSet<String>) -> Vec<(&'a Row, usize)> {
     let mut out = Vec::new();
     let mut i = 0;
     while i < rows.len() {
-        let below = descendants(rows, i);
-        out.push((&rows[i], below));
+        let below = rows[i + 1..].iter().take_while(|r| r.depth > rows[i].depth).count();
+        out.push((rows[i], below));
         i += 1 + if collapsed.contains(&rows[i].id) { below } else { 0 };
     }
     out
 }
 
-/// `rows` without the completed tasks whose whole subtree is completed, so
-/// every open task still shows under its parents.
-pub fn without_completed(rows: Vec<Row>) -> Vec<Row> {
-    let open_below: Vec<bool> = (0..rows.len())
-        .map(|i| {
-            let below = &rows[i + 1..][..descendants(&rows, i)];
+/// The rows whose task or a task below it is still open, so a completed
+/// parent of an open task still shows.
+pub fn open_rows(rows: &[Row]) -> Vec<&Row> {
+    (0..rows.len())
+        .filter(|&i| {
+            let below = &rows[i + 1..][..descendants(rows, i)];
             rows[i].status == Status::Pending || below.iter().any(|r| r.status == Status::Pending)
         })
-        .collect();
-    rows.into_iter().zip(open_below).filter_map(|(row, keep)| keep.then_some(row)).collect()
+        .map(|i| &rows[i])
+        .collect()
 }
 
 fn siblings<'a>(tasks: &[&'a Task], parent: Option<&str>) -> Vec<&'a Task> {
@@ -406,8 +406,8 @@ mod tests {
         }
     }
 
-    fn shape(rows: &[Row]) -> Vec<(&str, usize)> {
-        rows.iter().map(|r| (r.id.as_str(), r.depth)).collect()
+    fn shape<'a>(rows: impl IntoIterator<Item = &'a Row>) -> Vec<(&'a str, usize)> {
+        rows.into_iter().map(|r| (r.id.as_str(), r.depth)).collect()
     }
 
     fn refs(tasks: &[Task]) -> Vec<&Task> {
@@ -454,9 +454,10 @@ mod tests {
             task("b", "r", None, Some(2048)),
         ];
         let all = rows(&refs(&t));
+        let refs: Vec<&Row> = all.iter().collect();
         let shown = |collapsed: &[&str]| -> Vec<(&str, usize)> {
             let collapsed = collapsed.iter().map(|id| id.to_string()).collect();
-            fold(&all, &collapsed).into_iter().map(|(r, below)| (r.id.as_str(), below)).collect()
+            fold(&refs, &collapsed).into_iter().map(|(r, below)| (r.id.as_str(), below)).collect()
         };
         assert_eq!(shown(&["a"]), [("a", 3), ("b", 0)]);
         assert_eq!(shown(&["a1"]), [("a", 3), ("a1", 1), ("a2", 0), ("b", 0)]);
@@ -681,7 +682,7 @@ mod tests {
             done(task("b1", "r", Some("b"), Some(1024))),
             done(task("c", "r", None, Some(3072))),
         ];
-        assert_eq!(shape(&without_completed(rows(&refs(&t)))), [("a", 0), ("a1", 1)]);
+        assert_eq!(shape(open_rows(&rows(&refs(&t)))), [("a", 0), ("a1", 1)]);
     }
 
     #[test]

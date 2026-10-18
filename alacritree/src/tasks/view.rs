@@ -261,6 +261,7 @@ type QueuedWrite = (Option<String>, Vec<Edit>);
 
 /// One section and the tasks it was built from. An added row has no id yet.
 /// Drawing the section reads these tasks instead of copying the listing.
+#[derive(Clone)]
 pub(crate) struct Built {
     pub(crate) section: Section,
     tasks: Vec<Task>,
@@ -904,8 +905,11 @@ fn draw(
             if !view.loaded && view.tasks.is_empty() && view.load_error.is_none() {
                 ui.label(RichText::new("loading tasks").color(style.dim));
             }
-            for i in 0..view.sections().len() {
-                show_section(ui, view, i, &paint);
+            // Taken once: a drop rebuilds the sections, and the rows being
+            // drawn have to outlive that.
+            let drawn = view.sections().to_vec();
+            for (i, built) in drawn.iter().enumerate() {
+                show_section(ui, view, i, built, &paint);
             }
         });
     });
@@ -967,11 +971,11 @@ struct Paint<'a> {
     c: Style,
 }
 
-fn show_section(ui: &mut Ui, view: &mut TasksView, index: usize, paint: &Paint<'_>) {
+fn show_section(ui: &mut Ui, view: &mut TasksView, index: usize, built: &Built, paint: &Paint<'_>) {
     let c = paint.c;
-    let node = view.section(index).node.clone();
+    let node = built.section.node.clone();
     let (done, total) = {
-        let rows = &view.section(index).rows;
+        let rows = &built.section.rows;
         (rows.iter().filter(|r| r.status == Status::Completed).count(), rows.len())
     };
     let open = !view.prefs.collapsed.contains(&node);
@@ -982,18 +986,19 @@ fn show_section(ui: &mut Ui, view: &mut TasksView, index: usize, paint: &Paint<'
     if !open {
         return;
     }
-    let rows = match view.prefs.hide_completed {
-        true => tree::without_completed(view.section(index).rows.clone()),
-        false => view.section(index).rows.clone(),
+    let open_rows;
+    let rows: Vec<&Row> = match view.prefs.hide_completed {
+        true => {
+            open_rows = tree::open_rows(&built.section.rows);
+            open_rows
+        },
+        false => built.section.rows.iter().collect(),
     };
     let collapsed = view.collapsed_tasks.clone();
-    let drawn: Vec<(Row, usize)> = tree::fold(&rows, &collapsed)
-        .into_iter()
-        .map(|(row, below)| (row.clone(), below))
-        .collect();
+    let drawn = tree::fold(&rows, &collapsed);
     for (row, below) in drawn {
         let id = row.id.clone();
-        show_row(ui, view, index, row, below, paint);
+        show_row(ui, view, index, row, &built.tasks, below, paint);
         let follows = |n: &NewRow| n.node == node && n.after.as_deref() == Some(&id);
         if view.new_row.as_ref().is_some_and(follows) {
             show_new_row(ui, view, index, c);
@@ -1015,7 +1020,8 @@ fn show_row(
     ui: &mut Ui,
     view: &mut TasksView,
     index: usize,
-    row: Row,
+    row: &Row,
+    tasks: &[Task],
     below: usize,
     paint: &Paint<'_>,
 ) {
@@ -1160,7 +1166,7 @@ fn show_row(
         ui.painter().set(highlight, Shape::rect_filled(rect, 2.0, fill));
     }
     let (id, depth) = (row.id.clone(), row.depth);
-    accept_drop(ui, view, index, row, rect, c);
+    accept_drop(ui, view, index, row, tasks, rect, c);
     // Below the row, since the text beside it takes the full width.
     if let Some(e) = view.row_errors.get(&id) {
         ui.horizontal(|ui| {
@@ -1375,7 +1381,8 @@ fn accept_drop(
     ui: &mut Ui,
     view: &mut TasksView,
     index: usize,
-    row: Row,
+    row: &Row,
+    tasks: &[Task],
     rect: egui::Rect,
     c: Style,
 ) {
@@ -1393,7 +1400,7 @@ fn accept_drop(
     };
     ui.painter().hline(rect.x_range(), y, Stroke::new(2.0_f32, c.text));
     if ui.input(|i| i.pointer.any_released()) {
-        let refs: Vec<&Task> = view.sections()[index].tasks.iter().collect();
+        let refs: Vec<&Task> = tasks.iter().collect();
         let edits = tree::move_to(&refs, &dragged.id, &row.id, landing);
         view.rearrange(&dragged.id, edits);
         DragAndDrop::clear_payload(ui.ctx());
