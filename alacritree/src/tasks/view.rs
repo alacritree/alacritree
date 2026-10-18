@@ -879,19 +879,33 @@ impl TasksView {
     /// Lists when the replica changed, when our own write finished, or when
     /// the stamp cannot be read. An unchanged stamp runs no export. The stamp
     /// read, including a locate after a missing file, runs on a pool job.
+    /// A stale tick lists in this call. Its stamp decides the next tick.
     fn reload_if_changed(&mut self) {
-        if self.stamp_job.is_none() {
-            let (store, side) = (self.backend.clone(), self.scope.side.clone());
-            let known = self
-                .replica_dir
-                .as_ref()
-                .filter(|(cached, _)| cached == &side)
-                .map(|(_, dir)| dir.clone());
-            self.stamp_job =
-                Some(jobs::pool().spawn(Priority::Background, move |b| {
-                    store.replica(&side, known.as_deref(), b)
-                }));
+        self.spawn_stamp();
+        if self.stale {
+            self.start_listing();
         }
+        self.take_stamp();
+    }
+
+    fn spawn_stamp(&mut self) {
+        if self.stamp_job.is_some() {
+            return;
+        }
+        let (store, side) = (self.backend.clone(), self.scope.side.clone());
+        let known = self
+            .replica_dir
+            .as_ref()
+            .filter(|(cached, _)| cached == &side)
+            .map(|(_, dir)| dir.clone());
+        self.stamp_job = Some(jobs::pool().spawn(Priority::Background, move |b| {
+            store.replica(&side, known.as_deref(), b)
+        }));
+    }
+
+    /// Applies a stamp that has landed. A stamp still running stays in its
+    /// slot. A failed read waits one interval.
+    fn take_stamp(&mut self) {
         let Some(job) = self.stamp_job.as_ref() else { return };
         let read = job.poll();
         if read.is_none() && !job.failed() {
@@ -903,14 +917,20 @@ impl TasksView {
             return;
         };
         let side = self.scope.side.clone();
-        self.replica_dir = dir.map(|dir| (side.clone(), dir));
-        let changed = self.stale || stamp.is_none() || stamp != self.listed;
+        self.replica_dir = dir.map(|dir| (side, dir));
         self.last_reload = Some(Instant::now());
-        if !changed {
+        if self.reload.is_some() {
             return;
         }
+        if self.stale || stamp.is_none() || stamp != self.listed {
+            self.listed = stamp;
+            self.start_listing();
+        }
+    }
+
+    fn start_listing(&mut self) {
         self.stale = false;
-        self.listed = stamp;
+        self.last_reload = Some(Instant::now());
         let (store, scope) = (self.backend.clone(), self.scope.clone());
         let listed = scope.clone();
         let job = jobs::pool().spawn(Priority::Background, move |b| {
@@ -1866,7 +1886,10 @@ mod tests {
             )]);
         let mut view = tab(&store);
         settle_reload(&mut view);
+        store.hold_next_stamp();
         land(&mut view, Place::Project { repo: "other".into() });
+        assert!(view.reload.is_some(), "a scope change lists before the stamp returns");
+        store.release_stamp();
         settle_reload(&mut view);
         assert_eq!(store.listings(), 2);
     }
@@ -2003,8 +2026,10 @@ mod tests {
         view.stale = true;
         view.tick();
         assert!(view.stamp_job.is_none(), "a failed stamp clears its slot");
+        assert!(view.reload.is_some(), "a stale tick still lists");
         view.tick();
         assert!(view.stamp_job.is_none(), "a failed stamp waits one interval");
+        view.reload = None;
         view.stamp_retry = Instant::now() - Duration::from_millis(1);
         view.stale = true;
         view.tick();
@@ -2056,15 +2081,7 @@ mod tests {
         );
         view.stale = true;
         view.last_reload = Some(Instant::now());
-        let started_by = Instant::now() + Duration::from_secs(10);
-        loop {
-            view.tick();
-            if view.reload.is_some() {
-                break;
-            }
-            assert!(Instant::now() < started_by, "the listing never landed");
-            std::thread::yield_now();
-        }
+        view.tick();
         let started_listing =
             view.reload.as_ref().expect("the repository listing is in flight").scope.clone();
         assert_eq!(started_listing, started);
