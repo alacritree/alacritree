@@ -2033,7 +2033,10 @@ mod tests {
         view.stamp_retry = Instant::now() - Duration::from_millis(1);
         view.stale = true;
         view.tick();
-        assert!(view.stamp_job.is_some(), "the next due tick reads the stamp");
+        assert!(view.reload.is_some(), "a stale tick lists before the stamp");
+        view.reload = None;
+        view.tick();
+        assert!(view.stamp_job.is_some(), "the next tick reads the stamp");
     }
 
     /// A listing that returns an error is listed again on the next due tick.
