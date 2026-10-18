@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.15.0](https://github.com/alacritree/alacritree/compare/v0.14.0...v0.15.0) (2026-10-18)
+
+
+### Features
+
+* **bindings:** cycle running agents with Shift+Alt+Up/Down ([#406](https://github.com/alacritree/alacritree/issues/406)) ([439e052](https://github.com/alacritree/alacritree/commit/439e052d5e43cdaf7664ac7ce6a917bf5071934f))
+* **session:** name alacritree in TERM_PROGRAM [86] ([#388](https://github.com/alacritree/alacritree/issues/388)) ([2bc925b](https://github.com/alacritree/alacritree/commit/2bc925b5bfab7990d1ada704c359cad71b0dc9df))
+* **tasks:** watch a WSL replica for changes ([#424](https://github.com/alacritree/alacritree/issues/424)) ([8533a91](https://github.com/alacritree/alacritree/commit/8533a917c2befd2678f0e3c74756b09e2290089e))
+* **ui:** draw kitty graphics protocol images [87] ([#390](https://github.com/alacritree/alacritree/issues/390)) ([4f8b1bf](https://github.com/alacritree/alacritree/commit/4f8b1bf85e79233ab3b020b0785409bb303f4a76))
+* **ui:** draw kitty unicode placeholder images [89] ([#395](https://github.com/alacritree/alacritree/issues/395)) ([ae516f9](https://github.com/alacritree/alacritree/commit/ae516f9bc4f7d936896b15d82edaaf1d224c1657))
+* **ui:** draw sixel images [88] ([#394](https://github.com/alacritree/alacritree/issues/394)) ([63b36b4](https://github.com/alacritree/alacritree/commit/63b36b4ac59d0b5ad9c0443173bc438dc253df90))
+* **ui:** show kitty images in WSL panes [90] ([#397](https://github.com/alacritree/alacritree/issues/397)) ([4b67305](https://github.com/alacritree/alacritree/commit/4b673058be282cf403dc520eaffaa885c46f8143))
+* **vt:** handle OSC codes that need no grid [85] ([#383](https://github.com/alacritree/alacritree/issues/383)) ([e0faca4](https://github.com/alacritree/alacritree/commit/e0faca446164ffcf2c0aec050cb171ccf97d0155))
+
+
+### Bug Fixes
+
+* **sidebar:** step every loader on one wall-clock beat ([#405](https://github.com/alacritree/alacritree/issues/405)) ([6c5e5e3](https://github.com/alacritree/alacritree/commit/6c5e5e30ce980eae177654f75223c14b274c34f8))
+* **tasks:** build the task sections once ([#422](https://github.com/alacritree/alacritree/issues/422)) ([3c5324a](https://github.com/alacritree/alacritree/commit/3c5324a62781e8df54d57d4e8eb3c0f0edefa697))
+* **tasks:** create a missing taskrc in task setup ([#408](https://github.com/alacritree/alacritree/issues/408)) ([38b09ec](https://github.com/alacritree/alacritree/commit/38b09ec999ee0f5ff05aad289c8693c64609eb7c))
+* **tasks:** list only the workspace subtree ([#421](https://github.com/alacritree/alacritree/issues/421)) ([5d3b011](https://github.com/alacritree/alacritree/commit/5d3b011d23b1d8a4dc0d2dd5ce85c8ecfee9d3fa))
+* **tasks:** read the task store only when it changes ([#423](https://github.com/alacritree/alacritree/issues/423)) ([0dcb09b](https://github.com/alacritree/alacritree/commit/0dcb09b0b30b6cbd3c7d4e8232b000fb1678c6cb))
+
 ## [0.14.0](https://github.com/alacritree/alacritree/compare/v0.13.0...v0.14.0) (2026-09-28)
 
 
