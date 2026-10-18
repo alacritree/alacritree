@@ -382,7 +382,11 @@ impl Cli<'_> {
     fn run(&self, args: &[String]) -> Result<Ran, TaskError> {
         let mut argv: Vec<String> =
             UDA_DECLARATIONS.iter().map(|(k, v)| format!("rc.{k}={v}")).collect();
-        argv.push("rc.gc=off".into());
+        // Garbage collection writes the database on a report, which moves the
+        // stamps. A write keeps taskwarrior's own collection.
+        if args.iter().any(|arg| arg == "export") {
+            argv.push("rc.gc=off".into());
+        }
         argv.push("rc.confirmation=off".into());
         argv.extend(args.iter().cloned());
         let mut retries = BUSY_RETRIES.iter();
