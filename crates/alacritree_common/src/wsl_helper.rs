@@ -1060,6 +1060,10 @@ struct SharedWatch {
     generation: u64,
     /// The last change or failure. Dropped when a caller names its generation.
     held: Option<Result<WatchKind, TransportError>>,
+    /// A `WATCH` is open on the helper, or its answer is still being handed
+    /// out. Waiter generations do not say this: a quiet answer leaves them
+    /// behind the generation a fresh tab names.
+    in_flight: bool,
 }
 
 fn watches() -> &'static Mutex<HashMap<(String, String), SharedWatch>> {
@@ -1080,6 +1084,15 @@ pub fn reset_helper(distro: &str) {
 #[cfg(any(test, feature = "test-support"))]
 pub fn reset_watches() {
     lock(watches()).clear();
+}
+
+/// Whether a watch of `(distro, path)` is open, and the generation it holds.
+/// `None` when that replica has no shared watch.
+#[cfg(test)]
+fn watch_state(distro: &str, path: &str) -> Option<(bool, u64)> {
+    lock(watches())
+        .get(&(distro.to_string(), path.to_string()))
+        .map(|shared| (shared.in_flight, shared.generation))
 }
 
 /// A client standing in for the distro's helper, so a test can share a watch
@@ -1239,20 +1252,29 @@ pub fn watch(
             waiters: Vec::new(),
             generation: 0,
             held: None,
+            in_flight: false,
         });
-        // `0` is a first request. A caller that names this generation has heard it.
-        if seen > 0 && shared.generation == seen {
-            shared.held = None;
-        } else if shared.generation > seen {
+        let caught = shared.generation > seen && shared.held.is_some();
+        if caught {
             if let Some(held) = shared.held.clone() {
                 let generation = shared.generation;
                 let _ = tx.send(watch_answer(held, generation));
-                return Some((generation, rx));
             }
         }
-        // A caller that already names this generation starts the next watch.
-        let start = shared.waiters.iter().all(|waiter| waiter.seen < shared.generation);
+        if shared.generation > seen && !shared.in_flight {
+            return Some((shared.generation, rx));
+        }
+        // A watch already open stays the one watch. Waiter generations do
+        // not say whether one is open: a quiet answer leaves them behind.
+        let start = !shared.in_flight;
         shared.waiters.push(Waiter { seen, tx });
+        if start {
+            shared.in_flight = true;
+        }
+        // Only the caller that takes the held answer drops it.
+        if caught {
+            shared.held = None;
+        }
         start
     };
     if start {
@@ -1261,40 +1283,31 @@ pub fn watch(
         let spawned =
             std::thread::Builder::new().name("wsl-helper-watch".to_string()).spawn(move || {
                 let found = client.watch(&watched);
-                let waiters = {
+                // `in_flight` drops in this same section, after the hand-out,
+                // so a caller that arrives here cannot open a second watch.
+                let pending = {
                     let mut watches = lock(watches());
-                    match watches.get_mut(&owner) {
-                        Some(shared) => deliver(shared, found),
-                        None => Vec::new(),
-                    }
-                };
-                for (tx, answer) in waiters {
-                    let _ = tx.send(answer);
-                }
-                // A caller that arrived during the hand-out still names the
-                // generation it saw. One that names it already drops the answer.
-                let late = {
-                    let mut watches = lock(watches());
-                    watches.get_mut(&owner).map(|shared| {
-                        let found =
-                            shared.held.clone().map(|held| watch_answer(held, shared.generation));
-                        let Some(found) = found else { return Vec::new() };
+                    let Some(shared) = watches.get_mut(&owner) else { return };
+                    let mut pending = deliver(shared, found);
+                    while let Some(held) = shared.held.clone() {
+                        let answer = watch_answer(held, shared.generation);
                         let (due, waiting): (Vec<Waiter>, Vec<Waiter>) =
                             std::mem::take(&mut shared.waiters).into_iter().partition(|waiter| {
-                                match &found {
+                                match &answer {
                                     Ok(watch) => watch.generation > waiter.seen,
                                     Err(error) => error.generation > waiter.seen,
                                 }
                             });
-                        let heard = waiting.iter().any(|waiter| waiter.seen >= shared.generation);
-                        if heard && waiting.iter().all(|waiter| waiter.seen >= shared.generation) {
-                            shared.held = None;
-                        }
                         shared.waiters = waiting;
-                        due.into_iter().map(|waiter| (waiter.tx, found.clone())).collect()
-                    })
+                        if due.is_empty() {
+                            break;
+                        }
+                        pending.extend(due.into_iter().map(|waiter| (waiter.tx, answer.clone())));
+                    }
+                    shared.in_flight = false;
+                    pending
                 };
-                for (tx, answer) in late.unwrap_or_default() {
+                for (tx, answer) in pending {
                     let _ = tx.send(answer);
                 }
                 // The answer is on a channel the UI only reads from a frame,
@@ -1303,6 +1316,9 @@ pub fn watch(
             });
         if let Err(e) = spawned {
             log::warn!("wsl watch thread failed to start: {e}");
+            if let Some(shared) = lock(watches()).get_mut(&key) {
+                shared.in_flight = false;
+            }
             return None;
         }
     }
@@ -1320,8 +1336,26 @@ fn deliver(
             // A quiet wait found nothing, so the generation stays and the
             // next caller starts a new watch instead of hearing a non-event.
             if watch.kind == WatchKind::Quiet {
-                shared.held = None;
-                return shared.waiters.drain(..).map(|waiter| (waiter.tx, Ok(watch))).collect();
+                let generation = shared.generation;
+                let answer = Ok(Watch { kind: WatchKind::Quiet, generation });
+                let (heard, waiting): (Vec<Waiter>, Vec<Waiter>) =
+                    std::mem::take(&mut shared.waiters)
+                        .into_iter()
+                        .partition(|waiter| waiter.seen >= generation);
+                shared.waiters = waiting;
+                let mut pending: Vec<_> =
+                    heard.into_iter().map(|waiter| (waiter.tx, answer.clone())).collect();
+                // A waiter behind this generation still needs the held change.
+                if let Some(held) = shared.held.take() {
+                    let caught = watch_answer(held, generation);
+                    let (due, waiting): (Vec<Waiter>, Vec<Waiter>) =
+                        std::mem::take(&mut shared.waiters)
+                            .into_iter()
+                            .partition(|waiter| waiter.seen < generation);
+                    shared.waiters = waiting;
+                    pending.extend(due.into_iter().map(|waiter| (waiter.tx, caught.clone())));
+                }
+                return pending;
             }
             Ok(watch.kind)
         },
@@ -1882,6 +1916,72 @@ mod tests {
         let again = watch("rearm", "/r", heard.generation).expect("the helper is up");
         assert!(try_read_line(&helper.from_client).is_some(), "a re-armed tab sent no watch");
         assert!(again.1.try_recv().is_err(), "a re-armed tab heard the change it already had");
+        set_watch_client(None);
+    }
+
+    /// A re-arm after a quiet answer keeps the watch a fresh tab opened.
+    #[test]
+    fn a_rearm_after_a_quiet_answer_keeps_the_watch_a_fresh_tab_opened() {
+        let (client, mut helper) = FakeHelper::silent();
+        let _watch = watch_tests();
+        set_watch_client(Some(client));
+        reset_watches();
+        let open = watch("race", "/r", 0).expect("the helper is up");
+        let sent = helper.read_line();
+        let id = sent.split('\t').next().expect("a request id").trim().to_string();
+        helper.answer(&id, b"changed");
+        let Ok(heard) = await_watch(&open.1) else { panic!("the open tab missed the change") };
+        assert!(heard.generation > 0, "a change kept generation 0");
+        let quiet = watch("race", "/r", heard.generation).expect("the helper is up");
+        let quiet_sent = try_read_line(&helper.from_client).expect("a re-arm sent no watch");
+        let quiet_id = quiet_sent.split('\t').next().expect("a request id").trim().to_string();
+        // The fresh tab arms while the quiet watch is still the open one.
+        assert_eq!(watch_state("race", "/r"), Some((true, heard.generation)));
+        let fresh = watch("race", "/r", 0).expect("the helper is up");
+        assert!(
+            try_read_line(&helper.from_client).is_none(),
+            "a fresh tab opened a watch while one was already open"
+        );
+        helper.answer(&quiet_id, b"same");
+        let Ok(quiet_heard) = await_watch(&quiet.1) else {
+            panic!("the quiet watch never answered")
+        };
+        assert_eq!(quiet_heard.kind, WatchKind::Quiet);
+        assert_eq!(quiet_heard.generation, heard.generation, "a quiet answer counted as a change");
+        let Ok(caught) = fresh.1.try_recv().expect("a fresh tab missed the change it already has")
+        else {
+            panic!("a fresh tab got an error");
+        };
+        assert_eq!(caught.generation, heard.generation, "a fresh tab heard a different change");
+        assert!(
+            try_read_line(&helper.from_client).is_none(),
+            "a fresh tab that already has the change opened a watch"
+        );
+        // Both tabs now name generation 1 and re-arm. One watch stays open.
+        let fresh_again = watch("race", "/r", caught.generation).expect("the helper is up");
+        let rearmed = watch("race", "/r", heard.generation).expect("the helper is up");
+        let resent = try_read_line(&helper.from_client).expect("the re-arm sent no watch");
+        assert!(
+            try_read_line(&helper.from_client).is_none(),
+            "the tab that heard the quiet answer opened a second watch"
+        );
+        assert!(fresh_again.1.try_recv().is_err(), "the fresh tab heard a change before the write");
+        assert!(rearmed.1.try_recv().is_err(), "the re-armed tab heard a change before the write");
+        let write_id = resent.split('\t').next().expect("a request id").trim().to_string();
+        helper.answer(&write_id, b"changed");
+        let (Ok(fresh_heard), Ok(rearm_heard)) =
+            (await_watch(&fresh_again.1), await_watch(&rearmed.1))
+        else {
+            panic!("a tab missed the write");
+        };
+        assert_eq!(
+            fresh_heard.generation, rearm_heard.generation,
+            "the tabs heard different writes"
+        );
+        assert!(fresh_heard.generation > heard.generation, "the write kept the earlier generation");
+        assert!(fresh_again.1.try_recv().is_err(), "the fresh tab heard the write twice");
+        assert!(rearmed.1.try_recv().is_err(), "the re-armed tab heard the write twice");
+        assert!(try_read_line(&helper.from_client).is_none(), "the write answered a second watch");
         set_watch_client(None);
     }
 
