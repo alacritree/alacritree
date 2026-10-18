@@ -71,14 +71,20 @@ impl FakeBackend {
         self.store().edits.clone()
     }
 
+    /// The next stamp read waits until release.
+    pub fn hold_next_stamp(&self) {
+        self.store().hold_stamp = true;
+    }
+
+    /// Lets a held stamp read return.
+    pub fn release_stamp(&self) {
+        self.store().hold_stamp = false;
+    }
+
     /// A replica whose files the tab cannot find.
     pub fn unstamped(self) -> Self {
         self.store().stamped = false;
         self
-    }
-
-    pub fn has_stamp(&self) -> bool {
-        self.store().stamped
     }
 
     /// The replica stamp the tab reads before a reload.
@@ -86,7 +92,7 @@ impl FakeBackend {
         self.store().stamp
     }
 
-    /// A write by another process: the stamp moves and the tasks change.
+    /// A write by another process. The stamp moves and the tasks change.
     pub fn written_elsewhere(&self, tasks: Vec<Task>) {
         let mut store = self.store();
         store.stamp += 1;
@@ -141,6 +147,10 @@ impl TaskBackend for FakeBackend {
         _: Option<&std::path::Path>,
         _: &Blocking,
     ) -> Result<Option<(crate::Stamp, std::path::PathBuf)>, TaskError> {
+        while self.store().hold_stamp {
+            drop(self.store());
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
         let store = self.store();
         Ok(store.stamped.then(|| {
             (crate::Stamp { bytes: store.stamp.to_le_bytes().to_vec() }, std::path::PathBuf::new())
