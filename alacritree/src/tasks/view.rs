@@ -339,9 +339,9 @@ pub(crate) struct TasksView {
     /// A failed add has no row to show on; it stays until the next write.
     write_error: Option<String>,
     reload: Option<PendingReload>,
-    listed: Option<String>,
+    listed: Option<alacritree_tasks::Stamp>,
     /// A stamp read in flight. The frame only polls it.
-    stamp_job: Option<Job<(Option<String>, Option<PathBuf>)>>,
+    stamp_job: Option<Job<(Option<alacritree_tasks::Stamp>, Option<PathBuf>)>>,
     /// The replica directory last located for this side. A later tick stats it.
     replica_dir: Option<(Side, PathBuf)>,
     last_reload: Option<Instant>,
@@ -883,7 +883,7 @@ impl TasksView {
                 .filter(|(cached, _)| cached == &side)
                 .map(|(_, dir)| dir.clone());
             self.stamp_job = Some(jobs::pool().spawn(Priority::Background, move |b| {
-                backend::replica_stamp(&store, &side, known.as_deref(), b)
+                store.replica(&side, known.as_deref(), b)
             }));
         }
         let Some(job) = self.stamp_job.as_ref() else { return };

@@ -7,7 +7,7 @@ mod replica;
 mod settings;
 
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Output, Stdio};
 #[cfg(test)]
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -22,6 +22,7 @@ use alacritree_common::wsl_helper::{self, TransportError};
 use alacritree_tasks::{Edit, Filter, NodeMatch, Status, Task, TaskBackend, TaskError};
 use serde::Deserialize;
 
+pub use self::replica::ReplicaStamp;
 pub use self::settings::{RawTaskwarrior, TaskwarriorConfig};
 
 /// A task's parent is the `subof` UDA and its place among siblings the
@@ -198,6 +199,18 @@ impl TaskBackend for Taskwarrior {
             },
             edit => cli.run(&edit_args(edit)).map(drop),
         }
+    }
+
+    fn replica_stamp(
+        &self,
+        side: &Side,
+        known: Option<&Path>,
+        blocking: &Blocking,
+    ) -> Result<Option<(alacritree_tasks::Stamp, PathBuf)>, TaskError> {
+        let Some((replica, stamp)) = self.cached_replica(side, known, blocking)? else {
+            return Ok(None);
+        };
+        Ok(Some((alacritree_tasks::Stamp { bytes: stamp.bytes() }, replica.dir)))
     }
 
     fn agent_guide(&self, project: &str) -> String {

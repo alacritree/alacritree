@@ -40,6 +40,36 @@ pub struct ReplicaStamp {
     wal: Option<FileStamp>,
 }
 
+impl ReplicaStamp {
+    /// The bytes a caller compares between listings.
+    pub fn bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend(self.db.len.to_le_bytes());
+        out.extend(self.db.modified.map(time_bytes).unwrap_or([0; 16]));
+        match &self.wal {
+            Some(wal) => {
+                out.push(1);
+                out.extend(wal.len.to_le_bytes());
+                out.extend(wal.modified.map(time_bytes).unwrap_or([0; 16]));
+            },
+            None => out.push(0),
+        }
+        out
+    }
+}
+
+fn time_bytes(time: SystemTime) -> [u8; 16] {
+    let (sign, dur) = match time.duration_since(SystemTime::UNIX_EPOCH) {
+        Ok(dur) => (1_u8, dur),
+        Err(e) => (0, e.duration()),
+    };
+    let mut out = [0; 16];
+    out[0] = sign;
+    out[1..9].copy_from_slice(&dur.as_secs().to_le_bytes());
+    out[9..13].copy_from_slice(&dur.subsec_nanos().to_le_bytes());
+    out
+}
+
 /// The directory `task _get rc.data.location` named, on the side that named it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Replica {

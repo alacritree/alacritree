@@ -134,6 +134,18 @@ impl TaskBackend for FakeBackend {
     fn agent_guide(&self, project: &str) -> String {
         format!("Write your tasks to `{project}`.\n")
     }
+
+    fn replica_stamp(
+        &self,
+        _: &Side,
+        _: Option<&std::path::Path>,
+        _: &Blocking,
+    ) -> Result<Option<(crate::Stamp, std::path::PathBuf)>, TaskError> {
+        let store = self.store();
+        Ok(store.stamped.then(|| {
+            (crate::Stamp { bytes: store.stamp.to_le_bytes().to_vec() }, std::path::PathBuf::new())
+        }))
+    }
 }
 
 /// A held apply. Dropping it releases the apply.

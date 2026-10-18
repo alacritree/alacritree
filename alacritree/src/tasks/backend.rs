@@ -33,28 +33,21 @@ impl Backend {
     }
 }
 
-pub(crate) fn replica_stamp(
-    backend: &Backend,
-    side: &Side,
-    known: Option<&Path>,
-    blocking: &Blocking,
-) -> (Option<String>, Option<PathBuf>) {
-    match backend {
-        Backend::Taskwarrior(tw) => taskwarrior_stamp(tw, side, known, blocking),
-        Backend::Command(_) => (None, None),
-        #[cfg(test)]
-        Backend::Fake(fake) => (fake.has_stamp().then(|| fake.stamp().to_string()), None),
+impl Backend {
+    /// The stamp and the directory it was read from. A missing directory is
+    /// located again on the next read. Delegates to the backend, so a command
+    /// backend with no files returns none.
+    pub(crate) fn replica(
+        &self,
+        side: &Side,
+        known: Option<&Path>,
+        blocking: &Blocking,
+    ) -> (Option<alacritree_tasks::Stamp>, Option<PathBuf>) {
+        match self.replica_stamp(side, known, blocking) {
+            Ok(Some((stamp, dir))) => (Some(stamp), Some(dir)),
+            _ => (None, None),
+        }
     }
-}
-fn taskwarrior_stamp(
-    tw: &Taskwarrior,
-    side: &Side,
-    known: Option<&Path>,
-    blocking: &Blocking,
-) -> (Option<String>, Option<PathBuf>) {
-    let located = tw.cached_replica(side, known, blocking).ok().flatten();
-    let stamp = located.as_ref().map(|(_, stamp)| format!("{stamp:?}"));
-    (stamp, located.map(|(replica, _)| replica.dir))
 }
 
 /// Applies `edits` in order and stops at the first that fails, since a later
