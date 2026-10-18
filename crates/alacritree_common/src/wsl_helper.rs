@@ -1,8 +1,7 @@
 //! Resident WSL helper: one long-lived `sh` per distro, spoken to over its
-//! stdio pipe, serving the batch scripts (`RUN`), the foreground-process
-//! probe (`PROBE`), and tool paths (the hello line) without a per-call
-//! `wsl.exe` spawn. The wire protocol is the seam a future compiled helper
-//! would slot behind; nothing outside this module knows it exists.
+//! stdio pipe. It serves `RUN`, `PROBE`, `WATCH` and the hello line without a
+//! per-call `wsl.exe` spawn. The wire protocol is the seam a future compiled
+//! helper would slot behind; nothing outside this module knows it exists.
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
@@ -12,8 +11,8 @@ use crate::tools::Tool;
 
 /// Bumped only when the request/response framing changes incompatibly; a
 /// client seeing any other version treats the helper as unusable and stays
-/// on one-shot spawns.
-pub const PROTOCOL_VERSION: &str = "2";
+/// on one-shot spawns. `3` adds `WATCH`, which an older helper does not know.
+pub const PROTOCOL_VERSION: &str = "3";
 
 /// The programs the hello resolves, in the order its fields carry them.
 /// `HELPER_SCRIPT` spells the same list.
@@ -56,6 +55,12 @@ pub fn encode_run(id: u64, script: &str, args: &[&str]) -> String {
 
 pub fn encode_probe(id: u64, key: &str) -> String {
     format!("{id}\tPROBE\t{key}\n")
+}
+
+/// A watch on a Linux directory. The path is base64 for the same reason a
+/// `RUN` field is: a tab in it would split the request.
+pub fn encode_watch(id: u64, path: &str) -> String {
+    format!("{id}\tWATCH\t{}\n", encode_field(path))
 }
 
 pub fn parse_hello(line: &str) -> Option<Capabilities> {
@@ -172,7 +177,7 @@ s=$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f7)
 [ -x "$s" ] || s=${SHELL:-/bin/sh}
 caps=$("$s" -lc 'command -v git || echo; command -v gh || echo; command -v delta || echo; command -v doppler || echo; command -v herdr || echo; command -v tuicr || echo; command -v task || echo; command -v zellij || echo' 2>/dev/null)
 rt=${XDG_RUNTIME_DIR:-/tmp}/alacritree
-printf 'hello\t2'
+printf 'hello\t3'
 i=1
 while [ "$i" -le 8 ]; do
   printf '\t%s' "$(b64 "$(printf %s "$caps" | sed -n "${i}p")")"
@@ -285,6 +290,55 @@ while IFS=$TAB read -r id kind rest; do
     ) &
     ;;
   PING) printf '0 0\n' >> "$t/done" & ;;
+  WATCH)
+    # In the background, so a watch that waits for a change neither holds the
+    # read loop nor delays a RUN or PROBE queued behind it. inotifywait when
+    # the distro has it; otherwise a stat of the replica files, the same
+    # comparison the tab makes, run inside the distro. A missing directory
+    # answers at once, and the caller locates again.
+    (
+      if [ "$rest" = - ]; then dir=; else dir=$(printf %s "$rest" | base64 -d 2>/dev/null); fi
+      out="$t/$id.out"
+      if [ -z "$dir" ] || [ ! -d "$dir" ]; then
+        printf '%s\n' missing > "$out"
+      else
+        stamp() {
+          s=
+          for f in taskchampion.sqlite3 taskchampion.sqlite3-wal; do
+            if [ -f "$dir/$f" ]; then
+              s="$s $(stat -c '%s %y' "$dir/$f" 2>/dev/null)"
+            else
+              s="$s -"
+            fi
+          done
+          printf %s "$s"
+        }
+        before=$(stamp)
+        if command -v inotifywait >/dev/null 2>&1; then
+          # A write between the stamp and the registration is invisible to
+          # inotify, so each wait is short and the stamp is compared after it.
+          waited=0
+          while [ "$waited" -lt 3600 ]; do
+            inotifywait -qq -t 5 -e close_write,move,create,delete,attrib "$dir" 2>/dev/null
+            [ "$(stamp)" = "$before" ] || break
+            waited=$((waited + 5))
+          done
+        else
+          i=0
+          while [ "$i" -lt 36000 ]; do
+            [ "$(stamp)" = "$before" ] || break
+            sleep 0.1
+            [ "$(stamp)" = "$before" ] || break
+            i=$((i + 1))
+          done
+        fi
+        after=$(stamp)
+        if [ "$after" = "$before" ]; then word=same; else word=changed; fi
+        if command -v inotifywait >/dev/null 2>&1; then printf '%s bounded\n' "$word" > "$out"; else printf '%s stat\n' "$word" > "$out"; fi
+      fi
+      printf '%s 0\n' "$id" >> "$t/done"
+    ) &
+    ;;
   esac
 done
 "##;
@@ -503,6 +557,9 @@ use crate::wsl;
 /// probes are two `/proc` reads and only ever gate a keypress decision.
 const RUN_TIMEOUT: Duration = Duration::from_secs(60);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+/// A watch waits inside the distro for up to an hour. The client bound is
+/// past that, so a quiet watch answers as `Quiet` rather than a dead helper.
+const WATCH_TIMEOUT: Duration = Duration::from_secs(3700);
 /// A broken distro must not cause a spawn storm.
 const RESPAWN_COOLDOWN: Duration = Duration::from_secs(30);
 
@@ -553,10 +610,12 @@ pub fn enabled() -> bool {
 /// as a one-shot. `NoReply` was written and may have executed, and batch
 /// scripts have side effects, so it must surface as an error, never a silent
 /// retry.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum TransportError {
-    #[error("{0}")]
-    NotWritten(#[source] std::io::Error),
+    /// Never reached the helper. The I/O error is the source, shared so a
+    /// watch can hand the same failure to every tab waiting on it.
+    #[error("{}", .0)]
+    NotWritten(Arc<std::io::Error>),
     #[error("{0}")]
     NoReply(String),
 }
@@ -568,6 +627,12 @@ pub struct HelperClient {
     stdin: Mutex<Option<Box<dyn Write + Send>>>,
     pending: Mutex<HashMap<u64, mpsc::Sender<Frame>>>,
     next_id: AtomicU64,
+    /// Requests written, for a test that asks whether a quiet tab sent one.
+    #[cfg(any(test, feature = "test-support"))]
+    sent: AtomicU64,
+    /// `WATCH` requests written. Two tabs on one replica share one.
+    #[cfg(any(test, feature = "test-support"))]
+    watches_sent: AtomicU64,
     capabilities: OnceLock<Capabilities>,
     down: AtomicBool,
     /// Kept so a teardown can end a `wsl.exe` that stopped draining its
@@ -602,6 +667,10 @@ impl HelperClient {
             stdin: Mutex::new(None),
             pending: Mutex::new(HashMap::new()),
             next_id: AtomicU64::new(1),
+            #[cfg(any(test, feature = "test-support"))]
+            sent: AtomicU64::new(0),
+            #[cfg(any(test, feature = "test-support"))]
+            watches_sent: AtomicU64::new(0),
             capabilities: OnceLock::new(),
             down: AtomicBool::new(false),
             child: Mutex::new(None),
@@ -734,7 +803,7 @@ impl HelperClient {
     /// A client over arbitrary pipes, so a test can be the helper. Starts
     /// the reader thread the same way `spawn` does; there is no child to
     /// reap, so teardown finds `None` and skips the kill.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn over(
         distro: &str,
         reader: Box<dyn Read + Send>,
@@ -746,6 +815,10 @@ impl HelperClient {
             stdin: Mutex::new(Some(writer)),
             pending: Mutex::new(HashMap::new()),
             next_id: AtomicU64::new(1),
+            #[cfg(any(test, feature = "test-support"))]
+            sent: AtomicU64::new(0),
+            #[cfg(any(test, feature = "test-support"))]
+            watches_sent: AtomicU64::new(0),
             capabilities: OnceLock::new(),
             down: AtomicBool::new(false),
             child: Mutex::new(None),
@@ -764,10 +837,9 @@ impl HelperClient {
 
     fn request(&self, id: u64, line: String, timeout: Duration) -> Result<Frame, TransportError> {
         if !self.is_ready() {
-            return Err(TransportError::NotWritten(std::io::Error::new(
-                std::io::ErrorKind::NotConnected,
+            return Err(TransportError::NotWritten(Arc::new(std::io::Error::other(
                 "helper not ready",
-            )));
+            ))));
         }
         let (tx, rx) = mpsc::channel();
         lock(&self.pending).insert(id, tx);
@@ -784,8 +856,16 @@ impl HelperClient {
             lock(&self.pending).remove(&id);
             // A partial line has no terminating newline, so the dispatcher
             // can never have run it, and NotWritten is safe.
-            self.mark_down(&format!("write failed: {e}"));
-            return Err(TransportError::NotWritten(e));
+            let error = TransportError::NotWritten(Arc::new(e));
+            self.mark_down(&format!("write failed: {error}"));
+            return Err(error);
+        }
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            self.sent.fetch_add(1, Ordering::Relaxed);
+            if line.contains("\tWATCH\t") {
+                self.watches_sent.fetch_add(1, Ordering::Relaxed);
+            }
         }
         // Liveness is asked as "has anything arrived recently", not "was
         // this reply on time". A loaded host delivers late, a wedged helper
@@ -844,8 +924,11 @@ impl HelperClient {
                 )));
             }
             // After the judgment, so the next slice reads the answer to this
-            // slice's question rather than to one sent moments ago.
-            self.ping();
+            // slice's question rather than to one sent moments ago. A watch
+            // has nothing to prove until its deadline.
+            if timeout != WATCH_TIMEOUT {
+                self.ping();
+            }
         }
     }
 
@@ -861,6 +944,52 @@ impl HelperClient {
         let comm = String::from_utf8_lossy(&frame.payload).trim().to_string();
         Ok((!comm.is_empty()).then_some(comm))
     }
+
+    /// Watches `path` inside the distro until the replica files change, the
+    /// directory is gone, or the wait ends. A watch answers on its own
+    /// request id, so a `RUN` or `PROBE` sent while it is open is not held.
+    pub fn watch(&self, path: &str) -> Result<Watch, TransportError> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let frame = self.request(id, encode_watch(id, path), WATCH_TIMEOUT)?;
+        Ok(Watch {
+            kind: match String::from_utf8_lossy(&frame.payload).trim() {
+                "changed" => WatchKind::Changed,
+                "missing" => WatchKind::Missing,
+                _ => WatchKind::Quiet,
+            },
+            generation: 0,
+        })
+    }
+}
+
+/// What one watch of a replica directory found, and which change it was.
+/// `generation` goes up once per detected change of that replica. A caller
+/// that already holds it asks again with that number and waits for the next.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Watch {
+    pub kind: WatchKind,
+    pub generation: u64,
+}
+
+/// A shared watch that failed, with the generation of that failure. A caller
+/// stores it and names it on the next arm, so the same failure is heard once.
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("{}", .error)]
+pub struct WatchError {
+    #[source]
+    pub error: TransportError,
+    pub generation: u64,
+}
+
+/// Which event one watch of a replica directory found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WatchKind {
+    /// The replica files moved while the watch was open.
+    Changed,
+    /// The directory was not there, so the caller locates again.
+    Missing,
+    /// The wait ended with the files as they were.
+    Quiet,
 }
 
 enum Slot {
@@ -896,6 +1025,355 @@ pub fn client(distro: &str) -> Option<Arc<HelperClient>> {
     }
     reg.insert(distro.to_string(), Slot::Live(HelperClient::spawn(distro)));
     None
+}
+
+/// Requests `distro`'s helper has been sent. A quiet tab sends none.
+#[cfg(any(test, feature = "test-support"))]
+pub fn requests_sent(distro: &str) -> u64 {
+    match lock(registry()).get(distro) {
+        Some(Slot::Live(client)) => client.sent.load(Ordering::Relaxed),
+        _ => 0,
+    }
+}
+
+/// `WATCH` requests `distro`'s helper has been sent. One per replica, however
+/// many tabs show it.
+#[cfg(any(test, feature = "test-support"))]
+pub fn watches_sent(distro: &str) -> u64 {
+    if let Some(client) = watch_override().lock().unwrap_or_else(PoisonError::into_inner).clone() {
+        return client.watches_sent.load(Ordering::Relaxed);
+    }
+    match lock(registry()).get(distro) {
+        Some(Slot::Live(client)) => client.watches_sent.load(Ordering::Relaxed),
+        _ => 0,
+    }
+}
+
+/// One watch of a replica directory, shared by every tab that shows it. The
+/// helper answers once. `generation` is the last change detected, and a
+/// caller names the generation it already has. A newer one answers at once;
+/// the same one holds the request until the next change.
+struct SharedWatch {
+    waiters: Vec<Waiter>,
+    /// The last change of this replica. `0` before the first one. A failure
+    /// moves it too, so a tab that missed the failure still hears it.
+    generation: u64,
+    /// The last change or failure. Dropped when a caller names its generation.
+    held: Option<Result<WatchKind, TransportError>>,
+    /// A `WATCH` is open on the helper, or its answer is still being handed
+    /// out. Waiter generations do not say this: a quiet answer leaves them
+    /// behind the generation a fresh tab names.
+    in_flight: bool,
+}
+
+fn watches() -> &'static Mutex<HashMap<(String, String), SharedWatch>> {
+    static WATCHES: OnceLock<Mutex<HashMap<(String, String), SharedWatch>>> = OnceLock::new();
+    WATCHES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Drops the helper for `distro`, so the next request starts a new one.
+#[cfg(any(test, feature = "test-support"))]
+pub fn reset_helper(distro: &str) {
+    if let Some(Slot::Live(client)) = lock(registry()).remove(distro) {
+        client.mark_down("test reset");
+    }
+}
+
+/// Drops every shared watch, so a test starts from none. A watch already
+/// sent keeps running; its answer has nowhere to land.
+#[cfg(any(test, feature = "test-support"))]
+pub fn reset_watches() {
+    lock(watches()).clear();
+}
+
+/// Whether a watch of `(distro, path)` is open, and the generation it holds.
+/// `None` when that replica has no shared watch.
+#[cfg(test)]
+fn watch_state(distro: &str, path: &str) -> Option<(bool, u64)> {
+    lock(watches())
+        .get(&(distro.to_string(), path.to_string()))
+        .map(|shared| (shared.in_flight, shared.generation))
+}
+
+/// A client standing in for the distro's helper, so a test can share a watch
+/// without a distro. Production always resolves the client from the registry.
+fn watch_client(distro: &str) -> Option<Arc<HelperClient>> {
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(client) = watch_override().lock().unwrap_or_else(PoisonError::into_inner).clone() {
+        return Some(client);
+    }
+    client(distro)
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn watch_override() -> &'static Mutex<Option<Arc<HelperClient>>> {
+    static OVERRIDE: OnceLock<Mutex<Option<Arc<HelperClient>>>> = OnceLock::new();
+    OVERRIDE.get_or_init(|| Mutex::new(None))
+}
+
+/// A client standing in for every distro's helper. `None` restores the
+/// registry. A test that sets one clears it before it returns.
+#[cfg(any(test, feature = "test-support"))]
+pub fn set_watch_client(client: Option<Arc<HelperClient>>) {
+    *watch_override().lock().unwrap_or_else(PoisonError::into_inner) = client;
+}
+
+/// The watch client and the watch table are process-global. Tests that set
+/// either hold this lock for the whole test, so a parallel test cannot clear
+/// the client between two `watch` calls.
+#[cfg(any(test, feature = "test-support"))]
+pub fn watch_tests() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// A helper that has said hello and then waits. `watches_sent` is how a
+/// test sees the request a tab sends after a failure.
+#[cfg(any(test, feature = "test-support"))]
+pub fn silent_helper() -> Arc<HelperClient> {
+    struct Hold(mpsc::Receiver<Vec<u8>>, Vec<u8>);
+
+    impl Read for Hold {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.1.is_empty() {
+                // The hello is the only line. After it, the read parks so
+                // the helper stays up while a watch is open.
+                self.1 = self.0.recv().unwrap_or_default();
+            }
+            if self.1.is_empty() {
+                std::thread::sleep(Duration::from_secs(3600));
+                return Ok(0);
+            }
+            let n = self.1.len().min(buf.len());
+            buf[..n].copy_from_slice(&self.1[..n]);
+            self.1.drain(..n);
+            Ok(n)
+        }
+    }
+
+    struct Keep;
+
+    impl Write for Keep {
+        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+            Ok(data.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let (hello_tx, hello_rx) = mpsc::channel();
+    hello_tx.send(b"hello\t3\t\t\t\t\t\t\t\t\t\n".to_vec()).expect("the client has not started");
+    std::mem::forget(hello_tx);
+    let client = HelperClient::over(
+        "silent",
+        Box::new(Hold(hello_rx, Vec::new())),
+        Box::new(Keep),
+        Timing::DEFAULT,
+    );
+    let ready_by = Instant::now() + Duration::from_secs(5);
+    while !client.is_ready() {
+        assert!(Instant::now() < ready_by, "the silent helper never said hello");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    client
+}
+
+/// A helper that has said hello and then refuses every write, so a watch
+/// request ends at once as not written.
+#[cfg(any(test, feature = "test-support"))]
+pub fn refusing_client() -> Arc<HelperClient> {
+    struct Closed(mpsc::Receiver<Vec<u8>>);
+
+    impl Read for Closed {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            match self.0.recv() {
+                Ok(chunk) => {
+                    let n = chunk.len().min(buf.len());
+                    buf[..n].copy_from_slice(&chunk[..n]);
+                    Ok(n)
+                },
+                Err(_) => Ok(0),
+            }
+        }
+    }
+
+    struct Refuse;
+
+    impl Write for Refuse {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "refused"))
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let (tx, rx) = mpsc::channel();
+    tx.send(b"hello\t3\t\t\t\t\t\t\t\t\t\n".to_vec()).expect("the client has not started");
+    // The reader treats a closed pipe as the helper dying. The sender stays
+    // so the refusal is the write, not that death.
+    std::mem::forget(tx);
+    let client =
+        HelperClient::over("refusing", Box::new(Closed(rx)), Box::new(Refuse), Timing::DEFAULT);
+    let ready_by = Instant::now() + Duration::from_secs(5);
+    while !client.is_ready() {
+        assert!(Instant::now() < ready_by, "the refusing helper never said hello");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    client
+}
+
+/// A tab waiting on one replica, and the generation it last saw. `0` is a
+/// first request.
+struct Waiter {
+    seen: u64,
+    tx: mpsc::Sender<Result<Watch, WatchError>>,
+}
+
+type Answer = Result<Watch, WatchError>;
+
+/// The shared watch of `path` inside `distro`, or `None` before a request.
+/// `seen` is the generation the caller last heard, `0` for a first request.
+/// A newer generation answers at once; the same one waits for the next change.
+pub fn watch(
+    distro: &str,
+    path: &str,
+    seen: u64,
+) -> Option<(u64, mpsc::Receiver<Result<Watch, WatchError>>)> {
+    let client = watch_client(distro)?;
+    let key = (distro.to_string(), path.to_string());
+    let (tx, rx) = mpsc::channel();
+    let start = {
+        let mut watches = lock(watches());
+        let shared = watches.entry(key.clone()).or_insert_with(|| SharedWatch {
+            waiters: Vec::new(),
+            generation: 0,
+            held: None,
+            in_flight: false,
+        });
+        let caught = shared.generation > seen && shared.held.is_some();
+        if caught {
+            if let Some(held) = shared.held.clone() {
+                let generation = shared.generation;
+                let _ = tx.send(watch_answer(held, generation));
+            }
+        }
+        if shared.generation > seen && !shared.in_flight {
+            // The last caller of an older number takes the held answer.
+            // A watch still open keeps it, so the next late caller hears it too.
+            shared.held = None;
+            return Some((shared.generation, rx));
+        }
+        if caught {
+            // The caller already has the answer. It does not wait for the
+            // quiet reply of the watch that was open when it arrived.
+            return Some((shared.generation, rx));
+        }
+        // A watch already open stays the one watch. Waiter generations do
+        // not say whether one is open: a quiet answer leaves them behind.
+        let start = !shared.in_flight;
+        shared.waiters.push(Waiter { seen, tx });
+        if start {
+            shared.in_flight = true;
+        }
+        start
+    };
+    if start {
+        let watched = path.to_string();
+        let owner = key.clone();
+        let spawned =
+            std::thread::Builder::new().name("wsl-helper-watch".to_string()).spawn(move || {
+                let found = client.watch(&watched);
+                // `in_flight` drops in this same section, after the hand-out,
+                // so a caller that arrives here cannot open a second watch.
+                let pending = {
+                    let mut watches = lock(watches());
+                    let Some(shared) = watches.get_mut(&owner) else { return };
+                    let mut pending = deliver(shared, found);
+                    while let Some(held) = shared.held.clone() {
+                        let answer = watch_answer(held, shared.generation);
+                        let (due, waiting): (Vec<Waiter>, Vec<Waiter>) =
+                            std::mem::take(&mut shared.waiters).into_iter().partition(|waiter| {
+                                match &answer {
+                                    Ok(watch) => watch.generation > waiter.seen,
+                                    Err(error) => error.generation > waiter.seen,
+                                }
+                            });
+                        shared.waiters = waiting;
+                        if due.is_empty() {
+                            break;
+                        }
+                        pending.extend(due.into_iter().map(|waiter| (waiter.tx, answer.clone())));
+                    }
+                    shared.in_flight = false;
+                    pending
+                };
+                for (tx, answer) in pending {
+                    let _ = tx.send(answer);
+                }
+                // The answer is on a channel the UI only reads from a frame,
+                // and a watch can sit open for an hour with no input to wake one.
+                crate::jobs::pool().wake_ui();
+            });
+        if let Err(e) = spawned {
+            log::warn!("wsl watch thread failed to start: {e}");
+            if let Some(shared) = lock(watches()).get_mut(&key) {
+                shared.in_flight = false;
+            }
+            return None;
+        }
+    }
+    Some((seen, rx))
+}
+
+/// Hands `found` to every waiter that has not heard it, and keeps the
+/// generation so a later caller of an older number hears it at once.
+fn deliver(
+    shared: &mut SharedWatch,
+    found: Result<Watch, TransportError>,
+) -> Vec<(mpsc::Sender<Answer>, Answer)> {
+    let kind = match found {
+        Ok(watch) => {
+            // A quiet wait found nothing, so the generation stays and the
+            // next caller starts a new watch instead of hearing a non-event.
+            if watch.kind == WatchKind::Quiet {
+                let generation = shared.generation;
+                let answer = Ok(Watch { kind: WatchKind::Quiet, generation });
+                let (heard, waiting): (Vec<Waiter>, Vec<Waiter>) =
+                    std::mem::take(&mut shared.waiters)
+                        .into_iter()
+                        .partition(|waiter| waiter.seen >= generation);
+                shared.waiters = waiting;
+                let mut pending: Vec<_> =
+                    heard.into_iter().map(|waiter| (waiter.tx, answer.clone())).collect();
+                // A waiter behind this generation still needs the held change.
+                if let Some(held) = shared.held.take() {
+                    let caught = watch_answer(held, generation);
+                    let (due, waiting): (Vec<Waiter>, Vec<Waiter>) =
+                        std::mem::take(&mut shared.waiters)
+                            .into_iter()
+                            .partition(|waiter| waiter.seen < generation);
+                    shared.waiters = waiting;
+                    pending.extend(due.into_iter().map(|waiter| (waiter.tx, caught.clone())));
+                }
+                return pending;
+            }
+            Ok(watch.kind)
+        },
+        Err(error) => Err(error),
+    };
+    shared.generation = shared.generation.wrapping_add(1);
+    let generation = shared.generation;
+    shared.held = Some(kind.clone());
+    let answer = watch_answer(kind, generation);
+    shared.waiters.drain(..).map(|waiter| (waiter.tx, answer.clone())).collect()
+}
+
+fn watch_answer(kind: Result<WatchKind, TransportError>, generation: u64) -> Answer {
+    kind.map(|kind| Watch { kind, generation }).map_err(|error| WatchError { error, generation })
 }
 
 /// Resident-first transport for `wsl::run_batch`. `None` = helper
@@ -1100,9 +1578,8 @@ fn ensure_cell_size_writer() {
 mod tests {
     use super::*;
 
-    /// A hello `parse_hello` accepts: protocol 2, every tool field and the
-    /// runtime dir empty.
-    const HELLO_LINE: &str = "hello\t2\t\t\t\t\t\t\t\t\t\n";
+    /// A hello `parse_hello` accepts: every tool field and the runtime dir empty.
+    const HELLO_LINE: &str = "hello\t3\t\t\t\t\t\t\t\t\t\n";
 
     /// One end of a pipe pair standing in for the helper's stdio.
     struct FakePipe {
@@ -1154,6 +1631,29 @@ mod tests {
             Self::with_timing(Timing::DEFAULT)
         }
 
+        /// The next line the client wrote, waiting for it.
+        fn read_line(&mut self) -> String {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut line = Vec::new();
+            while Instant::now() < deadline {
+                if let Ok(chunk) = self.from_client.try_recv() {
+                    line.extend(chunk);
+                    if line.contains(&b'\n') {
+                        return String::from_utf8_lossy(&line).into_owned();
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            String::from_utf8_lossy(&line).into_owned()
+        }
+
+        /// One frame back, the way the helper's writer frames an answer.
+        fn answer(&self, id: &str, payload: &[u8]) {
+            let mut frame = format!("{id}\t0\t{}\n", payload.len()).into_bytes();
+            frame.extend_from_slice(payload);
+            self.to_client.send(frame).expect("the client is still reading");
+        }
+
         fn with_timing(timing: Timing) -> (Arc<HelperClient>, FakeHelper) {
             let (to_client, client_reads) = mpsc::channel();
             let (client_writes, from_client) = mpsc::channel();
@@ -1193,10 +1693,442 @@ mod tests {
     }
 
     #[test]
+    fn watch_request_encodes_the_path() {
+        assert_eq!(encode_watch(4, "/home/me/.task"), "4\tWATCH\tL2hvbWUvbWUvLnRhc2s=\n");
+        assert_eq!(encode_watch(4, ""), "4\tWATCH\t-\n");
+    }
+
+    /// A watch returns a receiver at once. Its answer arrives on that
+    /// receiver from the watch thread, and the caller never waits inside
+    /// the call, so no pool worker is held for the hour the helper may take.
+    #[test]
+    fn a_watch_returns_before_the_helper_answers() {
+        let _watch = watch_tests();
+        let (client, mut helper) = FakeHelper::silent();
+        *watch_override().lock().unwrap_or_else(PoisonError::into_inner) = Some(client);
+        reset_watches();
+        let started = Instant::now();
+        let opened = watch("pool", "/r", 0).expect("the helper is up").1;
+        assert!(
+            started.elapsed() < Duration::from_millis(200),
+            "watch blocked until the helper answered"
+        );
+        let sent = helper.read_line();
+        let id = sent.split('\t').next().expect("a request id").trim().to_string();
+        assert!(sent.contains("\tWATCH\t"), "no watch was sent: {sent:?}");
+        assert!(opened.try_recv().is_err(), "the watch answered before the helper did");
+        helper.answer(&id, b"changed");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let answer = loop {
+            if let Ok(answer) = opened.try_recv() {
+                break answer;
+            }
+            assert!(Instant::now() < deadline, "the watch thread never delivered the answer");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert!(
+            matches!(answer, Ok(Watch { kind: WatchKind::Changed, .. })),
+            "the watch answered {answer:?}"
+        );
+        *watch_override().lock().unwrap_or_else(PoisonError::into_inner) = None;
+    }
+
+    /// A write the helper refuses is a typed I/O error, and both callers of
+    /// the one watch hold that same error.
+    #[test]
+    fn a_refused_write_keeps_its_io_source_across_the_fan_out() {
+        use std::error::Error;
+        let client = refusing_client();
+        let _watch = watch_tests();
+        set_watch_client(Some(client));
+        reset_watches();
+        let one = watch("refused", "/r", 0).expect("the helper is up").1;
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let first = loop {
+            if let Ok(answer) = one.try_recv() {
+                break answer;
+            }
+            assert!(Instant::now() < deadline, "the refused write never answered");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        let two = watch("refused", "/r", 0).expect("the helper is up").1;
+        let second = two.try_recv().expect("a late caller missed the refused write");
+        let Err(WatchError { error: TransportError::NotWritten(first), .. }) = first else {
+            panic!("a caller did not get the typed write error");
+        };
+        let Err(WatchError { error: TransportError::NotWritten(second), .. }) = second else {
+            panic!("a late caller did not get the typed write error");
+        };
+        assert!(first.to_string().contains("refused"), "first: {first}; second: {second}");
+        assert!(
+            Arc::ptr_eq(&first, &second) || second.source().is_some(),
+            "the late caller holds neither the same error nor its source: {second}"
+        );
+        set_watch_client(None);
+    }
+
+    /// Two callers of one directory share the watch already open. The helper
+    /// sees one `WATCH`, and both callers hear the one answer.
+    #[test]
+    fn two_callers_of_one_replica_share_one_watch() {
+        let _watch = watch_tests();
+        let (client, mut helper) = FakeHelper::silent();
+        *watch_override().lock().unwrap_or_else(PoisonError::into_inner) = Some(client);
+        reset_watches();
+        let one = watch("share", "/r", 0).expect("the helper is up").1;
+        let sent = helper.read_line();
+        assert!(sent.contains("\tWATCH\t"), "the first caller sent no watch: {sent:?}");
+        let two = watch("share", "/r", 0).expect("the helper is up").1;
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(helper.from_client.try_recv().is_err(), "the second caller sent its own watch");
+        let id = sent.split('\t').next().expect("a request id").trim();
+        helper.answer(id, b"changed");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let heard = loop {
+            match (one.try_recv(), two.try_recv()) {
+                (Ok(first), Ok(second)) => break (first, second),
+                _ if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(5)),
+                _ => panic!("the shared answer never reached both callers"),
+            }
+        };
+        assert!(
+            matches!(
+                heard,
+                (
+                    Ok(Watch { kind: WatchKind::Changed, .. }),
+                    Ok(Watch { kind: WatchKind::Changed, .. })
+                )
+            ),
+            "the shared answer was {heard:?}"
+        );
+        *watch_override().lock().unwrap_or_else(PoisonError::into_inner) = None;
+    }
+
+    /// The next line the client wrote, or nothing when it wrote none.
+    fn try_read_line(from_client: &mpsc::Receiver<Vec<u8>>) -> Option<String> {
+        let mut line = Vec::new();
+        let deadline = Instant::now() + Duration::from_millis(150);
+        while Instant::now() < deadline {
+            if let Ok(chunk) = from_client.try_recv() {
+                line.extend(chunk);
+                if line.contains(&b'\n') {
+                    return Some(String::from_utf8_lossy(&line).into_owned());
+                }
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        None
+    }
+
+    /// The answer on `rx`, waiting until the watch thread delivers it.
+    fn await_watch(rx: &mpsc::Receiver<Result<Watch, WatchError>>) -> Result<Watch, WatchError> {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if let Ok(answer) = rx.try_recv() {
+                return answer;
+            }
+            assert!(Instant::now() < deadline, "the watch never answered");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// Two tabs on one replica each reload once per change. A second change
+    /// is a second reload for each, and neither hears the first again.
+    #[test]
+    fn two_tabs_each_reload_once_per_change() {
+        let (client, mut helper) = FakeHelper::silent();
+        let _watch = watch_tests();
+        set_watch_client(Some(client));
+        reset_watches();
+        let first = watch("gen", "/r", 0).expect("the helper is up");
+        let second = watch("gen", "/r", 0).expect("the helper is up");
+        let sent = helper.read_line();
+        assert!(sent.contains("\tWATCH\t"), "the first caller sent no watch: {sent:?}");
+        let id = sent.split('\t').next().expect("a request id").trim().to_string();
+        helper.answer(&id, b"changed");
+        let (Ok(one), Ok(two)) = (await_watch(&first.1), await_watch(&second.1)) else {
+            panic!("a tab missed the change");
+        };
+        assert_eq!(one.generation, two.generation, "the tabs heard different changes");
+        assert!(one.generation > 0, "a change kept generation 0");
+        let seen = one.generation;
+        let first = watch("gen", "/r", seen).expect("the helper is up");
+        let second = watch("gen", "/r", seen).expect("the helper is up");
+        let resent = try_read_line(&helper.from_client);
+        assert!(resent.is_some(), "a tab that already heard the change sent no new watch");
+        assert!(
+            try_read_line(&helper.from_client).is_none(),
+            "the second tab opened its own watch"
+        );
+        assert!(first.1.try_recv().is_err(), "the first tab heard the change it already had");
+        assert!(second.1.try_recv().is_err(), "the second tab heard the change it already had");
+        let id = resent
+            .expect("checked above")
+            .split('\t')
+            .next()
+            .expect("a request id")
+            .trim()
+            .to_string();
+        helper.answer(&id, b"changed");
+        let (Ok(again), Ok(other)) = (await_watch(&first.1), await_watch(&second.1)) else {
+            panic!("a tab missed the second change");
+        };
+        assert!(again.generation > seen, "the second change kept the first generation");
+        assert_eq!(again.generation, other.generation);
+        set_watch_client(None);
+    }
+
+    /// A tab that subscribes after a change gets that change at once, and
+    /// sends no watch of its own.
+    #[test]
+    fn a_tab_that_subscribes_after_a_change_gets_it_at_once() {
+        let (client, mut helper) = FakeHelper::silent();
+        let _watch = watch_tests();
+        set_watch_client(Some(client));
+        reset_watches();
+        let open = watch("late", "/r", 0).expect("the helper is up");
+        let sent = helper.read_line();
+        let id = sent.split('\t').next().expect("a request id").trim().to_string();
+        helper.answer(&id, b"changed");
+        let Ok(heard) = await_watch(&open.1) else { panic!("the open tab missed the change") };
+        let late = watch("late", "/r", 0).expect("the helper is up");
+        let Ok(caught) = late.1.try_recv().expect("a late tab waited for the change it missed")
+        else {
+            panic!("a late tab got an error");
+        };
+        assert_eq!(caught.generation, heard.generation, "the late tab heard a different change");
+        assert!(
+            try_read_line(&helper.from_client).is_none(),
+            "a late tab sent a watch for a change already held"
+        );
+        set_watch_client(None);
+    }
+
+    /// Two late tabs subscribe during one open watch. Each hears the held
+    /// change, and a quiet reply leaves neither waiting with no watch.
+    #[test]
+    fn a_second_late_tab_hears_the_held_change() {
+        let (client, mut helper) = FakeHelper::silent();
+        let _watch = watch_tests();
+        set_watch_client(Some(client));
+        reset_watches();
+        let open = watch("twice", "/r", 0).expect("the helper is up");
+        let sent = helper.read_line();
+        let id = sent.split('\t').next().expect("a request id").trim().to_string();
+        helper.answer(&id, b"changed");
+        let Ok(heard) = await_watch(&open.1) else { panic!("the open tab missed the change") };
+        let rearmed = watch("twice", "/r", heard.generation).expect("the helper is up");
+        let resent = try_read_line(&helper.from_client).expect("a re-arm sent no watch");
+        let first = watch("twice", "/r", 0).expect("the helper is up");
+        let Ok(caught) = first.1.try_recv().expect("the first late tab waited") else {
+            panic!("the first late tab got an error");
+        };
+        assert_eq!(caught.generation, heard.generation);
+        let second = watch("twice", "/r", 0).expect("the helper is up");
+        let Ok(also) = second.1.try_recv().expect("the second late tab waited") else {
+            panic!("the second late tab got an error");
+        };
+        assert_eq!(also.generation, heard.generation, "the second late tab heard a different change");
+        drop(open);
+        drop(rearmed);
+        drop(first);
+        let quiet_id = resent.split('\t').next().expect("a request id").trim().to_string();
+        helper.answer(&quiet_id, b"same");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while watch_state("twice", "/r").is_some_and(|state| state.0) {
+            assert!(Instant::now() < deadline, "the quiet watch never finished");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            second.1.try_recv().is_err(),
+            "the second late tab heard the quiet reply as a new change"
+        );
+        let again = watch("twice", "/r", heard.generation).expect("the helper is up");
+        assert!(
+            try_read_line(&helper.from_client).is_some(),
+            "a re-arm after the quiet reply sent no watch"
+        );
+        assert!(again.1.try_recv().is_err(), "the re-arm heard a change before the write");
+        set_watch_client(None);
+    }
+
+    /// A tab that re-arms with the generation it just heard waits for the
+    /// next change. The held answer is not handed out again.
+    #[test]
+    fn a_tab_that_rearms_after_its_answer_waits_for_the_next_change() {
+        let (client, mut helper) = FakeHelper::silent();
+        let _watch = watch_tests();
+        set_watch_client(Some(client));
+        reset_watches();
+        let open = watch("rearm", "/r", 0).expect("the helper is up");
+        let sent = helper.read_line();
+        let id = sent.split('\t').next().expect("a request id").trim().to_string();
+        helper.answer(&id, b"changed");
+        let Ok(heard) = await_watch(&open.1) else { panic!("the open tab missed the change") };
+        let again = watch("rearm", "/r", heard.generation).expect("the helper is up");
+        assert!(try_read_line(&helper.from_client).is_some(), "a re-armed tab sent no watch");
+        assert!(again.1.try_recv().is_err(), "a re-armed tab heard the change it already had");
+        set_watch_client(None);
+    }
+
+    /// A re-arm after a quiet answer keeps the watch a fresh tab opened.
+    #[test]
+    fn a_rearm_after_a_quiet_answer_keeps_the_watch_a_fresh_tab_opened() {
+        let (client, mut helper) = FakeHelper::silent();
+        let _watch = watch_tests();
+        set_watch_client(Some(client));
+        reset_watches();
+        let open = watch("race", "/r", 0).expect("the helper is up");
+        let sent = helper.read_line();
+        let id = sent.split('\t').next().expect("a request id").trim().to_string();
+        helper.answer(&id, b"changed");
+        let Ok(heard) = await_watch(&open.1) else { panic!("the open tab missed the change") };
+        assert!(heard.generation > 0, "a change kept generation 0");
+        let quiet = watch("race", "/r", heard.generation).expect("the helper is up");
+        let quiet_sent = try_read_line(&helper.from_client).expect("a re-arm sent no watch");
+        let quiet_id = quiet_sent.split('\t').next().expect("a request id").trim().to_string();
+        // The fresh tab arms while the quiet watch is still the open one.
+        assert_eq!(watch_state("race", "/r"), Some((true, heard.generation)));
+        let fresh = watch("race", "/r", 0).expect("the helper is up");
+        assert!(
+            try_read_line(&helper.from_client).is_none(),
+            "a fresh tab opened a watch while one was already open"
+        );
+        helper.answer(&quiet_id, b"same");
+        let Ok(quiet_heard) = await_watch(&quiet.1) else {
+            panic!("the quiet watch never answered")
+        };
+        assert_eq!(quiet_heard.kind, WatchKind::Quiet);
+        assert_eq!(quiet_heard.generation, heard.generation, "a quiet answer counted as a change");
+        let Ok(caught) = fresh.1.try_recv().expect("a fresh tab missed the change it already has")
+        else {
+            panic!("a fresh tab got an error");
+        };
+        assert_eq!(caught.generation, heard.generation, "a fresh tab heard a different change");
+        assert!(
+            try_read_line(&helper.from_client).is_none(),
+            "a fresh tab that already has the change opened a watch"
+        );
+        // Both tabs now name generation 1 and re-arm. One watch stays open.
+        let fresh_again = watch("race", "/r", caught.generation).expect("the helper is up");
+        let rearmed = watch("race", "/r", heard.generation).expect("the helper is up");
+        let resent = try_read_line(&helper.from_client).expect("the re-arm sent no watch");
+        assert!(
+            try_read_line(&helper.from_client).is_none(),
+            "the tab that heard the quiet answer opened a second watch"
+        );
+        assert!(fresh_again.1.try_recv().is_err(), "the fresh tab heard a change before the write");
+        assert!(rearmed.1.try_recv().is_err(), "the re-armed tab heard a change before the write");
+        let write_id = resent.split('\t').next().expect("a request id").trim().to_string();
+        helper.answer(&write_id, b"changed");
+        let (Ok(fresh_heard), Ok(rearm_heard)) =
+            (await_watch(&fresh_again.1), await_watch(&rearmed.1))
+        else {
+            panic!("a tab missed the write");
+        };
+        assert_eq!(
+            fresh_heard.generation, rearm_heard.generation,
+            "the tabs heard different writes"
+        );
+        assert!(fresh_heard.generation > heard.generation, "the write kept the earlier generation");
+        assert!(fresh_again.1.try_recv().is_err(), "the fresh tab heard the write twice");
+        assert!(rearmed.1.try_recv().is_err(), "the re-armed tab heard the write twice");
+        assert!(try_read_line(&helper.from_client).is_none(), "the write answered a second watch");
+        set_watch_client(None);
+    }
+
+    /// A quiet wait is not a change. The generation stays, and the next
+    /// request starts a new watch instead of hearing the quiet one again.
+    #[test]
+    fn a_quiet_watch_keeps_the_generation_and_starts_again() {
+        let (client, mut helper) = FakeHelper::silent();
+        let _watch = watch_tests();
+        set_watch_client(Some(client));
+        reset_watches();
+        let open = watch("quiet", "", 0).expect("the helper is up");
+        let sent = helper.read_line();
+        assert!(sent.contains("\tWATCH\t"), "a blank path sent no watch: {sent:?}");
+        let id = sent.split('\t').next().expect("a request id").trim().to_string();
+        helper.answer(&id, b"same bounded");
+        let Ok(heard) = await_watch(&open.1) else { panic!("the quiet watch never answered") };
+        assert_eq!(heard.kind, WatchKind::Quiet);
+        assert_eq!(heard.generation, 0, "a quiet wait counted as a change");
+        let again = watch("quiet", "  ", 0).expect("the helper is up");
+        assert!(again.1.try_recv().is_err(), "a quiet answer was handed out again");
+        assert!(try_read_line(&helper.from_client).is_some(), "a quiet replica sent no new watch");
+        set_watch_client(None);
+    }
+
+    /// A missing directory is a change. A tab that already heard it waits;
+    /// one that has not heard it gets it at once.
+    #[test]
+    fn a_missing_replica_is_a_change_heard_once() {
+        let (client, mut helper) = FakeHelper::silent();
+        let _watch = watch_tests();
+        set_watch_client(Some(client));
+        reset_watches();
+        let open = watch("gone", "/missing", 0).expect("the helper is up");
+        let sent = helper.read_line();
+        let id = sent.split('\t').next().expect("a request id").trim().to_string();
+        helper.answer(&id, b"missing");
+        let Ok(heard) = await_watch(&open.1) else { panic!("the missing watch never answered") };
+        assert_eq!(heard.kind, WatchKind::Missing);
+        let late = watch("gone", "/missing", 0).expect("the helper is up");
+        let Ok(caught) = late.1.try_recv().expect("a late tab missed the missing replica") else {
+            panic!("a late tab got an error");
+        };
+        assert_eq!(caught.generation, heard.generation);
+        let again = watch("gone", "/missing", heard.generation).expect("the helper is up");
+        assert!(again.1.try_recv().is_err(), "a tab heard the missing replica twice");
+        assert!(try_read_line(&helper.from_client).is_some(), "a re-arm sent no watch");
+        set_watch_client(None);
+    }
+
+    /// A refused write is heard once. The caller that takes it names that
+    /// failure, so a later arm waits for a new watch instead of taking the
+    /// same error. A caller that never heard it still gets it at once.
+    #[test]
+    fn a_failed_watch_is_heard_once_and_a_rearm_sends_a_watch() {
+        let client = refusing_client();
+        let _watch = watch_tests();
+        set_watch_client(Some(client.clone()));
+        reset_watches();
+        let open = watch("err", "/r", 0).expect("the helper is up");
+        let Err(WatchError { generation: heard, error }) = await_watch(&open.1) else {
+            panic!("the refused write did not answer");
+        };
+        assert!(matches!(error, TransportError::NotWritten(_)), "heard {error}");
+        assert!(heard > 0, "a failure kept generation 0");
+        let late = watch("err", "/r", 0).expect("the helper is up");
+        assert!(
+            matches!(
+                late.1.try_recv(),
+                Ok(Err(WatchError { generation, .. })) if generation == heard
+            ),
+            "a tab that missed the failure did not hear it"
+        );
+        let sent = client.watches_sent.load(Ordering::Relaxed);
+        let (back, helper) = FakeHelper::silent();
+        set_watch_client(Some(back));
+        let rearmed = watch("err", "/r", heard).expect("the helper is back");
+        assert!(rearmed.1.try_recv().is_err(), "a re-arm took the failure it already heard");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut sent_watch = client.watches_sent.load(Ordering::Relaxed) > sent;
+        while !sent_watch && try_read_line(&helper.from_client).is_none() {
+            assert!(Instant::now() < deadline, "a re-arm after the helper is back sent no watch");
+            std::thread::sleep(Duration::from_millis(5));
+            sent_watch = client.watches_sent.load(Ordering::Relaxed) > sent;
+        }
+        assert!(rearmed.1.try_recv().is_err(), "the new watch answered before the helper did");
+        set_watch_client(None);
+        reset_watches();
+    }
+
+    #[test]
     fn parses_hello_with_missing_tools() {
         // git and runtime dir present, every other tool absent.
         let line =
-            "hello\t2\tL3Vzci9iaW4vZ2l0\t\t\t\t\t\t\t\tL3J1bi91c2VyLzEwMDAvYWxhY3JpdHJlZQ==\n";
+            "hello\t3\tL3Vzci9iaW4vZ2l0\t\t\t\t\t\t\t\tL3J1bi91c2VyLzEwMDAvYWxhY3JpdHJlZQ==\n";
         let caps = parse_hello(line).unwrap();
         assert_eq!(caps.path("git"), Some("/usr/bin/git"));
         assert_eq!(caps.path("delta"), None);
@@ -1207,9 +2139,9 @@ mod tests {
 
     #[test]
     fn rejects_unknown_hello_version() {
-        assert!(parse_hello("hello\t1\t\t\t\t\t\t\t\n").is_none());
-        assert!(parse_hello("goodbye\t2\t\t\t\t\t\t\t\n").is_none());
-        assert!(parse_hello("hello\t2\t\t\t\t\n").is_none());
+        assert!(parse_hello("hello\t2\t\t\t\t\t\t\t\n").is_none());
+        assert!(parse_hello("goodbye\t3\t\t\t\t\t\t\t\n").is_none());
+        assert!(parse_hello("hello\t3\t\t\t\t\n").is_none());
     }
 
     #[test]
@@ -1995,5 +2927,294 @@ rm -rf "$XDG_RUNTIME_DIR"
             return;
         };
         assert_eq!(lines.lines().collect::<Vec<_>>(), ["run answered", "probe answered"]);
+    }
+
+    /// A watch sits open on a directory that never changes, then a `RUN` and a
+    /// `PROBE` are sent behind it. The watch answers on its own id once the
+    /// directory changes, and neither request waits for that answer.
+    const WATCH_QUEUE_HARNESS: &str = r##"echo harness
+command -v setsid >/dev/null && command -v base64 >/dev/null || { echo "skip: needs setsid and base64"; exit 0; }
+helper_script=$(cat <<'EOF_HELPER_SCRIPT'
+{script}
+EOF_HELPER_SCRIPT
+)
+XDG_RUNTIME_DIR=$(mktemp -d)
+export XDG_RUNTIME_DIR
+d=$XDG_RUNTIME_DIR/alacritree
+mkfifo "$XDG_RUNTIME_DIR/in"
+setsid sh -c "$helper_script" sh < "$XDG_RUNTIME_DIR/in" > "$XDG_RUNTIME_DIR/out" 2>/dev/null &
+exec 4> "$XDG_RUNTIME_DIR/in"
+answered() {
+  i=0
+  while [ $i -lt 20 ]; do
+    grep -q "^$1	" "$XDG_RUNTIME_DIR/out" 2>/dev/null && return 0
+    sleep 0.1
+    i=$((i + 1))
+  done
+  return 1
+}
+answered hello || { echo "skip: the helper never said hello"; exit 0; }
+dir=$XDG_RUNTIME_DIR/watched
+mkdir -p "$dir"
+: > "$dir/taskchampion.sqlite3"
+path=$(printf %s "$dir" | base64 | tr -d '\n')
+printf '1\tWATCH\t%s\n' "$path" >&4
+printf '2\tRUN\t%s\n' "$(printf 'echo ran' | base64)" >&4
+printf '3\tPROBE\tnone\n' >&4
+answered 2 && echo "run answered" || echo "run waited on the watch"
+answered 3 && echo "probe answered" || echo "probe waited on the watch"
+grep -q "^1	" "$XDG_RUNTIME_DIR/out" && echo "watch answered early" || echo "watch still open"
+printf changed > "$dir/taskchampion.sqlite3"
+answered 1 && echo "watch answered" || echo "watch never answered"
+exec 4>&-
+sleep 0.2
+rm -rf "$XDG_RUNTIME_DIR"
+"##;
+
+    /// An empty path and a missing directory are answers, not waits, and a
+    /// watch whose helper dies answers as a failure rather than hanging.
+    const WATCH_EDGE_HARNESS: &str = r##"echo harness
+command -v setsid >/dev/null && command -v base64 >/dev/null || { echo "skip: needs setsid and base64"; exit 0; }
+helper_script=$(cat <<'EOF_HELPER_SCRIPT'
+{script}
+EOF_HELPER_SCRIPT
+)
+XDG_RUNTIME_DIR=$(mktemp -d)
+export XDG_RUNTIME_DIR
+mkfifo "$XDG_RUNTIME_DIR/in"
+setsid sh -c "$helper_script" sh < "$XDG_RUNTIME_DIR/in" > "$XDG_RUNTIME_DIR/out" 2>/dev/null &
+helper=$!
+exec 4> "$XDG_RUNTIME_DIR/in"
+i=0
+while [ $i -lt 50 ]; do
+  grep -q '^hello	' "$XDG_RUNTIME_DIR/out" 2>/dev/null && break
+  sleep 0.1
+  i=$((i + 1))
+done
+grep -q '^hello	' "$XDG_RUNTIME_DIR/out" || { echo "skip: the helper never said hello"; exit 0; }
+payload() {
+  awk -v id="$1" 'index($0, id "\t") == 1 { getline; print; exit }' "$XDG_RUNTIME_DIR/out"
+}
+printf '1\tWATCH\t-\n' >&4
+printf '2\tWATCH\t%s\n' "$(printf %s "$XDG_RUNTIME_DIR/missing" | base64 | tr -d '\n')" >&4
+i=0
+while [ $i -lt 30 ]; do
+  grep -q '^1	' "$XDG_RUNTIME_DIR/out" && grep -q '^2	' "$XDG_RUNTIME_DIR/out" && break
+  sleep 0.1
+  i=$((i + 1))
+done
+echo "empty $(payload 1)"
+echo "missing $(payload 2)"
+printf '3\tWATCH\t%s\n' "$(printf %s "$XDG_RUNTIME_DIR" | base64 | tr -d '\n')" >&4
+sleep 0.2
+kill "$helper" 2>/dev/null
+sleep 0.2
+if grep -q '^3	' "$XDG_RUNTIME_DIR/out"; then echo "dead answered"; else echo "dead unanswered"; fi
+exec 4>&-
+rm -rf "$XDG_RUNTIME_DIR"
+"##;
+
+    /// An empty path and a directory that is not there answer at once. A
+    /// helper killed while a watch is open leaves that watch unanswered.
+    #[cfg(any(windows, target_os = "linux"))]
+    #[test]
+    fn an_empty_or_missing_watch_answers_and_a_dead_helper_does_not() {
+        let Some(lines) = run_in_linux(&WATCH_EDGE_HARNESS.replace("{script}", HELPER_SCRIPT))
+        else {
+            return;
+        };
+        assert_eq!(lines.lines().collect::<Vec<_>>(), [
+            "empty missing",
+            "missing missing",
+            "dead unanswered",
+        ]);
+    }
+
+    /// The helper waits with `inotifywait` when that program is on `PATH`, and
+    /// with a `stat` loop that never leaves the distro otherwise. The loop is
+    /// forced by hiding `inotifywait` behind a `PATH` that does not have it.
+    const WATCH_WAIT_HARNESS: &str = r##"echo harness
+command -v setsid >/dev/null && command -v base64 >/dev/null || { echo "skip: needs setsid and base64"; exit 0; }
+helper_script=$(cat <<'EOF_HELPER_SCRIPT'
+{script}
+EOF_HELPER_SCRIPT
+)
+real=$(command -v inotifywait || true)
+bin=$(mktemp -d)
+if [ -n "$real" ]; then
+  cat > "$bin/inotifywait" <<'EOF'
+#!/bin/sh
+printf inotifywait >> "$WATCH_LOG"
+exec {real} "$@"
+EOF
+  sed -i "s#{real}#$real#" "$bin/inotifywait"
+  chmod +x "$bin/inotifywait"
+fi
+export WATCH_LOG
+watch_one() {
+  XDG_RUNTIME_DIR=$(mktemp -d)
+  export XDG_RUNTIME_DIR
+  WATCH_LOG=$XDG_RUNTIME_DIR/wait
+  export WATCH_LOG
+  : > "$WATCH_LOG"
+  mkfifo "$XDG_RUNTIME_DIR/in"
+  setsid sh -c "$helper_script" sh < "$XDG_RUNTIME_DIR/in" > "$XDG_RUNTIME_DIR/out" 2>/dev/null &
+  exec 5> "$XDG_RUNTIME_DIR/in"
+  i=0
+  while [ $i -lt 50 ]; do
+    grep -q '^hello	' "$XDG_RUNTIME_DIR/out" 2>/dev/null && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  grep -q '^hello	' "$XDG_RUNTIME_DIR/out" || { echo "skip: the helper never said hello"; exit 0; }
+  dir=$XDG_RUNTIME_DIR/watched
+  mkdir -p "$dir"
+  : > "$dir/taskchampion.sqlite3"
+  path=$(printf %s "$dir" | base64 | tr -d '\n')
+  saved_path=$PATH
+  [ -n "${WATCH_PATH:-}" ] && PATH=$WATCH_PATH
+  printf '1\tWATCH\t%s\n' "$path" >&5
+  PATH=$saved_path
+  sleep 0.4
+  printf changed > "$dir/taskchampion.sqlite3"
+  i=0
+  while [ $i -lt 30 ]; do
+    grep -q '^1	' "$XDG_RUNTIME_DIR/out" 2>/dev/null && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  grep -q '^1	' "$XDG_RUNTIME_DIR/out" || { echo "watch never answered"; exit 0; }
+  exec 5>&-
+  sleep 0.2
+  if grep -q inotifywait "$WATCH_LOG"; then echo inotifywait
+  elif awk 'index($0, "1\t") == 1 { getline; if ($2 == "stat") print; exit }' "$XDG_RUNTIME_DIR/out" | grep -q stat; then echo stat
+  else echo neither
+  fi
+  rm -rf "$XDG_RUNTIME_DIR"
+}
+if [ -n "$real" ]; then
+  PATH="$bin:$PATH" watch_one
+else
+  watch_one
+fi
+tools=$(mktemp -d)
+saved=$PATH
+PATH=/usr/bin:/bin
+for need in sh setsid base64 grep sleep stat mkdir printf getent id cut tr sed awk cat; do
+  found=$(command -v "$need" || true)
+  [ -n "$found" ] && ln -s "$found" "$tools/$need"
+done
+PATH=$saved
+WATCH_PATH="$tools" watch_one
+rm -rf "$tools"
+rm -rf "$bin"
+"##;
+
+    /// A write that lands while `inotifywait` is still registering is not
+    /// lost. The wait is bounded, and the stamp after it sees the write.
+    const WATCH_RACE_HARNESS: &str = r##"echo harness
+command -v setsid >/dev/null && command -v base64 >/dev/null || { echo "skip: needs setsid and base64"; exit 0; }
+helper_script=$(cat <<'EOF_HELPER_SCRIPT'
+{script}
+EOF_HELPER_SCRIPT
+)
+real=$(command -v inotifywait || true)
+XDG_RUNTIME_DIR=$(mktemp -d)
+export XDG_RUNTIME_DIR
+mkfifo "$XDG_RUNTIME_DIR/in"
+setsid sh -c "$helper_script" sh < "$XDG_RUNTIME_DIR/in" > "$XDG_RUNTIME_DIR/out" 2>/dev/null &
+exec 5> "$XDG_RUNTIME_DIR/in"
+i=0
+while [ $i -lt 50 ]; do
+  grep -q '^hello	' "$XDG_RUNTIME_DIR/out" 2>/dev/null && break
+  sleep 0.1
+  i=$((i + 1))
+done
+grep -q '^hello	' "$XDG_RUNTIME_DIR/out" || { echo "skip: the helper never said hello"; exit 0; }
+dir=$XDG_RUNTIME_DIR/watched
+mkdir -p "$dir"
+: > "$dir/taskchampion.sqlite3"
+path=$(printf %s "$dir" | base64 | tr -d '\n')
+# The write is in flight before the helper can register the watch.
+( sleep 0.05; printf raced > "$dir/taskchampion.sqlite3" ) &
+printf '1\tWATCH\t%s\n' "$path" >&5
+i=0
+while [ $i -lt 40 ]; do
+  grep -q '^1	' "$XDG_RUNTIME_DIR/out" 2>/dev/null && break
+  sleep 0.1
+  i=$((i + 1))
+done
+if awk 'index($0, "1\t") == 1 { getline; if ($1 == "changed") print; exit }' "$XDG_RUNTIME_DIR/out" | grep -q changed; then
+  echo changed
+else
+  echo missed
+fi
+if awk 'index($0, "1\t") == 1 { getline; print $2; exit }' "$XDG_RUNTIME_DIR/out" | grep -q bounded; then
+  echo bounded
+elif awk 'index($0, "1\t") == 1 { getline; print $2; exit }' "$XDG_RUNTIME_DIR/out" | grep -q stat; then
+  echo stat
+else
+  echo unbounded
+fi
+exec 5>&-
+sleep 0.2
+rm -rf "$XDG_RUNTIME_DIR"
+"##;
+
+    /// A write that lands in the gap before `inotifywait` registers is still
+    /// answered as a change.
+    #[cfg(any(windows, target_os = "linux"))]
+    #[test]
+    fn a_write_during_inotify_registration_is_not_missed() {
+        let Some(lines) = run_in_linux(&WATCH_RACE_HARNESS.replace("{script}", HELPER_SCRIPT))
+        else {
+            return;
+        };
+        let found: Vec<&str> = lines.lines().collect();
+        let branch = if found.contains(&"bounded") { "bounded" } else { "stat" };
+        assert_eq!(found, ["changed", branch]);
+    }
+
+    /// `inotifywait` is what waits when the distro has it. A `PATH` without it
+    /// falls back to the in-distro `stat` loop, which still answers.
+    #[cfg(any(windows, target_os = "linux"))]
+    #[test]
+    fn the_helper_waits_with_inotifywait_or_a_stat_loop() {
+        let Some(lines) = run_in_linux(&WATCH_WAIT_HARNESS.replace("{script}", HELPER_SCRIPT))
+        else {
+            return;
+        };
+        let found: Vec<&str> = lines.lines().collect();
+        let inotify = std::process::Command::new(if cfg!(windows) { "wsl.exe" } else { "sh" })
+            .args(if cfg!(windows) { &["-e", "sh", "-c"][..] } else { &["-c"][..] })
+            .arg("command -v inotifywait")
+            .output()
+            .ok()
+            .filter(|out| out.status.success());
+        let expected =
+            if inotify.is_some() { vec!["inotifywait", "stat"] } else { vec!["stat", "stat"] };
+        assert_eq!(
+            found,
+            expected,
+            "the distro {}",
+            if inotify.is_some() { "has inotifywait" } else { "has no inotifywait" }
+        );
+    }
+
+    /// A watch held open does not delay a `RUN` or a `PROBE` sent behind it,
+    /// and it answers on its own request id once the watched directory changes.
+    #[cfg(any(windows, target_os = "linux"))]
+    #[test]
+    fn a_watch_held_open_does_not_delay_a_run_or_a_probe() {
+        let Some(lines) = run_in_linux(&WATCH_QUEUE_HARNESS.replace("{script}", HELPER_SCRIPT))
+        else {
+            return;
+        };
+        assert_eq!(lines.lines().collect::<Vec<_>>(), [
+            "run answered",
+            "probe answered",
+            "watch still open",
+            "watch answered",
+        ]);
     }
 }

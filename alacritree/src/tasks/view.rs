@@ -22,9 +22,11 @@ use egui::{
 use alacritree_common::jobs::{self, Job, Priority};
 use alacritree_common::side::Side;
 use alacritree_common::wsl;
+use alacritree_common::wsl_helper::{self, Watch, WatchError, WatchKind};
 use alacritree_tasks::scope::{GLOBAL, Place, node};
 use alacritree_tasks::tree::{self, Landing, Row, Section, SectionKind};
 use alacritree_tasks::{Edit, Filter, NodeMatch, Status, Task, TaskBackend, TaskError};
+use std::sync::mpsc;
 
 use crate::bindings::{NamedAction, action};
 use crate::projects::Project;
@@ -345,6 +347,18 @@ pub(crate) struct TasksView {
     stamp_job: Option<Job<(Option<alacritree_tasks::Stamp>, Option<PathBuf>)>>,
     /// The replica directory last located for this side. A later tick stats it.
     replica_dir: Option<(Side, PathBuf)>,
+    /// The open watch of that directory, shared with every other tab on it.
+    /// The answer arrives on this receiver from the watch thread. `None`
+    /// while no watch is open, and the stamp check runs until `watch_retry`.
+    watch: Option<mpsc::Receiver<Result<Watch, WatchError>>>,
+    /// The generation this tab last heard for that replica. `0` before the
+    /// first change. The next watch asks with it, so a held answer is heard
+    /// once.
+    watch_generation: u64,
+    /// The next attempt to arm a watch. A watch that ended without a change,
+    /// or a helper that was not up, sets it one interval ahead so the tab
+    /// does not arm again on the next frame.
+    watch_retry: Instant,
     last_reload: Option<Instant>,
     /// The next stamp read waits until this instant. A failed read sets it.
     stamp_retry: Instant,
@@ -418,6 +432,9 @@ impl TasksView {
             listed: None,
             stamp_job: None,
             replica_dir: None,
+            watch: None,
+            watch_generation: 0,
+            watch_retry: Instant::now(),
             last_reload: None,
             stamp_retry: Instant::now(),
             stale: false,
@@ -870,9 +887,64 @@ impl TasksView {
         for (row, result) in finished {
             self.finish_write(row, result);
         }
-        let stamp_due = self.stamp_job.is_some() || Instant::now() >= self.stamp_retry;
-        if self.reload.is_none() && (self.stale || due) && stamp_due {
+        let watch_fired = self.watch_fired();
+        let stamp_due = Instant::now() >= self.stamp_retry;
+        // An open watch is the change signal. The interval stamp runs only
+        // while that watch is absent, which is the fallback.
+        let fallback = self.watch.is_none();
+        if self.reload.is_none() && (watch_fired || self.stale) {
+            self.start_listing();
+        } else if watch_fired {
+            self.stale = true;
+        } else if self.reload.is_none() && due && fallback && stamp_due {
             self.reload_if_changed();
+        }
+        // A stamp already in flight lands on its own. A watch that is still
+        // open, or an interval that is not due, must not hold it.
+        self.take_stamp();
+        self.arm_watch();
+    }
+
+    /// Whether the shared watch answered that the replica changed. A quiet
+    /// answer, or a helper that went down, leaves the stamp check to decide.
+    /// A receiver still waiting means the helper was not up, so the next tick
+    /// asks again.
+    fn watch_fired(&mut self) -> bool {
+        let Some(rx) = self.watch.as_ref() else { return false };
+        match rx.try_recv() {
+            Ok(Ok(watch)) => {
+                self.watch = None;
+                self.watch_generation = watch.generation;
+                matches!(watch.kind, WatchKind::Changed | WatchKind::Missing)
+            },
+            Ok(Err(error)) => {
+                self.watch = None;
+                self.watch_generation = error.generation;
+                self.watch_retry = Instant::now() + RELOAD_EVERY;
+                false
+            },
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.watch = None;
+                self.watch_retry = Instant::now() + RELOAD_EVERY;
+                false
+            },
+            Err(mpsc::TryRecvError::Empty) => false,
+        }
+    }
+
+    /// One watch per WSL replica, once the directory is known and the wait is over.
+    fn arm_watch(&mut self) {
+        if self.watch.is_some() || Instant::now() < self.watch_retry {
+            return;
+        }
+        let Some((Side::Wsl(distro), dir)) = self.replica_dir.clone() else { return };
+        let Some(path) = wsl::windows_to_linux(&dir) else { return };
+        match wsl_helper::watch(&distro, &path, self.watch_generation) {
+            Some((generation, rx)) => {
+                self.watch_generation = generation;
+                self.watch = Some(rx);
+            },
+            None => self.watch_retry = Instant::now() + RELOAD_EVERY,
         }
     }
 
@@ -898,9 +970,10 @@ impl TasksView {
             .as_ref()
             .filter(|(cached, _)| cached == &side)
             .map(|(_, dir)| dir.clone());
-        self.stamp_job = Some(jobs::pool().spawn(Priority::Background, move |b| {
-            store.replica(&side, known.as_deref(), b)
-        }));
+        self.stamp_job = Some(
+            jobs::pool()
+                .spawn(Priority::Background, move |b| store.replica(&side, known.as_deref(), b)),
+        );
     }
 
     /// Applies a stamp that has landed. A stamp still running stays in its
@@ -933,9 +1006,8 @@ impl TasksView {
         self.last_reload = Some(Instant::now());
         let (store, scope) = (self.backend.clone(), self.scope.clone());
         let listed = scope.clone();
-        let job = jobs::pool().spawn(Priority::Background, move |b| {
-            store.list(&listed.side, &listed.filter(), b)
-        });
+        let job = jobs::pool()
+            .spawn(Priority::Background, move |b| store.list(&listed.side, &listed.filter(), b));
         self.reload = Some(PendingReload { epoch: self.reload_epoch(), scope, job });
     }
 }
@@ -950,9 +1022,11 @@ impl Drop for SectionHold {
 }
 
 #[cfg(test)]
+type DrawnRow = std::sync::Arc<dyn Fn(&TasksView, usize, &Row) + Send + Sync>;
+
+#[cfg(test)]
 thread_local! {
-    static DRAWN_ROW: std::cell::RefCell<Option<std::sync::Arc<dyn Fn(&TasksView, usize, &Row) + Send + Sync>>> =
-        const { std::cell::RefCell::new(None) };
+    static DRAWN_ROW: std::cell::RefCell<Option<DrawnRow>> = const { std::cell::RefCell::new(None) };
     static STALE_INDEX: std::cell::RefCell<Option<(usize, String)>> = const { std::cell::RefCell::new(None) };
 }
 
@@ -1665,6 +1739,8 @@ mod tests {
     use super::*;
     use alacritree_tasks::fake::{FakeBackend, task};
     use std::path::PathBuf;
+    #[cfg(windows)]
+    use strum::EnumCount;
 
     fn project(root: &str, name: &str) -> Project {
         Project {
@@ -1828,6 +1904,36 @@ mod tests {
             None,
         )
     }
+
+    /// A watch the helper has not answered. The sender is leaked so the
+    /// receiver stays open, the way a watch thread still waiting does.
+    fn pending_watch() -> mpsc::Receiver<Result<Watch, WatchError>> {
+        let (tx, rx) = mpsc::channel();
+        std::mem::forget(tx);
+        rx
+    }
+
+    /// A watch whose thread ended without an answer.
+    fn dropped_watch() -> mpsc::Receiver<Result<Watch, WatchError>> {
+        let (tx, rx) = mpsc::channel();
+        drop(tx);
+        rx
+    }
+
+    /// A tab whose side is a WSL distro, so a known replica directory can arm
+    /// a watch. The store is still the fake one.
+    fn wsl_tab(store: &alacritree_tasks::fake::FakeBackend) -> TasksView {
+        let scope =
+            Scope { side: Side::Wsl("Ubuntu".into()), repo: Some("r".into()), workspace: None };
+        TasksView::new(
+            Backend::Fake(store.clone()),
+            scope,
+            None,
+            Vec::new(),
+            Prefs::default(),
+            None,
+        )
+    }
     #[test]
     fn a_write_elsewhere_lists_on_the_next_due_tick() {
         let store =
@@ -1926,61 +2032,296 @@ mod tests {
         assert!(view.last_reload.is_some_and(|t| t.elapsed() < RELOAD_EVERY));
     }
 
+    /// A WSL replica, a `task` that records each spawn, and the two globals
+    /// those tests change. Drop restores the tool table and the helper flag.
+    #[cfg(windows)]
+    struct WslReplica {
+        distro: String,
+        data: PathBuf,
+        log: PathBuf,
+        _dir: tempfile::TempDir,
+        _tools: std::sync::MutexGuard<'static, ()>,
+        saved: [alacritree_common::tools::ToolPaths; alacritree_common::tools::Tool::COUNT],
+        was_enabled: bool,
+    }
+
+    #[cfg(windows)]
+    impl WslReplica {
+        /// `None` when this machine has no default distro or cannot write
+        /// inside it. `log` is set when the stand-in `task` records spawns.
+        fn open(prefix: &str, log: bool) -> Option<Self> {
+            let distro = wsl::distros().into_iter().find(|d| d.is_default).map(|d| d.name)?;
+            let root = PathBuf::from(format!(r"\\wsl.localhost\{distro}\tmp"));
+            let dir = tempfile::Builder::new().prefix(prefix).tempdir_in(&root).ok()?;
+            let data = dir.path().join("data");
+            std::fs::create_dir(&data).unwrap();
+            std::fs::write(data.join("taskchampion.sqlite3"), b"db").unwrap();
+            let linux =
+                wsl::windows_to_linux(dir.path()).expect("the temp dir is inside the distro");
+            let script = format!("{linux}/task");
+            let record =
+                if log { format!("echo spawn >> {linux}/spawns.txt\n") } else { String::new() };
+            let body = format!(
+                "#!/bin/sh\n{record}case $* in\n*_get*) printf {linux}/data;;\n*) printf %s \
+                 \"$1\" >> {linux}/listed.txt; printf []\nesac\n"
+            );
+            std::fs::write(dir.path().join("task"), body.replace("\r\n", "\n")).unwrap();
+            let chmod = jobs::on_this_thread(|b| {
+                b.run_cancellable(
+                    alacritree_common::command_ext::hidden("wsl.exe")
+                        .args(["-d", &distro, "--exec", "chmod", "+x", &script]),
+                )
+            })
+            .expect("chmod runs");
+            assert!(chmod.status.success(), "chmod exited {}", chmod.status);
+            let tools = alacritree_common::tools::test_configuration_lock().lock().unwrap();
+            let saved = alacritree_common::tools::test_configuration();
+            let mut paths = saved.clone();
+            paths[alacritree_common::tools::Tool::Task as usize].wsl = Some(script);
+            alacritree_common::tools::configure(paths);
+            let was_enabled = wsl_helper::enabled();
+            Some(Self {
+                distro,
+                data,
+                log: dir.path().join("spawns.txt"),
+                _dir: dir,
+                _tools: tools,
+                saved,
+                was_enabled,
+            })
+        }
+
+        fn tab(&self) -> TasksView {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+            let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let scope = Scope {
+                side: Side::Wsl(self.distro.clone()),
+                repo: Some(format!("r-{n}")),
+                workspace: None,
+            };
+            TasksView::new(
+                Backend::Taskwarrior(alacritree_taskwarrior::Taskwarrior::default()),
+                scope,
+                None,
+                Vec::new(),
+                Prefs::default(),
+                None,
+            )
+        }
+
+        fn spawns(&self) -> usize {
+            std::fs::read_to_string(&self.log).unwrap_or_default().lines().count()
+        }
+
+        fn listings(&self) -> usize {
+            std::fs::read_to_string(self.log.with_file_name("listed.txt"))
+                .unwrap_or_default()
+                .matches("rc.uda.subof.type=uuid")
+                .count()
+        }
+    }
+
+    #[cfg(windows)]
+    impl Drop for WslReplica {
+        fn drop(&mut self) {
+            wsl_helper::set_enabled(self.was_enabled);
+            alacritree_common::tools::configure(self.saved.clone());
+        }
+    }
+
+    /// The WSL tests share one helper and one watch table, so they run one at
+    /// a time. A second test resetting the table would answer the first's watch.
+    /// The watch client is the same global the helper tests set, so this holds
+    /// that lock too.
+    fn wsl_tests() -> (std::sync::MutexGuard<'static, ()>, std::sync::MutexGuard<'static, ()>) {
+        let watch = wsl_helper::watch_tests();
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        (LOCK.lock().unwrap_or_else(|e| e.into_inner()), watch)
+    }
+
+    /// A write to the replica reaches the open tab on the next tick, before
+    /// the reload interval. The watch is what wakes the tab; the interval is
+    /// not due.
+    #[cfg(windows)]
+    #[test]
+    fn a_write_to_a_wsl_replica_reaches_the_open_tab_at_once() {
+        let _wsl = wsl_tests();
+        let Some(replica) = WslReplica::open("alacritree-watch", true) else { return };
+        wsl_helper::reset_helper(&replica.distro);
+        wsl_helper::set_enabled(true);
+        let mut view = replica.tab();
+        settle_reload(&mut view);
+        let listed = replica.spawns();
+        assert!(listed >= 1, "the first listing never ran task");
+        let ready = Instant::now();
+        while view.watch.is_none() && ready.elapsed() < Duration::from_secs(5) {
+            view.tick();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(view.watch.is_some(), "the watch never opened");
+        // A second tab on the same replica shares the watch. Its presence is
+        // what keeps the answer from landing before this tab polls it.
+        let mut other = replica.tab();
+        settle_reload(&mut other);
+        while other.watch.is_none() && ready.elapsed() < Duration::from_secs(5) {
+            other.tick();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        view.last_reload = Some(Instant::now());
+        std::fs::write(replica.data.join("taskchampion.sqlite3"), b"db-changed").unwrap();
+        let started = Instant::now();
+        let mut landed = listed;
+        while landed == listed && started.elapsed() < RELOAD_EVERY {
+            view.tick();
+            landed = replica.spawns();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let waited = started.elapsed();
+        assert!(view.load_error().is_none(), "{}", view.load_error().unwrap_or_default());
+        assert!(
+            landed > listed && waited < RELOAD_EVERY,
+            "the write waited {waited:?} for the reload interval ({listed} task runs, then \
+             {landed})"
+        );
+    }
+
+    /// Two tabs showing one replica open one watch. A write reaches both, and
+    /// the helper sees one watch request for the pair.
+    #[cfg(windows)]
+    #[test]
+    fn two_tabs_on_one_replica_share_one_watch() {
+        let _wsl = wsl_tests();
+        let Some(replica) = WslReplica::open("alacritree-share", true) else { return };
+        wsl_helper::set_enabled(true);
+        wsl_helper::reset_watches();
+        let before = wsl_helper::watches_sent(&replica.distro);
+        let mut first = replica.tab();
+        let mut second = replica.tab();
+        settle_reload(&mut first);
+        settle_reload(&mut second);
+        let ready = Instant::now();
+        while wsl_helper::client(&replica.distro).is_none()
+            && ready.elapsed() < Duration::from_secs(5)
+        {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let opened = Instant::now();
+        while !(first.watch.is_some() && second.watch.is_some())
+            && opened.elapsed() < Duration::from_secs(5)
+        {
+            first.tick();
+            second.tick();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(first.watch.is_some() && second.watch.is_some(), "a tab never armed its watch");
+        let watches = wsl_helper::watches_sent(&replica.distro) - before;
+        std::thread::sleep(Duration::from_millis(400));
+        let listed = replica.listings();
+        std::fs::write(replica.data.join("taskchampion.sqlite3"), b"shared").unwrap();
+        let started = Instant::now();
+        let mut landed = listed;
+        while landed == listed && started.elapsed() < RELOAD_EVERY {
+            first.tick();
+            second.tick();
+            landed = replica.listings();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(watches, 1, "two tabs opened {watches} watches");
+        assert!(
+            landed > listed,
+            "the write reached neither tab ({listed} listings, then {landed})"
+        );
+    }
+
+    /// A replica that does not change sends nothing through the helper after
+    /// the watch is open. The stamp check would send one request a second.
+    #[cfg(windows)]
+    #[test]
+    fn an_unchanged_replica_sends_no_helper_request() {
+        let _wsl = wsl_tests();
+        let Some(replica) = WslReplica::open("alacritree-quiet", false) else { return };
+        wsl_helper::set_enabled(true);
+        let mut view = replica.tab();
+        settle_reload(&mut view);
+        wsl_helper::reset_watches();
+        let ready = Instant::now();
+        while wsl_helper::client(&replica.distro).is_none()
+            && ready.elapsed() < Duration::from_secs(5)
+        {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let before = wsl_helper::requests_sent(&replica.distro);
+        let opened = Instant::now();
+        while wsl_helper::requests_sent(&replica.distro) == before
+            && opened.elapsed() < Duration::from_secs(5)
+        {
+            view.tick();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let sent = wsl_helper::requests_sent(&replica.distro);
+        assert!(sent > before, "the watch never opened");
+        // A ping interval is five seconds. The watch stays open across one,
+        // and the interval stamp is forced due twice inside it.
+        let quiet = Instant::now();
+        while quiet.elapsed() < Duration::from_secs(6) {
+            view.last_reload = Some(Instant::now() - RELOAD_EVERY - Duration::from_millis(1));
+            view.tick();
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        let after = wsl_helper::requests_sent(&replica.distro);
+        assert!(view.load_error().is_none(), "{}", view.load_error().unwrap_or_default());
+        assert_eq!(after, sent, "a quiet replica sent a helper request");
+    }
+
+    /// While the helper is down the tab keeps the stamp check, and a write
+    /// lands on the next due tick. Once the helper is back, a write lands
+    /// through the watch before that interval.
+    #[cfg(windows)]
+    #[test]
+    fn a_tab_falls_back_to_the_stamp_check_while_its_helper_is_down() {
+        let _wsl = wsl_tests();
+        let Some(replica) = WslReplica::open("alacritree-down", true) else { return };
+        wsl_helper::set_enabled(false);
+        let mut view = replica.tab();
+        settle_reload(&mut view);
+        let listed = replica.spawns();
+        std::fs::write(replica.data.join("taskchampion.sqlite3"), b"while-down").unwrap();
+        view.last_reload = Some(Instant::now());
+        view.tick();
+        let early = replica.spawns();
+        view.last_reload = Some(Instant::now() - RELOAD_EVERY - Duration::from_millis(1));
+        settle_reload(&mut view);
+        let fallback = replica.spawns();
+        wsl_helper::set_enabled(true);
+        view.watch_retry = Instant::now();
+        std::fs::write(replica.data.join("taskchampion.sqlite3"), b"helper-back").unwrap();
+        let started = Instant::now();
+        let mut watched = fallback;
+        while watched == fallback && started.elapsed() < RELOAD_EVERY {
+            view.tick();
+            watched = replica.spawns();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(early, listed, "a down helper listed before the interval");
+        assert!(fallback > listed, "the stamp check missed the write");
+        assert!(watched > fallback, "the tab did not watch again once the helper was back");
+    }
+
     /// After the first listing, an unchanged WSL replica runs no task command.
     #[cfg(windows)]
     #[test]
     fn an_unchanged_wsl_replica_runs_no_task_command() {
-        let Some(distro) = wsl::distros().into_iter().find(|d| d.is_default).map(|d| d.name) else {
-            return;
-        };
-        let root = PathBuf::from(format!(r"\\wsl.localhost\{distro}\tmp"));
-        let Ok(dir) = tempfile::Builder::new().prefix("alacritree-task").tempdir_in(&root) else {
-            return;
-        };
-        let data = dir.path().join("data");
-        std::fs::create_dir(&data).unwrap();
-        std::fs::write(data.join("taskchampion.sqlite3"), b"db").unwrap();
-        let log = dir.path().join("spawns.txt");
-        let linux = wsl::windows_to_linux(dir.path()).expect("the temp dir is inside the distro");
-        let script = format!("{linux}/task");
-        let body = format!(
-            "#!/bin/sh\necho spawn >> {linux}/spawns.txt\ncase $* in\n*_get*) printf \
-             {linux}/data;;\n*) printf []\nesac\n"
-        );
-        std::fs::write(dir.path().join("task"), body.replace("\r\n", "\n")).unwrap();
-        let chmod = jobs::on_this_thread(|b| {
-            b.run_cancellable(
-                alacritree_common::command_ext::hidden("wsl.exe")
-                    .args(["-d", &distro, "--exec", "chmod", "+x", &script]),
-            )
-        })
-        .expect("chmod runs");
-        assert!(chmod.status.success(), "chmod exited {}", chmod.status);
-        let _guard = alacritree_common::tools::test_configuration_lock().lock().unwrap();
-        let saved = alacritree_common::tools::test_configuration();
-        let mut paths = saved.clone();
-        paths[alacritree_common::tools::Tool::Task as usize].wsl = Some(script);
-        alacritree_common::tools::configure(paths);
-        let was_enabled = alacritree_common::wsl_helper::enabled();
-        alacritree_common::wsl_helper::set_enabled(false);
-        let scope = Scope { side: Side::Wsl(distro), repo: Some("r".into()), workspace: None };
-        let mut view = TasksView::new(
-            Backend::Taskwarrior(alacritree_taskwarrior::Taskwarrior::default()),
-            scope,
-            None,
-            Vec::new(),
-            Prefs::default(),
-            None,
-        );
+        let _wsl = wsl_tests();
+        let Some(replica) = WslReplica::open("alacritree-task", true) else { return };
+        wsl_helper::set_enabled(false);
+        let mut view = replica.tab();
         settle_reload(&mut view);
-        let after_listing = std::fs::read_to_string(&log).unwrap_or_default().lines().count();
+        let after_listing = replica.spawns();
         due(&mut view);
         settle_reload(&mut view);
         due(&mut view);
         settle_reload(&mut view);
-        let after_ticks = std::fs::read_to_string(&log).unwrap_or_default().lines().count();
-        alacritree_common::wsl_helper::set_enabled(was_enabled);
-        alacritree_common::tools::configure(saved);
+        let after_ticks = replica.spawns();
         assert!(view.load_error().is_none(), "{}", view.load_error().unwrap_or_default());
         assert_eq!(after_ticks, after_listing, "unchanged ticks ran a task command");
         assert!(after_listing >= 1, "the first listing located the replica");
@@ -2017,6 +2358,117 @@ mod tests {
         assert_eq!(store.listings(), 2, "a panicked listing is listed again");
     }
 
+    /// A stamp that lands while a watch is still open is applied on the next
+    /// tick, not held until the reload interval. The watch is what a change
+    /// arrives on; a stamp already in flight is a separate read.
+    #[test]
+    fn a_stamp_that_lands_while_a_watch_is_open_is_applied_at_once() {
+        let store = FakeBackend::with_tasks(vec![task("a", "r")]);
+        let mut view = tab(&store);
+        settle_reload(&mut view);
+        view.watch = Some(pending_watch());
+        view.last_reload = Some(Instant::now());
+        view.stamp_job = Some(Job::ready((None, None)));
+        view.tick();
+        assert!(view.stamp_job.is_none(), "a landed stamp waits for the watch or the interval");
+    }
+
+    /// A helper that is down, disabled or still starting answers at once.
+    /// The tab waits the fallback interval before it asks again, instead of
+    /// arming a new watch on every frame.
+    // `windows_to_linux` reads a path prefix, which only Windows paths have.
+    #[cfg(windows)]
+    #[test]
+    fn an_unavailable_watch_waits_for_the_fallback_interval() {
+        let _wsl = wsl_tests();
+        wsl_helper::set_watch_client(Some(wsl_helper::refusing_client()));
+        wsl_helper::reset_watches();
+        let store = FakeBackend::with_tasks(vec![task("a", "r")]);
+        let mut view = wsl_tab(&store);
+        view.replica_dir = Some((view.scope.side.clone(), PathBuf::from(r"C:\Users")));
+        view.tick();
+        let armed = view.watch.take();
+        assert!(armed.is_some(), "the refusing helper never armed a watch");
+        // The watch thread answers at once. Drain it, the way the next frame
+        // would, and show that frame arms another.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while armed.as_ref().unwrap().try_recv().is_err() {
+            assert!(Instant::now() < deadline, "the refusing helper never answered");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        // The answer is already taken. The next frame is the one that would
+        // have drained it, and it is the one that must wait.
+        view.watch = Some(dropped_watch());
+        view.tick();
+        view.tick();
+        let asked_again = view.watch.is_some();
+        view.tick();
+        let third = view.watch.is_some();
+        wsl_helper::set_watch_client(None);
+        wsl_helper::reset_watches();
+        assert!(!asked_again, "a failed watch is asked again on the next frame");
+        assert!(!third, "a down helper is asked again on the frame after that");
+    }
+
+    /// A failed watch is heard once. The tab stores that failure's
+    /// generation, so the next arm asks with it instead of taking the same
+    /// error again.
+    #[cfg(windows)]
+    #[test]
+    fn a_tab_stores_the_generation_of_a_failed_watch() {
+        let _wsl = wsl_tests();
+        wsl_helper::set_watch_client(Some(wsl_helper::refusing_client()));
+        wsl_helper::reset_watches();
+        let store = FakeBackend::with_tasks(vec![task("a", "r")]);
+        store.hold_next_stamp();
+        let mut view = wsl_tab(&store);
+        view.replica_dir = Some((view.scope.side.clone(), PathBuf::from(r"C:\Users")));
+        view.tick();
+        let armed = view.watch.take().expect("the refusing helper never armed a watch");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let answer = loop {
+            if let Ok(answer) = armed.try_recv() {
+                break answer;
+            }
+            assert!(Instant::now() < deadline, "the refused write never reached the tab");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        let Err(error) = answer else { panic!("the refused write answered as a change") };
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(Err(error)).expect("the receiver is still here");
+        view.watch = Some(rx);
+        view.tick();
+        let heard = view.watch_generation;
+        view.watch_retry = Instant::now();
+        let back = wsl_helper::silent_helper();
+        wsl_helper::set_watch_client(Some(back));
+        let sent = wsl_helper::watches_sent("Ubuntu");
+        view.watch_retry = Instant::now();
+        view.tick();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while wsl_helper::watches_sent("Ubuntu") == sent {
+            assert!(Instant::now() < deadline, "a re-arm after the helper is back sent no watch");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        wsl_helper::set_watch_client(None);
+        wsl_helper::reset_watches();
+        assert!(heard > 0, "the tab stored no generation for the failure");
+    }
+
+    /// A watch that failed is the same wait. The next frame does not arm
+    /// another one.
+    #[test]
+    fn a_failed_watch_waits_for_the_fallback_interval() {
+        let store = FakeBackend::with_tasks(vec![task("a", "r")]);
+        let mut view = wsl_tab(&store);
+        view.replica_dir = Some((view.scope.side.clone(), PathBuf::from(r"\\wsl$\Ubuntu\tmp")));
+        view.watch = Some(dropped_watch());
+        view.tick();
+        assert!(view.watch.is_none(), "a failed watch stays open");
+        view.tick();
+        assert!(view.watch.is_none(), "a failed watch is armed again on the next frame");
+    }
+
     /// A stamp read that panicked waits one interval before the next attempt.
     #[test]
     fn a_failed_stamp_waits_one_interval() {
@@ -2027,14 +2479,22 @@ mod tests {
         view.tick();
         assert!(view.stamp_job.is_none(), "a failed stamp clears its slot");
         assert!(view.reload.is_some(), "a stale tick still lists");
+        view.reload = None;
         view.tick();
         assert!(view.stamp_job.is_none(), "a failed stamp waits one interval");
         view.reload = None;
-        view.stamp_retry = Instant::now() - Duration::from_millis(1);
+        // A full interval, not 1 ms. A coarse Windows clock can land a 1 ms
+        // margin on the wrong side of the comparison.
+        view.stamp_retry = Instant::now() - RELOAD_EVERY;
         view.stale = true;
         view.tick();
         assert!(view.reload.is_some(), "a stale tick lists before the stamp");
+        // That listing clears stale, so the next tick is the interval path.
+        // The failed read set stamp_retry inside the tick above.
         view.reload = None;
+        view.stale = false;
+        view.stamp_retry = Instant::now() - RELOAD_EVERY;
+        view.last_reload = Some(Instant::now() - RELOAD_EVERY);
         view.tick();
         assert!(view.stamp_job.is_some(), "the next tick reads the stamp");
     }
@@ -2251,7 +2711,11 @@ mod tests {
         assert_eq!(h.view.builds(), built, "a second tab frame does not rebuild");
         let mut view = h.view;
 
-        view.finish_reload(view.reload_epoch(), &view.scope.clone(), Ok(vec![task("plan", "r.feat")]));
+        view.finish_reload(
+            view.reload_epoch(),
+            &view.scope.clone(),
+            Ok(vec![task("plan", "r.feat")]),
+        );
         let rows: Vec<_> =
             view.sections().iter().flat_map(|b| &b.section.rows).map(|r| r.id.as_str()).collect();
         assert_eq!(rows, ["plan"]);
@@ -2277,7 +2741,11 @@ mod tests {
         let built = empty.view.builds();
         empty.frame(Vec::new());
         assert_eq!(empty.view.builds(), built, "an empty listing's second frame does not rebuild");
-        empty.view.finish_reload(empty.view.reload_epoch(), &empty.view.scope.clone(), Ok(Vec::new()));
+        empty.view.finish_reload(
+            empty.view.reload_epoch(),
+            &empty.view.scope.clone(),
+            Ok(Vec::new()),
+        );
         let _ = empty.view.sections().len();
         let reloaded = empty.view.builds();
         assert!(reloaded > built, "the reload builds once");
@@ -2785,7 +3253,11 @@ mod tests {
         h.click(h.checkbox("one"));
         let before_the_write = h.view.reload_epoch();
         h.view.finish_write(Some("a".into()), Ok(()));
-        h.view.finish_reload(before_the_write, &h.view.scope.clone(), Ok(vec![pending("a", "one")]));
+        h.view.finish_reload(
+            before_the_write,
+            &h.view.scope.clone(),
+            Ok(vec![pending("a", "one")]),
+        );
         assert_eq!(h.view.plain_lines()[1], "- [x] one", "a reload older than the write");
         let after_the_write = h.view.reload_epoch();
         h.view.finish_reload(after_the_write, &h.view.scope.clone(), Ok(vec![pending("a", "one")]));
