@@ -6,6 +6,7 @@ use alacritree_common::side::Side;
 use alacritree_tasks::{Edit, TaskBackend, TaskCommand, TaskError, ambassador_impl_TaskBackend};
 use alacritree_taskwarrior::Taskwarrior;
 use ambassador::Delegate;
+use std::path::{Path, PathBuf};
 
 use crate::config::IntegrationsConfig;
 
@@ -32,16 +33,28 @@ impl Backend {
     }
 }
 
-pub(crate) fn replica_stamp(backend: &Backend, side: &Side, blocking: &Blocking) -> Option<String> {
+pub(crate) fn replica_stamp(
+    backend: &Backend,
+    side: &Side,
+    known: Option<&Path>,
+    blocking: &Blocking,
+) -> (Option<String>, Option<PathBuf>) {
     match backend {
-        Backend::Taskwarrior(tw) => taskwarrior_stamp(tw, side, blocking),
-        Backend::Command(_) => None,
+        Backend::Taskwarrior(tw) => taskwarrior_stamp(tw, side, known, blocking),
+        Backend::Command(_) => (None, None),
         #[cfg(test)]
-        Backend::Fake(fake) => fake.has_stamp().then(|| fake.stamp().to_string()),
+        Backend::Fake(fake) => (fake.has_stamp().then(|| fake.stamp().to_string()), None),
     }
 }
-fn taskwarrior_stamp(tw: &Taskwarrior, side: &Side, blocking: &Blocking) -> Option<String> {
-    tw.replica_stamp(side, blocking).ok().flatten().map(|stamp| format!("{stamp:?}"))
+fn taskwarrior_stamp(
+    tw: &Taskwarrior,
+    side: &Side,
+    known: Option<&Path>,
+    blocking: &Blocking,
+) -> (Option<String>, Option<PathBuf>) {
+    let replica = tw.cached_replica(side, known, blocking).ok().flatten();
+    let stamp = replica.as_ref().and_then(|r| r.stamp()).map(|stamp| format!("{stamp:?}"));
+    (stamp, replica.map(|r| r.dir))
 }
 
 /// Applies `edits` in order and stops at the first that fails, since a later

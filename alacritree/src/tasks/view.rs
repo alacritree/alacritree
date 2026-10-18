@@ -340,6 +340,8 @@ pub(crate) struct TasksView {
     write_error: Option<String>,
     reload: Option<PendingReload>,
     listed: Option<String>,
+    /// The replica directory last located for this side. A later tick stats it.
+    replica_dir: Option<(Side, PathBuf)>,
     last_reload: Option<Instant>,
     /// Set when a write finishes, so the export after it is not skipped
     /// while an older one is still running.
@@ -409,6 +411,7 @@ impl TasksView {
             write_error: None,
             reload: None,
             listed: None,
+            replica_dir: None,
             last_reload: None,
             stale: false,
             writes_finished: 0,
@@ -860,7 +863,14 @@ impl TasksView {
     /// the stamp cannot be read. An unchanged stamp runs no export.
     fn reload_if_changed(&mut self) {
         let (store, side) = (self.backend.clone(), self.scope.side.clone());
-        let stamp = jobs::on_this_thread(|b| backend::replica_stamp(&store, &side, b));
+        let known = self
+            .replica_dir
+            .as_ref()
+            .filter(|(cached, _)| cached == &side)
+            .map(|(_, dir)| dir.clone());
+        let (stamp, dir) =
+            jobs::on_this_thread(|b| backend::replica_stamp(&store, &side, known.as_deref(), b));
+        self.replica_dir = dir.map(|dir| (side.clone(), dir));
         let changed = self.stale || stamp.is_none() || stamp != self.listed;
         self.last_reload = Some(Instant::now());
         if !changed {
@@ -1836,6 +1846,91 @@ mod tests {
         settle_reload(&mut view);
         assert_eq!(store.listings(), 2);
     }
+
+    /// After the first listing, an unchanged WSL replica runs no task command.
+    #[cfg(windows)]
+    #[test]
+    fn an_unchanged_wsl_replica_runs_no_task_command() {
+        let Some(distro) = wsl::distros().into_iter().find(|d| d.is_default).map(|d| d.name) else {
+            return;
+        };
+        let root = PathBuf::from(format!(r"\\wsl.localhost\{distro}\tmp"));
+        let Ok(dir) = tempfile::Builder::new().prefix("alacritree-task").tempdir_in(&root) else {
+            return;
+        };
+        let data = dir.path().join("data");
+        std::fs::create_dir(&data).unwrap();
+        std::fs::write(data.join("taskchampion.sqlite3"), b"db").unwrap();
+        let log = dir.path().join("spawns.txt");
+        let linux = wsl::windows_to_linux(dir.path()).expect("the temp dir is inside the distro");
+        let script = format!("{linux}/task");
+        let body = format!(
+            "#!/bin/sh\necho spawn >> {linux}/spawns.txt\ncase $* in\n*_get*) printf \
+             {linux}/data;;\n*) printf []\nesac\n"
+        );
+        std::fs::write(dir.path().join("task"), body.replace("\r\n", "\n")).unwrap();
+        alacritree_common::command_ext::hidden("wsl.exe")
+            .args(["-d", &distro, "--exec", "chmod", "+x", &script])
+            .output()
+            .unwrap();
+        let _guard = alacritree_common::tools::test_configuration_lock().lock().unwrap();
+        let saved = alacritree_common::tools::test_configuration();
+        let mut paths = saved.clone();
+        paths[alacritree_common::tools::Tool::Task as usize].wsl = Some(script);
+        alacritree_common::tools::configure(paths);
+        let was_enabled = alacritree_common::wsl_helper::enabled();
+        alacritree_common::wsl_helper::set_enabled(false);
+        let scope = Scope { side: Side::Wsl(distro), repo: Some("r".into()), workspace: None };
+        let mut view = TasksView::new(
+            Backend::Taskwarrior(alacritree_taskwarrior::Taskwarrior::default()),
+            scope,
+            None,
+            Vec::new(),
+            Prefs::default(),
+            None,
+        );
+        settle_reload(&mut view);
+        let after_listing = std::fs::read_to_string(&log).unwrap_or_default().lines().count();
+        view.last_reload = Some(Instant::now() - RELOAD_EVERY - Duration::from_millis(1));
+        view.tick();
+        view.last_reload = Some(Instant::now() - RELOAD_EVERY - Duration::from_millis(1));
+        view.tick();
+        let after_ticks = std::fs::read_to_string(&log).unwrap_or_default().lines().count();
+        alacritree_common::wsl_helper::set_enabled(was_enabled);
+        alacritree_common::tools::configure(saved);
+        assert!(view.load_error().is_none(), "{}", view.load_error().unwrap_or_default());
+        assert_eq!(after_ticks, after_listing, "unchanged ticks ran a task command");
+        assert!(after_listing >= 1, "the first listing located the replica");
+    }
+    /// Several unchanged reload ticks of the kali-linux replica start no task after the first
+    /// listing.
+    #[ignore = "runs task inside kali-linux and prints the process count"]
+    #[cfg(windows)]
+    #[test]
+    fn unchanged_kali_reload_ticks_start_no_task() {
+        let side = Side::Wsl("kali-linux".into());
+        let tw = alacritree_taskwarrior::Taskwarrior::default();
+        let mut known = None;
+        alacritree_taskwarrior::reset_task_runs();
+        let mut stamps = Vec::new();
+        for _ in 0..4 {
+            let (stamp, dir) = jobs::on_this_thread(|b| {
+                backend::replica_stamp(
+                    &Backend::Taskwarrior(tw.clone()),
+                    &side,
+                    known.as_deref(),
+                    b,
+                )
+            });
+            known = dir;
+            stamps.push(stamp.is_some());
+        }
+        let runs = alacritree_taskwarrior::task_runs();
+        println!("kali-linux task processes: {runs}");
+        assert!(stamps.iter().all(|found| *found), "a tick found no replica");
+        assert_eq!(runs, 1);
+    }
+
     #[test]
     fn a_replica_with_no_stamp_reloads_every_interval() {
         let store = alacritree_tasks::fake::FakeBackend::default().unstamped();

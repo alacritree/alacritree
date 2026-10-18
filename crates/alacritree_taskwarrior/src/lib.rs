@@ -7,7 +7,9 @@ mod replica;
 mod settings;
 
 use std::io;
+use std::path::Path;
 use std::process::{Output, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use alacritree_common::command_ext::hidden;
@@ -140,9 +142,23 @@ impl Taskwarrior {
         Ok(written)
     }
 
-    /// Whether `side`'s taskrc gives both UDAs their types. Agents call `task`
-    /// directly, and without them `subof:` and `order:` land in the
-    /// description.
+    /// The replica located for `side`. A known directory is used while its database file is
+    /// present, and a missing file locates again.
+    pub fn cached_replica(
+        &self,
+        side: &Side,
+        known: Option<&Path>,
+        blocking: &Blocking,
+    ) -> Result<Option<replica::Replica>, TaskError> {
+        if let Some(dir) = known {
+            let replica = replica::Replica { dir: dir.to_path_buf() };
+            if replica.stamp().is_some() {
+                return Ok(Some(replica));
+            }
+        }
+        replica::Replica::locate(self, side, blocking)
+    }
+
     /// The replica stamps, or None when the database file cannot be read.
     pub fn replica_stamp(
         &self,
@@ -152,6 +168,9 @@ impl Taskwarrior {
         Ok(replica::Replica::locate(self, side, blocking)?.and_then(|r| r.stamp()))
     }
 
+    /// Whether `side`'s taskrc gives both UDAs their types. Agents call `task`
+    /// directly, and without them `subof:` and `order:` land in the
+    /// description.
     pub fn fields_declared(&self, side: Side, blocking: &Blocking) -> Result<bool, TaskError> {
         let cli = self.on(side, blocking);
         for (key, value) in UDA_DECLARATIONS.iter().filter(|(key, _)| key.ends_with(".type")) {
@@ -273,6 +292,22 @@ impl Ran {
     }
 }
 
+static TASK_RUNS: AtomicU64 = AtomicU64::new(0);
+
+/// How many `task` processes this process has started.
+pub fn task_runs() -> u64 {
+    TASK_RUNS.load(Ordering::Relaxed)
+}
+
+/// Sets the count to zero.
+pub fn reset_task_runs() {
+    TASK_RUNS.store(0, Ordering::Relaxed);
+}
+
+fn note_task_run() {
+    TASK_RUNS.fetch_add(1, Ordering::Relaxed);
+}
+
 /// `task` as found on one side.
 struct Cli<'a> {
     side: Side,
@@ -294,6 +329,10 @@ impl Cli<'_> {
         // A WSL login shell reports a missing program as 127, not ENOENT.
         if ran.code == Some(127) {
             return Err(TaskError::Missing { program: self.program.clone() });
+        }
+        let name = self.program.rsplit("/").next().unwrap_or(self.program.as_str());
+        if name == "task" || name.starts_with("task.") {
+            note_task_run();
         }
         Ok(ran)
     }

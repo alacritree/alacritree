@@ -53,13 +53,16 @@ const WAL: &str = "taskchampion.sqlite3-wal";
 fn side_path(side: &Side, location: &str) -> PathBuf {
     match side {
         Side::Native => PathBuf::from(location),
-        Side::Wsl(distro) => wsl_path(distro, location),
+        Side::Wsl(distro) => wsl_path(distro, location).unwrap_or_else(|| PathBuf::from(location)),
     }
 }
-fn wsl_path(distro: &str, location: &str) -> PathBuf {
-    let mut prefix = String::from("\\wsl.localhost\\");
-    prefix.insert(0, '\\');
-    prefix.push_str(distro);
-    let rest = location.trim_start_matches('/').replace('/', "\\");
-    PathBuf::from(prefix).join(rest)
+fn wsl_path(distro: &str, location: &str) -> Option<PathBuf> {
+    if location.starts_with("/") {
+        let mut prefix = String::from("\\wsl.localhost\\");
+        prefix.insert(0, char::from(92));
+        prefix.push_str(distro);
+        let rest = location.trim_start_matches("/").replace("/", "\\");
+        return Some(PathBuf::from(prefix).join(rest));
+    }
+    PathBuf::from(location).is_absolute().then(|| PathBuf::from(location))
 }
