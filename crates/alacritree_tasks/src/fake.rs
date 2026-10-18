@@ -71,8 +71,6 @@ impl FakeBackend {
         self.store().edits.clone()
     }
 
-    /// How many times the tab has listed this store.
-    /// The replica stamp the tab reads before a reload.
     /// A replica whose files the tab cannot find.
     pub fn unstamped(self) -> Self {
         self.store().stamped = false;
@@ -83,6 +81,7 @@ impl FakeBackend {
         self.store().stamped
     }
 
+    /// The replica stamp the tab reads before a reload.
     pub fn stamp(&self) -> u64 {
         self.store().stamp
     }
@@ -94,6 +93,7 @@ impl FakeBackend {
         store.tasks = tasks;
     }
 
+    /// How many times the tab has listed this store.
     pub fn listings(&self) -> u64 {
         self.store().listings
     }
