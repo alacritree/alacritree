@@ -8,6 +8,7 @@
 pub(crate) mod preview;
 
 use alacritree_vcs::Checkout;
+use std::cell::OnceCell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -258,6 +259,14 @@ impl Resolver {
 /// read before the pool runs it.
 type QueuedWrite = (Option<String>, Vec<Edit>);
 
+/// One section and the tasks it was built from. An added row has no id yet.
+/// Drawing the section reads these tasks instead of copying the listing.
+#[derive(Clone)]
+pub(crate) struct Built {
+    pub(crate) section: Section,
+    tasks: Vec<Task>,
+}
+
 /// A write in flight, with the row its failure is shown on.
 type PendingWrite = (Option<String>, Job<Result<(), TaskError>>);
 
@@ -315,6 +324,13 @@ pub(crate) struct TasksView {
     /// The worktree's names as `task scope` reads them from git.
     resolving: Option<Resolver>,
     tasks: Vec<Task>,
+    /// The shown tasks split into sections, built when a listing lands or a
+    /// pending edit changes what the rows show. A redraw reads it.
+    built: OnceCell<Vec<Built>>,
+    /// Builds since the view was created. Tests read it to tell a reuse from
+    /// a rebuild that happens to return the same sections.
+    #[cfg(test)]
+    builds: std::cell::Cell<u32>,
     /// Whether a listing has landed, so an empty tab can say it is waiting.
     loaded: bool,
     cache_dir: Option<PathBuf>,
@@ -337,6 +353,11 @@ pub(crate) struct TasksView {
     /// landed: toggled statuses, deleted rows, moved rows and added rows.
     statuses: HashMap<String, Status>,
     deleted: HashSet<String>,
+    /// A delete landed while a frame held section indexes. The sections
+    /// stay as drawn until the next frame starts.
+    sections_stale: bool,
+    /// Set while this view's draw loop holds section indexes.
+    sections_held: std::rc::Rc<std::cell::Cell<bool>>,
     moves: Vec<Edit>,
     added: Vec<NewRow>,
     new_row: Option<NewRow>,
@@ -377,6 +398,9 @@ impl TasksView {
             scope,
             resolving,
             tasks: tasks.unwrap_or_default(),
+            built: OnceCell::new(),
+            #[cfg(test)]
+            builds: std::cell::Cell::new(0),
             loaded: false,
             cache_dir,
             cache_write: None,
@@ -392,6 +416,8 @@ impl TasksView {
             drafts: HashMap::new(),
             statuses: HashMap::new(),
             deleted: HashSet::new(),
+            sections_stale: false,
+            sections_held: std::rc::Rc::new(std::cell::Cell::new(false)),
             moves: Vec::new(),
             added: Vec::new(),
             new_row: None,
@@ -406,6 +432,60 @@ impl TasksView {
             prefs,
             pref_changes: Vec::new(),
         }
+    }
+
+    /// Drops the built sections, so the next read builds them from the
+    /// listing and the pending edits as they stand.
+    fn rebuild(&mut self) {
+        self.built.take();
+    }
+
+    /// Shows `id` as `status` until a listing started after the write lands.
+    fn show_status(&mut self, id: String, status: Status) {
+        self.statuses.insert(id, status);
+        self.rebuild();
+    }
+
+    fn show_deleted(&mut self, ids: impl IntoIterator<Item = String>) {
+        self.deleted.extend(ids);
+        self.mark_sections_stale();
+    }
+
+    /// A delete during a frame marks the sections stale. The rebuild waits
+    /// for the next frame, which no longer holds the old indexes.
+    fn mark_sections_stale(&mut self) {
+        if self.sections_held.get() {
+            self.sections_stale = true;
+        } else {
+            self.rebuild();
+        }
+    }
+
+    /// Holds this view's section indexes until the guard drops, including
+    /// when a row panics. The guard does not borrow the view.
+    pub(crate) fn hold_sections(&self) -> SectionHold {
+        self.sections_held.set(true);
+        SectionHold(std::rc::Rc::clone(&self.sections_held))
+    }
+
+    /// Rebuilds sections a delete marked stale, before this frame reads
+    /// their indexes.
+    pub(crate) fn refresh_sections(&mut self) {
+        if !self.sections_stale {
+            return;
+        }
+        self.sections_stale = false;
+        self.rebuild();
+    }
+
+    fn show_moves(&mut self, edits: impl IntoIterator<Item = Edit>) {
+        self.moves.extend(edits);
+        self.rebuild();
+    }
+
+    fn show_added(&mut self, rows: impl IntoIterator<Item = NewRow>) {
+        self.added.extend(rows);
+        self.rebuild();
     }
 
     /// The store's tasks with the unconfirmed toggles, deletes and moves
@@ -424,13 +504,30 @@ impl TasksView {
         tasks
     }
 
-    /// The shown tasks as sections, with the added rows placed in them. An
-    /// added row has no id yet.
-    fn sections(&self) -> Vec<Section> {
+    /// The shown tasks as sections, built once per listing and pending edit.
+    pub(crate) fn sections(&self) -> &[Built] {
+        self.built.get_or_init(|| {
+            #[cfg(test)]
+            {
+                self.builds.set(self.builds.get() + 1);
+            }
+            self.build_sections()
+        })
+    }
+
+    /// How many times the sections have been built. A redraw that reuses them
+    /// leaves this unchanged.
+    #[cfg(test)]
+    pub(crate) fn builds(&self) -> u32 {
+        self.builds.get()
+    }
+
+    fn build_sections(&self) -> Vec<Built> {
         let tasks = self.shown_tasks();
-        let mut sections =
-            tree::sections(&tasks, self.scope.repo.as_deref(), self.scope.workspace.as_deref());
-        for section in &mut sections {
+        let split =
+            tree::sections_with(tasks, self.scope.repo.as_deref(), self.scope.workspace.as_deref());
+        let mut built = Vec::new();
+        for (mut section, here) in split {
             for add in self.added.iter().filter(|a| a.node == section.node) {
                 let rows = &section.rows;
                 let anchor =
@@ -449,18 +546,25 @@ impl TasksView {
                     subtasks: tree::Progress::default(),
                 });
             }
+            built.push(Built { section, tasks: here });
         }
-        sections
+        built
     }
 
-    /// The sections the sidebar shows: those holding tasks, without the
-    /// global list once the workspace is in a repository, since that list
-    /// says nothing about the checkout.
-    pub(crate) fn sidebar_sections(&self) -> Vec<Section> {
+    pub(crate) fn section(&self, index: usize) -> &Section {
+        &self.sections()[index].section
+    }
+
+    /// The indexes of [`Self::sections`] the sidebar draws: those holding
+    /// tasks, without the global list once the workspace is in a repository,
+    /// since that list says nothing about the checkout.
+    pub(crate) fn sidebar_indexes(&self) -> impl Iterator<Item = usize> + '_ {
         let in_repo = self.scope.repo.is_some();
-        let mut sections = self.sections();
-        sections.retain(|s| !s.rows.is_empty() && !(in_repo && s.kind == SectionKind::Global));
-        sections
+        self.sections().iter().enumerate().filter_map(move |(i, built)| {
+            let section = &built.section;
+            (!section.rows.is_empty() && !(in_repo && section.kind == SectionKind::Global))
+                .then_some(i)
+        })
     }
 
     pub(crate) fn short_name<'a>(&self, node: &'a str) -> &'a str {
@@ -481,9 +585,9 @@ impl TasksView {
 
     pub(crate) fn plain_lines(&self) -> Vec<String> {
         let mut lines = Vec::new();
-        for section in self.sections() {
-            lines.push(format!("## {}", section.node));
-            for row in section.rows {
+        for built in self.sections() {
+            lines.push(format!("## {}", built.section.node));
+            for row in &built.section.rows {
                 let mark = if row.status == Status::Completed { "x" } else { " " };
                 lines.push(format!("{}- [{mark}] {}", "  ".repeat(row.depth), row.text));
             }
@@ -561,9 +665,9 @@ impl TasksView {
         let gone = doomed(&refs, ids);
         for id in &gone {
             self.drafts.remove(id);
-            self.deleted.insert(id.clone());
             self.selected.remove(id);
         }
+        self.show_deleted(gone.iter().cloned());
         if self.current.as_ref().is_some_and(|c| gone.contains(c)) {
             self.current = None;
         }
@@ -601,7 +705,7 @@ impl TasksView {
     fn rearrange(&mut self, id: &str, edits: Vec<Edit>) {
         let placing =
             edits.iter().filter(|e| matches!(e, Edit::Move { .. } | Edit::Reorder { .. }));
-        self.moves.extend(placing.cloned());
+        self.show_moves(placing.cloned());
         self.write(Some(id.to_string()), edits);
     }
 
@@ -690,6 +794,10 @@ impl TasksView {
                     self.moves.clear();
                     self.added.clear();
                 }
+                // A settled listing drops the edits the sections were built
+                // with. An unsettled one keeps them, and the listing under
+                // them changed either way.
+                self.rebuild();
                 if tasks != self.tasks {
                     self.save_cache(&tasks);
                 }
@@ -712,6 +820,7 @@ impl TasksView {
         if let Some(place) = self.resolving.as_mut().and_then(|r| r.poll(Instant::now())) {
             self.resolving = None;
             self.scope.adopt(&place);
+            self.rebuild();
             self.stale = true;
         }
         for (row, edits) in std::mem::take(&mut self.outbox) {
@@ -752,6 +861,45 @@ impl TasksView {
             self.last_reload = Some(Instant::now());
         }
     }
+}
+
+/// Clears one view's section hold when its draw loop ends, including on panic.
+pub(crate) struct SectionHold(std::rc::Rc<std::cell::Cell<bool>>);
+
+impl Drop for SectionHold {
+    fn drop(&mut self) {
+        self.0.set(false);
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static DRAWN_ROW: std::cell::RefCell<Option<std::sync::Arc<dyn Fn(&TasksView, usize, &Row) + Send + Sync>>> =
+        const { std::cell::RefCell::new(None) };
+    static STALE_INDEX: std::cell::RefCell<Option<(usize, String)>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn stale_section_index() -> Option<(usize, String)> {
+    STALE_INDEX.with(|slot| slot.borrow().clone())
+}
+
+#[cfg(test)]
+fn check_drawn_row(view: &TasksView, index: usize, rows: &[Row]) {
+    let Some(check) = DRAWN_ROW.with(|slot| slot.borrow().clone()) else { return };
+    for row in rows {
+        check(view, index, row);
+    }
+}
+
+#[cfg(test)]
+fn set_drawn_row_check(check: impl Fn(&TasksView, usize, &Row) + Send + Sync + 'static) {
+    DRAWN_ROW.with(|slot| *slot.borrow_mut() = Some(std::sync::Arc::new(check)));
+}
+
+#[cfg(test)]
+fn clear_drawn_row_check() {
+    DRAWN_ROW.with(|slot| *slot.borrow_mut() = None);
 }
 
 #[cfg(test)]
@@ -828,6 +976,7 @@ fn draw(
     shortcuts: &Shortcuts,
     style: Style,
 ) -> Response {
+    view.refresh_sections();
     // Registered before the rows: egui gives a click to the last widget
     // registered under the pointer, so every row widget wins over this.
     let background = ui.interact(ui.max_rect(), ui.id().with("tasks-tab"), Sense::click());
@@ -849,8 +998,14 @@ fn draw(
             if !view.loaded && view.tasks.is_empty() && view.load_error.is_none() {
                 ui.label(RichText::new("loading tasks").color(style.dim));
             }
-            for section in view.sections() {
-                show_section(ui, view, &section, &paint);
+            // Taken once: a drop rebuilds the sections, and the rows being
+            // drawn have to outlive that.
+            let drawn = view.sections().to_vec();
+            let _hold = view.hold_sections();
+            for (i, built) in drawn.iter().enumerate() {
+                show_section(ui, view, i, built, &paint);
+                #[cfg(test)]
+                check_drawn_row(view, i, &built.section.rows);
             }
         });
     });
@@ -912,54 +1067,57 @@ struct Paint<'a> {
     c: Style,
 }
 
-fn show_section(ui: &mut Ui, view: &mut TasksView, section: &Section, paint: &Paint<'_>) {
+fn show_section(ui: &mut Ui, view: &mut TasksView, index: usize, built: &Built, paint: &Paint<'_>) {
     let c = paint.c;
-    let open = !view.prefs.collapsed.contains(&section.node);
-    let done = section.rows.iter().filter(|r| r.status == Status::Completed).count();
-    let header = format!("{}  {done}/{}", section.node, section.rows.len());
+    let node = built.section.node.clone();
+    let (done, total) = {
+        let rows = &built.section.rows;
+        (rows.iter().filter(|r| r.status == Status::Completed).count(), rows.len())
+    };
+    let open = !view.prefs.collapsed.contains(&node);
+    let header = format!("{node}  {done}/{total}");
     if heading(ui, open, &header, c).clicked() {
-        view.toggle_collapsed(&section.node);
+        view.toggle_collapsed(&node);
     }
     if !open {
         return;
     }
-    let tasks: Vec<Task> =
-        view.shown_tasks().into_iter().filter(|t| t.node() == section.node).collect();
-    let rows = match view.prefs.hide_completed {
-        true => tree::without_completed(section.rows.clone()),
-        false => section.rows.clone(),
+    let open_rows;
+    let rows: Vec<&Row> = match view.prefs.hide_completed {
+        true => {
+            open_rows = tree::open_rows(&built.section.rows);
+            open_rows
+        },
+        false => built.section.rows.iter().collect(),
     };
-    for (row, below) in tree::fold(&rows, &view.collapsed_tasks) {
-        show_row(ui, view, section, &tasks, row, below, paint);
-        let follows = |n: &NewRow| n.node == section.node && n.after.as_deref() == Some(&row.id);
+    let collapsed = view.collapsed_tasks.clone();
+    let drawn = tree::fold(&rows, &collapsed);
+    for (row, below) in drawn {
+        let id = row.id.clone();
+        show_row(ui, view, index, row, &built.tasks, below, paint);
+        let follows = |n: &NewRow| n.node == node && n.after.as_deref() == Some(&id);
         if view.new_row.as_ref().is_some_and(follows) {
-            show_new_row(ui, view, &tasks, c);
+            show_new_row(ui, view, index, c);
         }
     }
-    let adding_first = |n: &NewRow| n.node == section.node && n.after.is_none();
+    let adding_first = |n: &NewRow| n.node == node && n.after.is_none();
     if view.new_row.as_ref().is_some_and(adding_first) {
-        show_new_row(ui, view, &tasks, c);
+        show_new_row(ui, view, index, c);
     } else if button(ui, "+ add a task", c.add_button).clicked() {
         view.clear_selection();
         // Drawn below the last root row from the next frame on.
-        let last_root = section.rows.iter().rev().find(|r| r.depth == 0).map(|r| r.id.clone());
-        view.new_row = Some(NewRow {
-            node: section.node.clone(),
-            after: last_root,
-            depth: 0,
-            text: String::new(),
-            focus: true,
-        });
+        let last_root = rows.iter().rev().find(|r| r.depth == 0).map(|r| r.id.clone());
+        view.new_row =
+            Some(NewRow { node, after: last_root, depth: 0, text: String::new(), focus: true });
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn show_row(
     ui: &mut Ui,
     view: &mut TasksView,
-    section: &Section,
-    tasks: &[Task],
+    index: usize,
     row: &Row,
+    tasks: &[Task],
     below: usize,
     paint: &Paint<'_>,
 ) {
@@ -976,12 +1134,12 @@ fn show_row(
         });
         return;
     }
-    let refs: Vec<&Task> = tasks.iter().collect();
-    let id = Id::new(("task-row", &row.id));
+    let node = view.section(index).node.clone();
+    let widget = Id::new(("task-row", &row.id));
     let mut buffer = view.drafts.get(&row.id).cloned().unwrap_or_else(|| row.text.clone());
     // Read before the text field: it would take Enter as a line break, and
     // Backspace on a row that is already empty deletes the row instead.
-    let (enter, erase) = match ui.memory(|m| m.has_focus(id)) {
+    let (enter, erase) = match ui.memory(|m| m.has_focus(widget)) {
         true => ui.input_mut(|i| {
             let enter = i.consume_key(Modifiers::NONE, Key::Enter);
             (enter, buffer.is_empty() && i.consume_key(Modifiers::NONE, Key::Backspace))
@@ -998,7 +1156,7 @@ fn show_row(
     let line = ui.horizontal_top(|ui| {
         ui.add_space(row.depth as f32 * INDENT);
         grip(ui, c, Sense::drag())
-            .dnd_set_drag_payload(DraggedTask { id: row.id.clone(), node: section.node.clone() });
+            .dnd_set_drag_payload(DraggedTask { id: row.id.clone(), node: node.clone() });
         if toggle(ui, (below > 0).then_some(!collapsed), c.chevron, c.chevron_hover)
             && !view.collapsed_tasks.remove(&row.id)
         {
@@ -1008,7 +1166,7 @@ fn show_row(
         if ui.checkbox(&mut checked, "").changed() {
             let id = row.id.clone();
             let status = if checked { Status::Completed } else { Status::Pending };
-            view.statuses.insert(id.clone(), status);
+            view.show_status(id.clone(), status);
             view.write_one(&row.id, if checked { Edit::Done(id) } else { Edit::Undone(id) });
         }
         if row.started {
@@ -1022,7 +1180,7 @@ fn show_row(
         // Locking focus keeps Tab for indenting instead of moving to the
         // next widget.
         let field = TextEdit::multiline(&mut buffer)
-            .id(id)
+            .id(widget)
             .desired_rows(1)
             .frame(false)
             .lock_focus(true)
@@ -1066,7 +1224,7 @@ fn show_row(
         // The new row takes focus next frame, and this one commits its text
         // as it loses it.
         view.new_row = Some(NewRow {
-            node: section.node.clone(),
+            node,
             after: Some(row.id.clone()),
             depth: row.depth,
             text: String::new(),
@@ -1089,7 +1247,7 @@ fn show_row(
     // Registered after the row's widgets, so it takes the click from them
     // while a selecting modifier is held and leaves it to them otherwise.
     if ui.input(|i| i.modifiers.command || i.modifiers.shift) {
-        let pick = ui.interact(rect, id.with("pick"), Sense::click_and_drag());
+        let pick = ui.interact(rect, widget.with("pick"), Sense::click_and_drag());
         if pick.clicked() {
             view.pick(&row.id, ui.input(|i| i.modifiers.shift));
             if let Some(focused) = ui.memory(|m| m.focused()) {
@@ -1103,11 +1261,12 @@ fn show_row(
         let fill = ui.visuals().faint_bg_color;
         ui.painter().set(highlight, Shape::rect_filled(rect, 2.0, fill));
     }
-    accept_drop(ui, view, section, &refs, row, rect, c);
+    let (id, depth) = (row.id.clone(), row.depth);
+    accept_drop(ui, view, index, row, tasks, rect, c);
     // Below the row, since the text beside it takes the full width.
-    if let Some(e) = view.row_errors.get(&row.id) {
+    if let Some(e) = view.row_errors.get(&id) {
         ui.horizontal(|ui| {
-            ui.add_space((row.depth + 1) as f32 * INDENT);
+            ui.add_space((depth + 1) as f32 * INDENT);
             ui.add(egui::Label::new(RichText::new(e).color(c.error)).wrap());
         });
     }
@@ -1317,14 +1476,15 @@ fn grip(ui: &mut Ui, c: Style, sense: Sense) -> Response {
 fn accept_drop(
     ui: &mut Ui,
     view: &mut TasksView,
-    section: &Section,
-    refs: &[&Task],
+    index: usize,
     row: &Row,
+    tasks: &[Task],
     rect: egui::Rect,
     c: Style,
 ) {
     let Some(dragged) = DragAndDrop::payload::<DraggedTask>(ui.ctx()) else { return };
-    if dragged.node != section.node || dragged.id == row.id {
+    let node = view.section(index).node.clone();
+    if dragged.node != node || dragged.id == row.id {
         return;
     }
     let pointer = ui.input(|i| i.pointer.interact_pos()).filter(|p| rect.contains(*p));
@@ -1336,7 +1496,8 @@ fn accept_drop(
     };
     ui.painter().hline(rect.x_range(), y, Stroke::new(2.0_f32, c.text));
     if ui.input(|i| i.pointer.any_released()) {
-        let edits = tree::move_to(refs, &dragged.id, &row.id, landing);
+        let refs: Vec<&Task> = tasks.iter().collect();
+        let edits = tree::move_to(&refs, &dragged.id, &row.id, landing);
         view.rearrange(&dragged.id, edits);
         DragAndDrop::clear_payload(ui.ctx());
     }
@@ -1375,7 +1536,7 @@ fn show_confirm(ctx: &egui::Context, view: &mut TasksView) {
 /// A store may reject an empty description, so a new row exists only here
 /// until it has text; leaving it empty drops it. Each non-empty line of the
 /// text becomes its own task, so a pasted list adds one task per line.
-fn show_new_row(ui: &mut Ui, view: &mut TasksView, tasks: &[Task], c: Style) {
+fn show_new_row(ui: &mut Ui, view: &mut TasksView, index: usize, c: Style) {
     let Some(new) = view.new_row.as_mut() else { return };
     let mut committed = None;
     let mut dropped = false;
@@ -1415,10 +1576,10 @@ fn show_new_row(ui: &mut Ui, view: &mut TasksView, tasks: &[Task], c: Style) {
     }
     if let Some(lines) = committed {
         let new = view.new_row.take().expect("present above");
-        let refs: Vec<&Task> = tasks.iter().collect();
+        let refs: Vec<&Task> = view.sections()[index].tasks.iter().collect();
         let edits = tree::insert_after(&refs, &new.node, new.after.as_deref(), &lines);
         view.write(None, edits);
-        view.added.extend(lines.into_iter().map(|text| NewRow { text, ..new.clone() }));
+        view.show_added(lines.into_iter().map(|text| NewRow { text, ..new.clone() }));
     }
 }
 
@@ -1730,6 +1891,265 @@ mod tests {
         view
     }
 
+    /// A second frame of an unchanged listing draws the sections already
+    /// built. A listing or a pending edit that changes what the rows show
+    /// builds them again.
+    #[test]
+    fn a_redraw_reuses_sections_until_the_listing_or_a_pending_edit_changes() {
+        let task = alacritree_tasks::fake::task;
+        let mut h = Harness::with_view(in_workspace(vec![
+            task("plan", "r.feat"),
+            task("step", "r.feat.claude-1"),
+        ]));
+        let built = h.view.builds();
+        h.frame(Vec::new());
+        assert_eq!(h.view.builds(), built, "a second tab frame does not rebuild");
+        let mut view = h.view;
+
+        view.finish_reload(view.reload_epoch(), &view.scope.clone(), Ok(vec![task("plan", "r.feat")]));
+        let rows: Vec<_> =
+            view.sections().iter().flat_map(|b| &b.section.rows).map(|r| r.id.as_str()).collect();
+        assert_eq!(rows, ["plan"]);
+        let listed = view.builds();
+        assert!(listed > built, "a new listing builds again");
+        let _ = view.sections().len();
+        assert_eq!(view.builds(), listed, "reading the new listing does not build again");
+
+        view.show_status("plan".into(), Status::Completed);
+        let _ = view.sections().len();
+        let edited = view.builds();
+        assert!(edited > listed, "a pending edit builds again");
+        let status = view
+            .sections()
+            .iter()
+            .flat_map(|b| &b.section.rows)
+            .find(|r| r.id == "plan")
+            .map(|r| r.status);
+        assert_eq!(status, Some(Status::Completed));
+        assert_eq!(view.builds(), edited, "the edit's sections stay built");
+
+        let mut empty = Harness::with_view(in_workspace(Vec::new()));
+        let built = empty.view.builds();
+        empty.frame(Vec::new());
+        assert_eq!(empty.view.builds(), built, "an empty listing's second frame does not rebuild");
+        empty.view.finish_reload(empty.view.reload_epoch(), &empty.view.scope.clone(), Ok(Vec::new()));
+        let _ = empty.view.sections().len();
+        let reloaded = empty.view.builds();
+        assert!(reloaded > built, "the reload builds once");
+        empty.frame(Vec::new());
+        assert_eq!(empty.view.builds(), reloaded, "the frame after the reload reuses it");
+    }
+
+    /// Git's names replace the sidebar's, and the sections built under the
+    /// sidebar's names are dropped.
+    #[test]
+    fn git_names_drop_the_sections_built_under_the_sidebars() {
+        let mut view = TasksView::new(
+            Backend::from_config(&Default::default()),
+            Scope { side: Side::Native, repo: Some("feat".into()), workspace: None },
+            None,
+            Vec::new(),
+            Prefs::default(),
+            None,
+        );
+        view.tasks = vec![alacritree_tasks::fake::task("plan", "r.feat")];
+        let before: Vec<_> = view.sections().iter().map(|b| b.section.node.clone()).collect();
+        assert!(before.contains(&"feat".to_string()));
+        view.resolving = Some(Resolver {
+            dir: PathBuf::new(),
+            backends: Vec::new(),
+            lookup: Some(Job::ready(Place::Workspace { repo: "r".into(), branch: "feat".into() })),
+            retry_at: Instant::now(),
+            backoff: FIRST_RETRY,
+        });
+        view.tick();
+        let after: Vec<_> = view.sections().iter().map(|b| b.section.node.clone()).collect();
+        assert_ne!(after, before);
+        assert!(after.contains(&"r".to_string()));
+        assert!(after.contains(&"r.feat".to_string()));
+    }
+
+    /// Times one frame of listing work on both bench inputs.
+    ///
+    ///     cargo test -p alacritree --release -- --ignored task_sections_bench --nocapture
+    #[test]
+    #[ignore]
+    fn task_sections_bench() {
+        println!(
+            "The workcell listing was replaced by the generated one because it no longer exists."
+        );
+        let (generated, repo, workspace) = issue_shaped_listing();
+        println!("{}", time_listing("generated", generated, repo, workspace));
+        let devkit = PathBuf::from(std::env::var("LOCALAPPDATA").expect("LOCALAPPDATA"))
+            .join(r"alacritree\tasks\wsl-kali-linux-devkit.json");
+        let cached: Vec<Task> = serde_json::from_slice(&std::fs::read(&devkit).unwrap()).unwrap();
+        let (repo, workspace) = scope_of(&cached);
+        println!("{}", time_listing(&devkit.display().to_string(), cached, repo, workspace));
+    }
+
+    /// 5609 tasks on 1183 project nodes, 317 of them pending. `workcell.main`
+    /// holds about 67 sections and 512 rows; the rest sit on other nodes.
+    fn issue_shaped_listing() -> (Vec<Task>, Option<String>, Option<String>) {
+        const TASKS: usize = 5609;
+        const PROJECT_NODES: usize = 1183;
+        const PENDING: usize = 317;
+        const REPO: &str = "workcell";
+        const WORKSPACE: &str = "workcell.main";
+        const WORKSPACE_ROWS: usize = 512;
+        const SESSION_SECTIONS: usize = 65;
+        let per_section = WORKSPACE_ROWS / (SESSION_SECTIONS + 1);
+        let remainder = WORKSPACE_ROWS % (SESSION_SECTIONS + 1);
+        let nodes_left = PROJECT_NODES - (SESSION_SECTIONS + 2);
+        let tasks_left = TASKS - WORKSPACE_ROWS - 1;
+        let per_node = tasks_left / nodes_left;
+        let node_remainder = tasks_left % nodes_left;
+        let mut plan = vec![(REPO.to_string(), 1), (WORKSPACE.to_string(), per_section)];
+        plan.extend((0..SESSION_SECTIONS).map(|session| {
+            (
+                format!("{WORKSPACE}.claude-{session}"),
+                per_section + usize::from(session < remainder),
+            )
+        }));
+        plan.extend(
+            (0..nodes_left).map(|node| {
+                (format!("repo.n{node}"), per_node + usize::from(node < node_remainder))
+            }),
+        );
+        let mut tasks = Vec::with_capacity(TASKS);
+        for (node, rows) in plan {
+            for _ in 0..rows {
+                let i = tasks.len();
+                let mut task = alacritree_tasks::fake::task(&format!("t{i}"), &node);
+                if i >= PENDING {
+                    task.status = Status::Completed;
+                }
+                tasks.push(task);
+            }
+        }
+        assert_eq!(tasks.len(), TASKS);
+        assert_eq!(tasks.iter().filter(|t| t.status == Status::Pending).count(), PENDING);
+        assert_eq!(scope_nodes(&tasks).len(), PROJECT_NODES);
+        let scope = tree::sections(&tasks, Some(REPO), Some(WORKSPACE));
+        let drawn: Vec<_> = scope.iter().filter(|s| !s.rows.is_empty()).collect();
+        assert_eq!(
+            drawn.len(),
+            SESSION_SECTIONS + 2,
+            "the project, the workspace and its sessions"
+        );
+        let prefix = format!("{WORKSPACE}.");
+        let workspace_rows: usize = drawn
+            .iter()
+            .filter(|s| s.node == WORKSPACE || s.node.starts_with(&prefix))
+            .map(|s| s.rows.len())
+            .sum();
+        assert_eq!(workspace_rows, WORKSPACE_ROWS);
+        (tasks, Some(REPO.into()), Some(WORKSPACE.into()))
+    }
+
+    fn time_listing(
+        label: &str,
+        tasks: Vec<Task>,
+        repo: Option<String>,
+        workspace: Option<String>,
+    ) -> String {
+        let nodes = scope_nodes(&tasks);
+        let pending = tasks.iter().filter(|t| t.status == Status::Pending).count();
+        let task_count = tasks.len();
+        let before = median(|| frame_before(&tasks, repo.as_deref(), workspace.as_deref()));
+        let drawn = tree::sections(&tasks, repo.as_deref(), workspace.as_deref());
+        let held: Vec<_> = drawn.iter().filter(|s| !s.rows.is_empty()).collect();
+        let rows: usize = held.iter().map(|s| s.rows.len()).sum();
+        let view = in_scope(tasks, repo.as_deref(), workspace.as_deref());
+        view.sections();
+        let after = median(|| frame_after(&view));
+        format!(
+            "file: {label}\nlisting: {task_count} tasks, {} project nodes, {pending} \
+             pending\nworkspace {}: {} sections, {rows} rows\nbefore: {before:?}\nafter: {after:?}",
+            nodes.len(),
+            workspace.as_deref().unwrap_or("(none)"),
+            held.len(),
+        )
+    }
+
+    /// One frame after the sections are kept: read them, then prepare the
+    /// rows each drawn section shows, the way a frame does before egui lays
+    /// them out.
+    fn frame_after(view: &TasksView) {
+        let drawn = view.sections().to_vec();
+        let collapsed = &view.collapsed_tasks;
+        for built in &drawn {
+            let open;
+            let rows: Vec<&Row> = match view.prefs.hide_completed {
+                true => {
+                    open = tree::open_rows(&built.section.rows);
+                    open
+                },
+                false => built.section.rows.iter().collect(),
+            };
+            let _folded = tree::fold(&rows, collapsed);
+            let _shown: Vec<&Row> = rows;
+        }
+    }
+
+    /// One frame of listing work before the sections were kept: clone the
+    /// listing and lay the pending edits over it, then clone and filter that
+    /// listing again for each section the frame draws.
+    fn frame_before(tasks: &[Task], repo: Option<&str>, workspace: Option<&str>) {
+        let shown = tasks.to_vec();
+        let sections = tree::sections(&shown, repo, workspace);
+        for section in &sections {
+            let _here: Vec<Task> =
+                shown.clone().into_iter().filter(|t| t.node() == section.node).collect();
+        }
+    }
+
+    /// The repository and workspace the listing's own nodes name.
+    fn scope_of(tasks: &[Task]) -> (Option<String>, Option<String>) {
+        let mut nodes: Vec<&str> = tasks.iter().map(|t| t.node()).collect();
+        nodes.sort_by_key(|node| (node.matches('.').count(), *node));
+        let workspace = nodes.iter().copied().find(|node| node.contains('.'));
+        let repo = workspace
+            .and_then(|node| node.split('.').next())
+            .or_else(|| nodes.iter().copied().find(|node| *node != GLOBAL));
+        (repo.map(str::to_string), workspace.map(str::to_string))
+    }
+
+    fn median(f: impl Fn()) -> Duration {
+        let mut samples: Vec<Duration> = (0..50)
+            .map(|_| {
+                let started = Instant::now();
+                f();
+                started.elapsed()
+            })
+            .collect();
+        samples.sort();
+        samples[samples.len() / 2]
+    }
+
+    /// Every distinct node the listing holds.
+    fn scope_nodes(tasks: &[Task]) -> Vec<String> {
+        let mut nodes: Vec<String> = tasks
+            .iter()
+            .map(|t| t.node().to_string())
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+        nodes.sort();
+        nodes
+    }
+
+    fn in_scope(tasks: Vec<Task>, repo: Option<&str>, workspace: Option<&str>) -> TasksView {
+        let scope = Scope {
+            side: Side::Native,
+            repo: repo.map(str::to_string),
+            workspace: workspace.map(str::to_string),
+        };
+        let backend = Backend::from_config(&Default::default());
+        let mut view = TasksView::new(backend, scope, None, Vec::new(), Prefs::default(), None);
+        view.finish_reload(view.reload_epoch(), &view.scope.clone(), Ok(tasks));
+        view
+    }
+
     #[test]
     fn the_sidebar_shows_the_checkout_sections_that_hold_tasks() {
         let view = in_workspace(vec![
@@ -1737,7 +2157,8 @@ mod tests {
             task("plan", "r.feat"),
             task("step", "r.feat.claude-1"),
         ]);
-        let nodes: Vec<String> = view.sidebar_sections().into_iter().map(|s| s.node).collect();
+        let nodes: Vec<String> =
+            view.sidebar_indexes().map(|i| view.section(i).node.clone()).collect();
         assert_eq!(nodes, ["r.feat", "r.feat.claude-1"], "no global list, no empty project");
     }
 
@@ -1754,7 +2175,8 @@ mod tests {
     fn home_shows_the_global_list_in_the_sidebar() {
         let mut view = view_with(Vec::new(), None);
         view.tasks = vec![alacritree_tasks::fake::task("errand", GLOBAL)];
-        let nodes: Vec<String> = view.sidebar_sections().into_iter().map(|s| s.node).collect();
+        let nodes: Vec<String> =
+            view.sidebar_indexes().map(|i| view.section(i).node.clone()).collect();
         assert_eq!(nodes, [GLOBAL]);
     }
 
@@ -2298,6 +2720,47 @@ mod tests {
         h.press(h.text("one").center(), PointerButton::Secondary);
         h.click(h.text("Delete").center());
         assert_eq!(h.edits(), [&Edit::Delete("a".into())]);
+    }
+
+    /// A delete from a row menu lands while later rows of the same frame are
+    /// still drawn from the indexes taken at the start. Those indexes stay
+    /// valid, and the next frame shows the row gone.
+    #[test]
+    fn a_delete_during_drawing_keeps_later_row_indexes_valid() {
+        let task = |id: &str, node: &str| {
+            let mut task = pending(id, id);
+            task.project = Some(node.into());
+            task
+        };
+        let mut h = Harness::with_view(in_workspace(vec![
+            task("keep", "r.feat"),
+            task("gone", "r.feat.claude-1"),
+            task("after", "r.feat.claude-2"),
+        ]));
+        h.press(h.text("gone").center(), PointerButton::Secondary);
+        let delete = h.text("Delete").center();
+        set_drawn_row_check(|view, index, row| {
+            let held = view
+                .sections()
+                .get(index)
+                .is_some_and(|built| built.section.rows.iter().any(|r| r.id == row.id));
+            if !held {
+                STALE_INDEX.with(|slot| *slot.borrow_mut() = Some((index, row.id.clone())));
+            }
+        });
+        h.click(delete);
+        clear_drawn_row_check();
+        assert_eq!(stale_section_index(), None, "a drawn row's section index went stale");
+        assert!(h.visible("gone").is_none(), "the next frame shows the row gone");
+        h.text("keep");
+        h.text("after");
+
+        let built = h.view.builds();
+        h.view.delete(&[]);
+        h.view.delete(&["gone".into(), "  ".into()]);
+        assert_eq!(h.view.builds(), built, "a blank or repeated delete does not rebuild");
+        h.frame(Vec::new());
+        assert_eq!(h.view.plain_lines().iter().filter(|l| l.contains("gone")).count(), 0);
     }
 
     fn three_selectable_rows() -> Harness {
