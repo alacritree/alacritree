@@ -1859,46 +1859,108 @@ mod tests {
         assert!(after.contains(&"r.feat".to_string()));
     }
 
-    /// Times one frame's listing work on a cached listing, before the
-    /// sections were kept and after.
+    /// Times one frame of listing work on both bench inputs.
     ///
     ///     cargo test -p alacritree --release -- --ignored task_sections_bench --nocapture
     #[test]
     #[ignore]
     fn task_sections_bench() {
-        let dir = std::env::var("LOCALAPPDATA").expect("LOCALAPPDATA");
-        let named = PathBuf::from(&dir).join(r"alacritree\tasks\wsl-kali-linux-workcell.json");
-        let path = if named.is_file() {
-            named
-        } else {
-            let tasks = PathBuf::from(dir).join(r"alacritree\tasks");
-            std::fs::read_dir(&tasks)
-                .unwrap_or_else(|e| panic!("no cached listing in {}: {e}", tasks.display()))
-                .filter_map(Result::ok)
-                .map(|entry| entry.path())
-                .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
-                .max_by_key(|path| path.metadata().ok().map(|m| m.len()))
-                .unwrap_or_else(|| panic!("no cached listing in {}", tasks.display()))
-        };
-        let tasks: Vec<Task> = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        let (repo, workspace) = scope_of(&tasks);
+        println!(
+            "The workcell listing was replaced by the generated one because it no longer exists."
+        );
+        let (generated, repo, workspace) = issue_shaped_listing();
+        println!("{}", time_listing("generated", generated, repo, workspace));
+        let devkit = PathBuf::from(std::env::var("LOCALAPPDATA").expect("LOCALAPPDATA"))
+            .join(r"alacritree\tasks\wsl-kali-linux-devkit.json");
+        let cached: Vec<Task> = serde_json::from_slice(&std::fs::read(&devkit).unwrap()).unwrap();
+        let (repo, workspace) = scope_of(&cached);
+        println!("{}", time_listing(&devkit.display().to_string(), cached, repo, workspace));
+    }
+
+    /// 5609 tasks on 1183 project nodes, 317 of them pending. `workcell.main`
+    /// holds about 67 sections and 512 rows; the rest sit on other nodes.
+    fn issue_shaped_listing() -> (Vec<Task>, Option<String>, Option<String>) {
+        const TASKS: usize = 5609;
+        const PROJECT_NODES: usize = 1183;
+        const PENDING: usize = 317;
+        const REPO: &str = "workcell";
+        const WORKSPACE: &str = "workcell.main";
+        const WORKSPACE_ROWS: usize = 512;
+        const SESSION_SECTIONS: usize = 65;
+        let per_section = WORKSPACE_ROWS / (SESSION_SECTIONS + 1);
+        let remainder = WORKSPACE_ROWS % (SESSION_SECTIONS + 1);
+        let nodes_left = PROJECT_NODES - (SESSION_SECTIONS + 2);
+        let tasks_left = TASKS - WORKSPACE_ROWS - 1;
+        let per_node = tasks_left / nodes_left;
+        let node_remainder = tasks_left % nodes_left;
+        let mut plan = vec![(REPO.to_string(), 1), (WORKSPACE.to_string(), per_section)];
+        plan.extend((0..SESSION_SECTIONS).map(|session| {
+            (
+                format!("{WORKSPACE}.claude-{session}"),
+                per_section + usize::from(session < remainder),
+            )
+        }));
+        plan.extend(
+            (0..nodes_left).map(|node| {
+                (format!("repo.n{node}"), per_node + usize::from(node < node_remainder))
+            }),
+        );
+        let mut tasks = Vec::with_capacity(TASKS);
+        for (node, rows) in plan {
+            for _ in 0..rows {
+                let i = tasks.len();
+                let mut task = alacritree_tasks::fake::task(&format!("t{i}"), &node);
+                if i >= PENDING {
+                    task.status = Status::Completed;
+                }
+                tasks.push(task);
+            }
+        }
+        assert_eq!(tasks.len(), TASKS);
+        assert_eq!(tasks.iter().filter(|t| t.status == Status::Pending).count(), PENDING);
+        assert_eq!(scope_nodes(&tasks).len(), PROJECT_NODES);
+        let scope = tree::sections(&tasks, Some(REPO), Some(WORKSPACE));
+        let drawn: Vec<_> = scope.iter().filter(|s| !s.rows.is_empty()).collect();
+        assert_eq!(
+            drawn.len(),
+            SESSION_SECTIONS + 2,
+            "the project, the workspace and its sessions"
+        );
+        let prefix = format!("{WORKSPACE}.");
+        let workspace_rows: usize = drawn
+            .iter()
+            .filter(|s| s.node == WORKSPACE || s.node.starts_with(&prefix))
+            .map(|s| s.rows.len())
+            .sum();
+        assert_eq!(workspace_rows, WORKSPACE_ROWS);
+        (tasks, Some(REPO.into()), Some(WORKSPACE.into()))
+    }
+
+    fn time_listing(
+        label: &str,
+        tasks: Vec<Task>,
+        repo: Option<String>,
+        workspace: Option<String>,
+    ) -> String {
         let nodes = scope_nodes(&tasks);
-        let rows: usize =
-            nodes.iter().map(|node| tasks.iter().filter(|t| t.node() == node).count()).sum();
+        let pending = tasks.iter().filter(|t| t.status == Status::Pending).count();
+        let task_count = tasks.len();
         let before = median(|| frame_before(&tasks, repo.as_deref(), workspace.as_deref()));
-        let view = in_scope(tasks.clone(), repo.as_deref(), workspace.as_deref());
+        let drawn = tree::sections(&tasks, repo.as_deref(), workspace.as_deref());
+        let held: Vec<_> = drawn.iter().filter(|s| !s.rows.is_empty()).collect();
+        let rows: usize = held.iter().map(|s| s.rows.len()).sum();
+        let view = in_scope(tasks, repo.as_deref(), workspace.as_deref());
         view.sections();
         let after = median(|| {
             let _kept = view.sections().len();
         });
-        println!(
-            "file: {}\nlisting: {} tasks, {} sections, {rows} rows\nbefore: {:?}\nafter: {:?}",
-            path.display(),
-            tasks.len(),
+        format!(
+            "file: {label}\nlisting: {task_count} tasks, {} project nodes, {pending} \
+             pending\nworkspace {}: {} sections, {rows} rows\nbefore: {before:?}\nafter: {after:?}",
             nodes.len(),
-            before,
-            after
-        );
+            workspace.as_deref().unwrap_or("(none)"),
+            held.len(),
+        )
     }
 
     /// One frame of listing work before the sections were kept: split the
