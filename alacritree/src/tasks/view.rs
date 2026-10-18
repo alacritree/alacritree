@@ -1808,10 +1808,6 @@ mod tests {
             None,
         )
     }
-    fn due(view: &mut TasksView) {
-        view.last_reload = Some(Instant::now() - RELOAD_EVERY - Duration::from_millis(1));
-        view.tick();
-    }
     #[test]
     fn a_write_elsewhere_lists_on_the_next_due_tick() {
         let store =
