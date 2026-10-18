@@ -781,10 +781,10 @@ impl TasksView {
         self.writes_finished
     }
 
-    /// A failed or panicked listing did not export, so the next due tick lists again.
+    /// A failed or panicked listing did not export. The next due tick lists again,
+    /// and a persistent failure waits one interval.
     fn invalidate_listing(&mut self) {
         self.listed = None;
-        self.stale = true;
     }
 
     fn finish_reload(&mut self, epoch: u64, scope: &Scope, result: Result<Vec<Task>, TaskError>) {
@@ -1982,11 +1982,31 @@ mod tests {
             scope: view.scope.clone(),
             job: Job::panicked(),
         });
+        store.hold_next_stamp();
         view.tick();
-        assert!(view.reload.is_none());
+        view.tick();
+        assert!(view.stamp_job.is_none(), "a panicked listing waits one interval");
+        store.release_stamp();
         due(&mut view);
         settle_reload(&mut view);
         assert_eq!(store.listings(), 2, "a panicked listing is listed again");
+    }
+
+    /// A stamp read that panicked waits one interval before the next attempt.
+    #[test]
+    fn a_failed_stamp_waits_one_interval() {
+        let store = alacritree_tasks::fake::FakeBackend::default();
+        let mut view = tab(&store);
+        view.stamp_job = Some(Job::panicked());
+        view.stale = true;
+        view.tick();
+        assert!(view.stamp_job.is_none(), "a failed stamp clears its slot");
+        view.tick();
+        assert!(view.stamp_job.is_none(), "a failed stamp waits one interval");
+        view.stamp_retry = Instant::now() - Duration::from_millis(1);
+        view.stale = true;
+        view.tick();
+        assert!(view.stamp_job.is_some(), "the next due tick reads the stamp");
     }
 
     /// A listing that returns an error is listed again on the next due tick.
@@ -2001,7 +2021,12 @@ mod tests {
             scope: view.scope.clone(),
             job: Job::ready(failed),
         });
+        store.hold_next_stamp();
         view.tick();
+        view.tick();
+        assert!(view.stamp_job.is_none(), "a failed listing waits one interval");
+        assert_eq!(store.listings(), 1, "a failed listing waits one interval");
+        store.release_stamp();
         due(&mut view);
         settle_reload(&mut view);
         assert_eq!(store.listings(), 2, "a failed listing is listed again");
