@@ -148,14 +148,15 @@ impl Taskwarrior {
         side: &Side,
         known: Option<&Path>,
         blocking: &Blocking,
-    ) -> Result<Option<replica::Replica>, TaskError> {
+    ) -> Result<Option<(replica::Replica, replica::ReplicaStamp)>, TaskError> {
         if let Some(dir) = known {
             let replica = replica::Replica { dir: dir.to_path_buf() };
-            if replica.stamp().is_some() {
-                return Ok(Some(replica));
+            if let Some(stamp) = replica.stamp() {
+                return Ok(Some((replica, stamp)));
             }
         }
-        replica::Replica::locate(self, side, blocking)
+        let replica = replica::Replica::locate(self, side, blocking)?;
+        Ok(replica.and_then(|replica| replica.stamp().map(|stamp| (replica, stamp))))
     }
 
     /// Whether `side`'s taskrc gives both UDAs their types. Agents call `task`

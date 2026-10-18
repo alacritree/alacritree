@@ -52,9 +52,9 @@ fn taskwarrior_stamp(
     known: Option<&Path>,
     blocking: &Blocking,
 ) -> (Option<String>, Option<PathBuf>) {
-    let replica = tw.cached_replica(side, known, blocking).ok().flatten();
-    let stamp = replica.as_ref().and_then(|r| r.stamp()).map(|stamp| format!("{stamp:?}"));
-    (stamp, replica.map(|r| r.dir))
+    let located = tw.cached_replica(side, known, blocking).ok().flatten();
+    let stamp = located.as_ref().map(|(_, stamp)| format!("{stamp:?}"));
+    (stamp, located.map(|(replica, _)| replica.dir))
 }
 
 /// Applies `edits` in order and stops at the first that fails, since a later
