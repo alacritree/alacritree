@@ -22,6 +22,7 @@ use egui::{
 use alacritree_common::jobs::{self, Job, Priority};
 use alacritree_common::side::Side;
 use alacritree_common::wsl;
+use alacritree_common::wsl_helper::{self, Watch};
 use alacritree_tasks::scope::{GLOBAL, Place, node};
 use alacritree_tasks::tree::{self, Landing, Row, Section, SectionKind};
 use alacritree_tasks::{Edit, Filter, NodeMatch, Status, Task, TaskBackend, TaskError};
@@ -345,6 +346,9 @@ pub(crate) struct TasksView {
     stamp_job: Option<Job<(Option<alacritree_tasks::Stamp>, Option<PathBuf>)>>,
     /// The replica directory last located for this side. A later tick stats it.
     replica_dir: Option<(Side, PathBuf)>,
+    /// A watch of that directory, shared with every other tab on it. `None`
+    /// while the helper is down, and the stamp check runs instead.
+    watch: Option<Job<Option<Watch>>>,
     last_reload: Option<Instant>,
     /// The next stamp read waits until this instant. A failed read sets it.
     stamp_retry: Instant,
@@ -418,6 +422,7 @@ impl TasksView {
             listed: None,
             stamp_job: None,
             replica_dir: None,
+            watch: None,
             last_reload: None,
             stamp_retry: Instant::now(),
             stale: false,
@@ -871,9 +876,37 @@ impl TasksView {
             self.finish_write(row, result);
         }
         let stamp_due = self.stamp_job.is_some() || Instant::now() >= self.stamp_retry;
-        if self.reload.is_none() && (self.stale || due) && stamp_due {
+        if self.reload.is_none() && (self.stale || due || self.watch_fired()) && stamp_due {
             self.reload_if_changed();
         }
+        self.arm_watch();
+    }
+
+    /// Whether the shared watch answered that the replica changed. A quiet
+    /// answer, or a helper that went down, leaves the stamp check to decide.
+    /// `None` means the helper was not up, so the next tick asks again.
+    fn watch_fired(&mut self) -> bool {
+        let Some(job) = self.watch.as_ref() else { return false };
+        let answered = job.poll();
+        if answered.is_none() && !job.failed() {
+            return false;
+        }
+        self.watch = None;
+        answered.flatten().is_some_and(|watch| matches!(watch, Watch::Changed | Watch::Missing))
+    }
+
+    /// One watch per WSL replica, started once the directory is known. A
+    /// helper that is down answers `None` at once, and the tab stays on the
+    /// stamp check until a later tick finds it up.
+    fn arm_watch(&mut self) {
+        if self.watch.is_some() {
+            return;
+        }
+        let Some((Side::Wsl(distro), dir)) = self.replica_dir.clone() else { return };
+        let Some(path) = wsl::windows_to_linux(&dir) else { return };
+        self.watch = Some(jobs::pool().spawn(Priority::Background, move |_| {
+            wsl_helper::watch(&distro, &path).and_then(Result::ok)
+        }));
     }
 
     /// Lists when the replica changed, when our own write finished, or when
@@ -1926,10 +1959,334 @@ mod tests {
         assert!(view.last_reload.is_some_and(|t| t.elapsed() < RELOAD_EVERY));
     }
 
+    /// The WSL tests share one helper and one watch table, so they run one at
+    /// a time. A second test resetting the table would answer the first's watch.
+    fn wsl_tests() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// A write to the replica reaches the open tab on the next tick, before
+    /// the reload interval. The watch is what wakes the tab; the interval is
+    /// not due.
+    #[cfg(windows)]
+    #[test]
+    fn a_write_to_a_wsl_replica_reaches_the_open_tab_at_once() {
+        let _wsl = wsl_tests();
+        let Some(distro) = wsl::distros().into_iter().find(|d| d.is_default).map(|d| d.name) else {
+            return;
+        };
+        let root = PathBuf::from(format!(r"\\wsl.localhost\{distro}\tmp"));
+        let Ok(dir) = tempfile::Builder::new().prefix("alacritree-watch").tempdir_in(&root) else {
+            return;
+        };
+        let data = dir.path().join("data");
+        std::fs::create_dir(&data).unwrap();
+        std::fs::write(data.join("taskchampion.sqlite3"), b"db").unwrap();
+        let linux = wsl::windows_to_linux(dir.path()).expect("the temp dir is inside the distro");
+        let script = format!("{linux}/task");
+        let log = dir.path().join("spawns.txt");
+        let body = format!(
+            "#!/bin/sh\necho spawn >> {linux}/spawns.txt\ncase $* in\n*_get*) printf \
+             {linux}/data;;\n*) printf []\nesac\n"
+        );
+        std::fs::write(dir.path().join("task"), body.replace("\r\n", "\n")).unwrap();
+        let chmod = jobs::on_this_thread(|b| {
+            b.run_cancellable(
+                alacritree_common::command_ext::hidden("wsl.exe")
+                    .args(["-d", &distro, "--exec", "chmod", "+x", &script]),
+            )
+        })
+        .expect("chmod runs");
+        assert!(chmod.status.success(), "chmod exited {}", chmod.status);
+        let _guard = alacritree_common::tools::test_configuration_lock().lock().unwrap();
+        let saved = alacritree_common::tools::test_configuration();
+        let mut paths = saved.clone();
+        paths[alacritree_common::tools::Tool::Task as usize].wsl = Some(script);
+        alacritree_common::tools::configure(paths);
+        let was_enabled = alacritree_common::wsl_helper::enabled();
+        alacritree_common::wsl_helper::set_enabled(true);
+        let scope =
+            Scope { side: Side::Wsl(distro.clone()), repo: Some("r".into()), workspace: None };
+        let mut view = TasksView::new(
+            Backend::Taskwarrior(alacritree_taskwarrior::Taskwarrior::default()),
+            scope,
+            None,
+            Vec::new(),
+            Prefs::default(),
+            None,
+        );
+        settle_reload(&mut view);
+        let listed =
+            std::fs::read_to_string(&log).expect("the listing wrote the log").lines().count();
+        assert!(listed >= 1, "the first listing never ran task");
+        view.last_reload = Some(Instant::now());
+        std::fs::write(data.join("taskchampion.sqlite3"), b"db-changed").unwrap();
+        let started = Instant::now();
+        let mut landed = listed;
+        while landed == listed && started.elapsed() < RELOAD_EVERY {
+            view.tick();
+            landed =
+                std::fs::read_to_string(&log).expect("the log stayed readable").lines().count();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let waited = started.elapsed();
+        alacritree_common::wsl_helper::set_enabled(was_enabled);
+        alacritree_common::tools::configure(saved);
+        assert!(view.load_error().is_none(), "{}", view.load_error().unwrap_or_default());
+        assert!(
+            landed > listed && waited < RELOAD_EVERY,
+            "the write waited {waited:?} for the reload interval ({listed} task runs, then \
+             {landed})"
+        );
+    }
+
+    /// Two tabs showing one replica open one watch. A write reaches both, and
+    /// the helper sees one watch request for the pair.
+    #[cfg(windows)]
+    #[test]
+    fn two_tabs_on_one_replica_share_one_watch() {
+        let _wsl = wsl_tests();
+        let Some(distro) = wsl::distros().into_iter().find(|d| d.is_default).map(|d| d.name) else {
+            return;
+        };
+        let root = PathBuf::from(format!(r"\\wsl.localhost\{distro}\tmp"));
+        let Ok(dir) = tempfile::Builder::new().prefix("alacritree-share").tempdir_in(&root) else {
+            return;
+        };
+        let data = dir.path().join("data");
+        std::fs::create_dir(&data).unwrap();
+        std::fs::write(data.join("taskchampion.sqlite3"), b"db").unwrap();
+        let linux = wsl::windows_to_linux(dir.path()).expect("the temp dir is inside the distro");
+        let script = format!("{linux}/task");
+        let log = dir.path().join("spawns.txt");
+        let body = format!(
+            "#!/bin/sh\necho spawn >> {linux}/spawns.txt\ncase $* in\n*_get*) printf \
+             {linux}/data;;\n*) printf []\nesac\n"
+        );
+        std::fs::write(dir.path().join("task"), body.replace("\r\n", "\n")).unwrap();
+        let chmod = jobs::on_this_thread(|b| {
+            b.run_cancellable(
+                alacritree_common::command_ext::hidden("wsl.exe")
+                    .args(["-d", &distro, "--exec", "chmod", "+x", &script]),
+            )
+        })
+        .expect("chmod runs");
+        assert!(chmod.status.success(), "chmod exited {}", chmod.status);
+        let _guard = alacritree_common::tools::test_configuration_lock().lock().unwrap();
+        let saved = alacritree_common::tools::test_configuration();
+        let mut paths = saved.clone();
+        paths[alacritree_common::tools::Tool::Task as usize].wsl = Some(script);
+        alacritree_common::tools::configure(paths);
+        let was_enabled = wsl_helper::enabled();
+        wsl_helper::set_enabled(true);
+        let tab = |distro: &str| {
+            let scope = Scope {
+                side: Side::Wsl(distro.to_string()),
+                repo: Some("r".into()),
+                workspace: None,
+            };
+            TasksView::new(
+                Backend::Taskwarrior(alacritree_taskwarrior::Taskwarrior::default()),
+                scope,
+                None,
+                Vec::new(),
+                Prefs::default(),
+                None,
+            )
+        };
+        wsl_helper::reset_watches();
+        let before = wsl_helper::watches_sent(&distro);
+        let mut first = tab(&distro);
+        let mut second = tab(&distro);
+        settle_reload(&mut first);
+        settle_reload(&mut second);
+        let ready = Instant::now();
+        while wsl_helper::client(&distro).is_none() && ready.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let opened = Instant::now();
+        while !(first.watch.is_some() && second.watch.is_some())
+            && opened.elapsed() < Duration::from_secs(5)
+        {
+            first.tick();
+            second.tick();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(first.watch.is_some() && second.watch.is_some(), "a tab never armed its watch");
+        let watches = wsl_helper::watches_sent(&distro) - before;
+        std::thread::sleep(Duration::from_millis(400));
+        let listed = std::fs::read_to_string(&log).unwrap_or_default().lines().count();
+        std::fs::write(data.join("taskchampion.sqlite3"), b"shared").unwrap();
+        let started = Instant::now();
+        let mut landed = listed;
+        while landed < listed + 2 && started.elapsed() < RELOAD_EVERY {
+            first.tick();
+            second.tick();
+            landed = std::fs::read_to_string(&log).unwrap_or_default().lines().count();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        wsl_helper::set_enabled(was_enabled);
+        alacritree_common::tools::configure(saved);
+        assert_eq!(watches, 1, "two tabs opened {watches} watches");
+        assert!(landed >= listed + 2, "the write reached {landed} of the two tabs");
+    }
+
+    /// A replica that does not change sends nothing through the helper after
+    /// the watch is open. The stamp check would send one request a second.
+    #[cfg(windows)]
+    #[test]
+    fn an_unchanged_replica_sends_no_helper_request() {
+        let _wsl = wsl_tests();
+        let Some(distro) = wsl::distros().into_iter().find(|d| d.is_default).map(|d| d.name) else {
+            return;
+        };
+        let root = PathBuf::from(format!(r"\\wsl.localhost\{distro}\tmp"));
+        let Ok(dir) = tempfile::Builder::new().prefix("alacritree-quiet").tempdir_in(&root) else {
+            return;
+        };
+        let data = dir.path().join("data");
+        std::fs::create_dir(&data).unwrap();
+        std::fs::write(data.join("taskchampion.sqlite3"), b"db").unwrap();
+        let linux = wsl::windows_to_linux(dir.path()).expect("the temp dir is inside the distro");
+        let script = format!("{linux}/task");
+        let body =
+            format!("#!/bin/sh\ncase $* in\n*_get*) printf {linux}/data;;\n*) printf []\nesac\n");
+        std::fs::write(dir.path().join("task"), body.replace("\r\n", "\n")).unwrap();
+        let chmod = jobs::on_this_thread(|b| {
+            b.run_cancellable(
+                alacritree_common::command_ext::hidden("wsl.exe")
+                    .args(["-d", &distro, "--exec", "chmod", "+x", &script]),
+            )
+        })
+        .expect("chmod runs");
+        assert!(chmod.status.success(), "chmod exited {}", chmod.status);
+        let _guard = alacritree_common::tools::test_configuration_lock().lock().unwrap();
+        let saved = alacritree_common::tools::test_configuration();
+        let mut paths = saved.clone();
+        paths[alacritree_common::tools::Tool::Task as usize].wsl = Some(script);
+        alacritree_common::tools::configure(paths);
+        let was_enabled = wsl_helper::enabled();
+        wsl_helper::set_enabled(true);
+        let scope =
+            Scope { side: Side::Wsl(distro.clone()), repo: Some("r".into()), workspace: None };
+        let mut view = TasksView::new(
+            Backend::Taskwarrior(alacritree_taskwarrior::Taskwarrior::default()),
+            scope,
+            None,
+            Vec::new(),
+            Prefs::default(),
+            None,
+        );
+        settle_reload(&mut view);
+        wsl_helper::reset_watches();
+        let ready = Instant::now();
+        while wsl_helper::client(&distro).is_none() && ready.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let before = wsl_helper::requests_sent(&distro);
+        let opened = Instant::now();
+        while wsl_helper::requests_sent(&distro) == before
+            && opened.elapsed() < Duration::from_secs(5)
+        {
+            view.tick();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let sent = wsl_helper::requests_sent(&distro);
+        assert!(sent > before, "the watch never opened");
+        view.last_reload = Some(Instant::now() - RELOAD_EVERY - Duration::from_millis(1));
+        view.tick();
+        view.last_reload = Some(Instant::now() - RELOAD_EVERY - Duration::from_millis(1));
+        view.tick();
+        let after = wsl_helper::requests_sent(&distro);
+        wsl_helper::set_enabled(was_enabled);
+        alacritree_common::tools::configure(saved);
+        assert!(view.load_error().is_none(), "{}", view.load_error().unwrap_or_default());
+        assert_eq!(after, sent, "a quiet replica sent a helper request");
+    }
+
+    /// While the helper is down the tab keeps the stamp check, and a write
+    /// lands on the next due tick. Once the helper is back, a write lands
+    /// through the watch before that interval.
+    #[cfg(windows)]
+    #[test]
+    fn a_tab_falls_back_to_the_stamp_check_while_its_helper_is_down() {
+        let _wsl = wsl_tests();
+        let Some(distro) = wsl::distros().into_iter().find(|d| d.is_default).map(|d| d.name) else {
+            return;
+        };
+        let root = PathBuf::from(format!(r"\\wsl.localhost\{distro}\tmp"));
+        let Ok(dir) = tempfile::Builder::new().prefix("alacritree-down").tempdir_in(&root) else {
+            return;
+        };
+        let data = dir.path().join("data");
+        std::fs::create_dir(&data).unwrap();
+        std::fs::write(data.join("taskchampion.sqlite3"), b"db").unwrap();
+        let log = dir.path().join("spawns.txt");
+        let linux = wsl::windows_to_linux(dir.path()).expect("the temp dir is inside the distro");
+        let script = format!("{linux}/task");
+        let body = format!(
+            "#!/bin/sh\necho spawn >> {linux}/spawns.txt\ncase $* in\n*_get*) printf \
+             {linux}/data;;\n*) printf []\nesac\n"
+        );
+        std::fs::write(dir.path().join("task"), body.replace("\r\n", "\n")).unwrap();
+        let chmod = jobs::on_this_thread(|b| {
+            b.run_cancellable(
+                alacritree_common::command_ext::hidden("wsl.exe")
+                    .args(["-d", &distro, "--exec", "chmod", "+x", &script]),
+            )
+        })
+        .expect("chmod runs");
+        assert!(chmod.status.success(), "chmod exited {}", chmod.status);
+        let _guard = alacritree_common::tools::test_configuration_lock().lock().unwrap();
+        let saved = alacritree_common::tools::test_configuration();
+        let mut paths = saved.clone();
+        paths[alacritree_common::tools::Tool::Task as usize].wsl = Some(script);
+        alacritree_common::tools::configure(paths);
+        let was_enabled = wsl_helper::enabled();
+        wsl_helper::set_enabled(false);
+        let scope = Scope { side: Side::Wsl(distro), repo: Some("r".into()), workspace: None };
+        let mut view = TasksView::new(
+            Backend::Taskwarrior(alacritree_taskwarrior::Taskwarrior::default()),
+            scope,
+            None,
+            Vec::new(),
+            Prefs::default(),
+            None,
+        );
+        settle_reload(&mut view);
+        let listed =
+            std::fs::read_to_string(&log).expect("the listing wrote the log").lines().count();
+        std::fs::write(data.join("taskchampion.sqlite3"), b"while-down").unwrap();
+        view.last_reload = Some(Instant::now());
+        view.tick();
+        let early = std::fs::read_to_string(&log).expect("the log stayed readable").lines().count();
+        view.last_reload = Some(Instant::now() - RELOAD_EVERY - Duration::from_millis(1));
+        settle_reload(&mut view);
+        let fallback =
+            std::fs::read_to_string(&log).expect("the log stayed readable").lines().count();
+        wsl_helper::set_enabled(true);
+        std::fs::write(data.join("taskchampion.sqlite3"), b"helper-back").unwrap();
+        let started = Instant::now();
+        let mut watched = fallback;
+        while watched == fallback && started.elapsed() < RELOAD_EVERY {
+            view.tick();
+            watched =
+                std::fs::read_to_string(&log).expect("the log stayed readable").lines().count();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        wsl_helper::set_enabled(was_enabled);
+        alacritree_common::tools::configure(saved);
+        assert_eq!(early, listed, "a down helper listed before the interval");
+        assert!(fallback > listed, "the stamp check missed the write");
+        assert!(watched > fallback, "the tab did not watch again once the helper was back");
+    }
+
     /// After the first listing, an unchanged WSL replica runs no task command.
     #[cfg(windows)]
     #[test]
     fn an_unchanged_wsl_replica_runs_no_task_command() {
+        let _wsl = wsl_tests();
         let Some(distro) = wsl::distros().into_iter().find(|d| d.is_default).map(|d| d.name) else {
             return;
         };
