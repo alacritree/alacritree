@@ -781,6 +781,12 @@ impl TasksView {
         self.writes_finished
     }
 
+    /// A failed or panicked listing did not export, so the next due tick lists again.
+    fn invalidate_listing(&mut self) {
+        self.listed = None;
+        self.stale = true;
+    }
+
     fn finish_reload(&mut self, epoch: u64, scope: &Scope, result: Result<Vec<Task>, TaskError>) {
         if scope != &self.scope {
             return;
@@ -811,7 +817,10 @@ impl TasksView {
                 }
                 self.tasks = tasks;
             },
-            Err(e) => self.load_error = Some(e.to_string()),
+            Err(e) => {
+                self.load_error = Some(e.to_string());
+                self.invalidate_listing();
+            },
         }
     }
 
@@ -842,7 +851,7 @@ impl TasksView {
         if let Some(pending) = self.reload.take() {
             match pending.job.poll() {
                 Some(result) => self.finish_reload(pending.epoch, &pending.scope, result),
-                None if pending.job.failed() => {},
+                None if pending.job.failed() => self.invalidate_listing(),
                 None => self.reload = Some(pending),
             }
         }
@@ -1986,18 +1995,41 @@ mod tests {
         assert_eq!(store.listings(), 2);
     }
 
-    /// A listing that panicked frees the slot, so the next due tick lists
-    /// again instead of waiting on it forever.
+    /// A listing that panicked frees the slot and the next due tick lists
+    /// again, instead of treating the missed export as current.
     #[test]
-    fn a_listing_that_panicked_does_not_stop_reloads() {
-        let backend = Backend::from_config(&Default::default());
-        let scope = Scope::for_workspace(None, None);
-        let mut view =
-            TasksView::new(backend, scope.clone(), None, Vec::new(), Prefs::default(), None);
-        view.reload = Some(PendingReload { epoch: 0, scope, job: Job::panicked() });
-        view.last_reload = Some(Instant::now());
+    fn a_listing_that_panicked_lists_again_on_the_next_due_tick() {
+        let store = alacritree_tasks::fake::FakeBackend::default();
+        let mut view = tab(&store);
+        settle_reload(&mut view);
+        view.reload = Some(PendingReload {
+            epoch: view.reload_epoch(),
+            scope: view.scope.clone(),
+            job: Job::panicked(),
+        });
         view.tick();
         assert!(view.reload.is_none());
+        due(&mut view);
+        settle_reload(&mut view);
+        assert_eq!(store.listings(), 2, "a panicked listing is listed again");
+    }
+
+    /// A listing that returns an error is listed again on the next due tick.
+    #[test]
+    fn a_listing_that_fails_lists_again_on_the_next_due_tick() {
+        let store = alacritree_tasks::fake::FakeBackend::default();
+        let mut view = tab(&store);
+        settle_reload(&mut view);
+        let failed = Err(TaskError::Failed { program: "fake".into(), stderr: "down".into() });
+        view.reload = Some(PendingReload {
+            epoch: view.reload_epoch(),
+            scope: view.scope.clone(),
+            job: Job::ready(failed),
+        });
+        view.tick();
+        due(&mut view);
+        settle_reload(&mut view);
+        assert_eq!(store.listings(), 2, "a failed listing is listed again");
     }
 
     /// A listing started for the repository subtree must not land in the
