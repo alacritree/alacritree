@@ -396,28 +396,8 @@ mod tests {
     #[test]
     fn the_dock_draws_the_sections_the_tab_built() {
         let mut h = Harness::of(vec![task("plan"), task("step")]);
-        let style = crate::tasks::view::Style {
-            text: egui::Color32::WHITE,
-            dim: egui::Color32::GRAY,
-            error: egui::Color32::RED,
-            chevron: egui::Stroke::new(1.5_f32, egui::Color32::GRAY),
-            chevron_hover: egui::Color32::WHITE,
-            section_chevron: egui::Stroke::new(2.5_f32, egui::Color32::WHITE),
-            hidden_count: egui::Color32::GRAY,
-            active_marker: egui::Stroke::new(2.5_f32, egui::Color32::WHITE),
-            active_background: egui::Color32::from_rgb(40, 40, 60),
-            add_button: crate::tasks::view::ButtonStyle {
-                text: egui::Color32::LIGHT_BLUE,
-                hover_text: egui::Color32::WHITE,
-                fill: egui::Color32::DARK_BLUE,
-                hover_fill: egui::Color32::BLUE,
-                pressed_fill: egui::Color32::BLUE,
-            },
-            selection: egui::Color32::from_rgb(200, 200, 120),
-            selected_text: egui::Color32::BLACK,
-            font: 12.5,
-        };
         let shortcuts = crate::shortcut::Shortcuts::new(&[]);
+        let style = h.theme.tasks;
         let view = &mut h.view;
         let _ = h.ctx.run(egui::RawInput::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
