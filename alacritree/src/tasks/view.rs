@@ -1956,35 +1956,6 @@ mod tests {
         assert_eq!(after_ticks, after_listing, "unchanged ticks ran a task command");
         assert!(after_listing >= 1, "the first listing located the replica");
     }
-    /// Several unchanged reload ticks of the kali-linux replica start no task after the first
-    /// listing.
-    #[ignore = "runs task inside kali-linux and prints the process count"]
-    #[cfg(windows)]
-    #[test]
-    fn unchanged_kali_reload_ticks_start_no_task() {
-        let side = Side::Wsl("kali-linux".into());
-        let tw = alacritree_taskwarrior::Taskwarrior::default();
-        let mut known = None;
-        alacritree_taskwarrior::reset_task_runs();
-        let mut stamps = Vec::new();
-        for _ in 0..4 {
-            let (stamp, dir) = jobs::on_this_thread(|b| {
-                backend::replica_stamp(
-                    &Backend::Taskwarrior(tw.clone()),
-                    &side,
-                    known.as_deref(),
-                    b,
-                )
-            });
-            known = dir;
-            stamps.push(stamp.is_some());
-        }
-        let runs = alacritree_taskwarrior::task_runs();
-        println!("kali-linux task processes: {runs}");
-        assert!(stamps.iter().all(|found| *found), "a tick found no replica");
-        assert_eq!(runs, 1);
-    }
-
     #[test]
     fn a_replica_with_no_stamp_reloads_every_interval() {
         let store = alacritree_tasks::fake::FakeBackend::default().unstamped();

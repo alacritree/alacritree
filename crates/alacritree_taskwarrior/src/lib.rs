@@ -9,6 +9,7 @@ mod settings;
 use std::io;
 use std::path::Path;
 use std::process::{Output, Stdio};
+#[cfg(test)]
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -283,20 +284,31 @@ impl Ran {
     }
 }
 
-static TASK_RUNS: AtomicU64 = AtomicU64::new(0);
+/// Counts `task` starts for the ignored kali-linux proof. Other tests do not
+/// read it, so a shared reset cannot change what they assert.
+#[cfg(test)]
+pub mod test_support {
+    use super::*;
 
-/// How many `task` processes this process has started.
-pub fn task_runs() -> u64 {
-    TASK_RUNS.load(Ordering::Relaxed)
+    static TASK_RUNS: AtomicU64 = AtomicU64::new(0);
+
+    pub fn task_runs() -> u64 {
+        TASK_RUNS.load(Ordering::Relaxed)
+    }
+
+    pub fn reset_task_runs() {
+        TASK_RUNS.store(0, Ordering::Relaxed);
+    }
+
+    pub(super) fn note_task_run() {
+        TASK_RUNS.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
-/// Sets the count to zero.
-pub fn reset_task_runs() {
-    TASK_RUNS.store(0, Ordering::Relaxed);
-}
-
-fn note_task_run() {
-    TASK_RUNS.fetch_add(1, Ordering::Relaxed);
+#[cfg(test)]
+fn is_task_program(program: &str) -> bool {
+    let name = program.rsplit(['/', '\\']).next().unwrap_or(program);
+    name.eq_ignore_ascii_case("task") || name.eq_ignore_ascii_case("task.exe")
 }
 
 /// `task` as found on one side.
@@ -321,9 +333,9 @@ impl Cli<'_> {
         if ran.code == Some(127) {
             return Err(TaskError::Missing { program: self.program.clone() });
         }
-        let name = self.program.rsplit("/").next().unwrap_or(self.program.as_str());
-        if name == "task" || name.starts_with("task.") {
-            note_task_run();
+        #[cfg(test)]
+        if is_task_program(&self.program) {
+            test_support::note_task_run();
         }
         Ok(ran)
     }
@@ -649,6 +661,29 @@ mod tests {
         assert_eq!(written.len(), UDA_DECLARATIONS.len());
         let declared = std::fs::read_to_string(&taskrc).expect("setup created the taskrc");
         assert!(declared.contains("uda.subof.type=uuid"), "{declared}");
+    }
+
+    /// Several unchanged stamp reads of the kali-linux replica start one task.
+    #[ignore = "runs task inside kali-linux and prints the process count"]
+    #[cfg(windows)]
+    #[test]
+    fn unchanged_kali_stamp_reads_start_one_task() {
+        let side = Side::Wsl("kali-linux".into());
+        let tw = Taskwarrior::default();
+        let mut known = None;
+        test_support::reset_task_runs();
+        let mut stamps = Vec::new();
+        for _ in 0..4 {
+            let located = jobs::on_this_thread(|b| tw.cached_replica(&side, known.as_deref(), b))
+                .ok()
+                .flatten();
+            stamps.push(located.is_some());
+            known = located.map(|(replica, _)| replica.dir);
+        }
+        let runs = test_support::task_runs();
+        println!("kali-linux task processes: {runs}");
+        assert!(stamps.iter().all(|found| *found), "a tick found no replica");
+        assert_eq!(runs, 1);
     }
 
     #[test]
