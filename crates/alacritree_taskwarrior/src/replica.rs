@@ -1,14 +1,28 @@
-use crate::Taskwarrior;
-use alacritree_common::jobs::Blocking;
-use alacritree_common::side::Side;
-use alacritree_tasks::TaskError;
+//! The replica taskwarrior keeps its database in. A stamp is the size and
+//! mtime of the database and its wal. The shm changes on a read, so it is
+//! not a stamp. An empty wal holds no commit, so it is not one either. A
+//! missing database file means the directory is not a replica.
+
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
+
+use alacritree_common::jobs::Blocking;
+use alacritree_common::side::Side;
+use alacritree_common::wsl;
+use alacritree_tasks::TaskError;
+
+use crate::Taskwarrior;
+
+const KEY: &str = "data.location";
+const DB: &str = "taskchampion.sqlite3";
+const WAL: &str = "taskchampion.sqlite3-wal";
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct FileStamp {
     len: u64,
     modified: Option<SystemTime>,
 }
+
 impl FileStamp {
     fn of(path: &Path) -> Self {
         let meta = path.metadata().ok();
@@ -18,17 +32,20 @@ impl FileStamp {
         }
     }
 }
-/// Size and mtime of the database and its wal. The shm changes on a read, so it is not a stamp. An
-/// empty wal holds no commit, so it is not one either.
+
+/// Size and mtime of the database and its wal.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReplicaStamp {
     db: FileStamp,
     wal: Option<FileStamp>,
 }
+
+/// The directory `task _get rc.data.location` named, on the side that named it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Replica {
     pub dir: PathBuf,
 }
+
 impl Replica {
     pub fn locate(
         tw: &Taskwarrior,
@@ -40,6 +57,7 @@ impl Replica {
         Ok(Some(Self { dir: side_path(side, &location) }))
     }
 
+    /// None when the database file is not there. A later locate runs then.
     pub fn stamp(&self) -> Option<ReplicaStamp> {
         let db = self.dir.join(DB);
         let wal = self.dir.join(WAL);
@@ -47,22 +65,10 @@ impl Replica {
         db.is_file().then(|| ReplicaStamp { db: FileStamp::of(&db), wal })
     }
 }
-const KEY: &str = "data.location";
-const DB: &str = "taskchampion.sqlite3";
-const WAL: &str = "taskchampion.sqlite3-wal";
+
 fn side_path(side: &Side, location: &str) -> PathBuf {
     match side {
         Side::Native => PathBuf::from(location),
-        Side::Wsl(distro) => wsl_path(distro, location).unwrap_or_else(|| PathBuf::from(location)),
+        Side::Wsl(distro) => wsl::linux_to_windows(location, distro),
     }
-}
-fn wsl_path(distro: &str, location: &str) -> Option<PathBuf> {
-    if location.starts_with("/") {
-        let mut prefix = String::from("\\wsl.localhost\\");
-        prefix.insert(0, char::from(92));
-        prefix.push_str(distro);
-        let rest = location.trim_start_matches("/").replace("/", "\\");
-        return Some(PathBuf::from(prefix).join(rest));
-    }
-    PathBuf::from(location).is_absolute().then(|| PathBuf::from(location))
 }
