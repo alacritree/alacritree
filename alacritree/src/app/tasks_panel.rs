@@ -402,6 +402,7 @@ mod tests {
     #[test]
     fn the_dock_draws_the_sections_the_tab_built() {
         let mut h = Harness::of(vec![task("plan"), task("step")]);
+        let built = h.view.builds();
         let shortcuts = crate::shortcut::Shortcuts::new(&[]);
         let style = h.theme.tasks;
         let view = &mut h.view;
@@ -410,11 +411,9 @@ mod tests {
                 let _ = crate::tasks::view::show(ui, view, true, &shortcuts, style);
             });
         });
-        let built = h.view.sections().as_ptr();
+        assert_eq!(h.view.builds(), built, "the tab drew the sections the dock built");
         h.frame(Vec::new());
-        assert_eq!(h.view.sections().as_ptr(), built, "the dock drew the tab's sections");
-        let (_, redraw) = crate::alloc_count::measure(|| h.view.sidebar_indexes().count());
-        assert_eq!(redraw.allocs, 0, "the dock reused the built sections");
+        assert_eq!(h.view.builds(), built, "the dock drew the tab's sections");
     }
 
     #[test]

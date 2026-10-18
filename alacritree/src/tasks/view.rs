@@ -327,6 +327,10 @@ pub(crate) struct TasksView {
     /// The shown tasks split into sections, built when a listing lands or a
     /// pending edit changes what the rows show. A redraw reads it.
     built: OnceCell<Vec<Built>>,
+    /// Builds since the view was created. Tests read it to tell a reuse from
+    /// a rebuild that happens to return the same sections.
+    #[cfg(test)]
+    builds: std::cell::Cell<u32>,
     /// Whether a listing has landed, so an empty tab can say it is waiting.
     loaded: bool,
     cache_dir: Option<PathBuf>,
@@ -390,6 +394,8 @@ impl TasksView {
             resolving,
             tasks: tasks.unwrap_or_default(),
             built: OnceCell::new(),
+            #[cfg(test)]
+            builds: std::cell::Cell::new(0),
             loaded: false,
             cache_dir,
             cache_write: None,
@@ -466,7 +472,20 @@ impl TasksView {
 
     /// The shown tasks as sections, built once per listing and pending edit.
     pub(crate) fn sections(&self) -> &[Built] {
-        self.built.get_or_init(|| self.build_sections())
+        self.built.get_or_init(|| {
+            #[cfg(test)]
+            {
+                self.builds.set(self.builds.get() + 1);
+            }
+            self.build_sections()
+        })
+    }
+
+    /// How many times the sections have been built. A redraw that reuses them
+    /// leaves this unchanged.
+    #[cfg(test)]
+    pub(crate) fn builds(&self) -> u32 {
+        self.builds.get()
     }
 
     fn build_sections(&self) -> Vec<Built> {
@@ -1795,27 +1814,34 @@ mod tests {
         view
     }
 
-    /// A second read of an unchanged listing returns the sections already
+    /// A second frame of an unchanged listing draws the sections already
     /// built. A listing or a pending edit that changes what the rows show
     /// builds them again.
     #[test]
     fn a_redraw_reuses_sections_until_the_listing_or_a_pending_edit_changes() {
         let task = alacritree_tasks::fake::task;
-        let mut view = in_workspace(vec![task("plan", "r.feat"), task("step", "r.feat.claude-1")]);
-        view.sections();
-        let (_, reread) = crate::alloc_count::measure(|| view.sections().len());
-        assert_eq!(reread.allocs, 0, "an unchanged listing builds once");
+        let mut h = Harness::with_view(in_workspace(vec![
+            task("plan", "r.feat"),
+            task("step", "r.feat.claude-1"),
+        ]));
+        let built = h.view.builds();
+        h.frame(Vec::new());
+        assert_eq!(h.view.builds(), built, "a second tab frame does not rebuild");
+        let mut view = h.view;
 
         view.finish_reload(view.reload_epoch(), Ok(vec![task("plan", "r.feat")]));
-        let (_, listed) = crate::alloc_count::measure(|| view.sections().len());
-        assert!(listed.allocs > 0, "a new listing builds again");
         let rows: Vec<_> =
             view.sections().iter().flat_map(|b| &b.section.rows).map(|r| r.id.as_str()).collect();
         assert_eq!(rows, ["plan"]);
+        let listed = view.builds();
+        assert!(listed > built, "a new listing builds again");
+        let _ = view.sections().len();
+        assert_eq!(view.builds(), listed, "reading the new listing does not build again");
 
         view.show_status("plan".into(), Status::Completed);
-        let (_, edited) = crate::alloc_count::measure(|| view.sections().len());
-        assert!(edited.allocs > 0, "a pending edit builds again");
+        let _ = view.sections().len();
+        let edited = view.builds();
+        assert!(edited > listed, "a pending edit builds again");
         let status = view
             .sections()
             .iter()
@@ -1823,18 +1849,18 @@ mod tests {
             .find(|r| r.id == "plan")
             .map(|r| r.status);
         assert_eq!(status, Some(Status::Completed));
-        let (_, kept) = crate::alloc_count::measure(|| view.sections().len());
-        assert_eq!(kept.allocs, 0, "the edit's sections stay built");
+        assert_eq!(view.builds(), edited, "the edit's sections stay built");
 
-        let mut empty = in_workspace(Vec::new());
-        empty.sections();
-        let (_, reread) = crate::alloc_count::measure(|| empty.sections().len());
-        assert_eq!(reread.allocs, 0, "an empty listing builds once");
-        empty.finish_reload(empty.reload_epoch(), Ok(Vec::new()));
-        let (_, reloaded) = crate::alloc_count::measure(|| empty.sections().len());
-        assert!(reloaded.allocs > 0, "the reload builds once");
-        let (_, reread) = crate::alloc_count::measure(|| empty.sections().len());
-        assert_eq!(reread.allocs, 0, "the first read after the reload is reused");
+        let mut empty = Harness::with_view(in_workspace(Vec::new()));
+        let built = empty.view.builds();
+        empty.frame(Vec::new());
+        assert_eq!(empty.view.builds(), built, "an empty listing's second frame does not rebuild");
+        empty.view.finish_reload(empty.view.reload_epoch(), Ok(Vec::new()));
+        let _ = empty.view.sections().len();
+        let reloaded = empty.view.builds();
+        assert!(reloaded > built, "the reload builds once");
+        empty.frame(Vec::new());
+        assert_eq!(empty.view.builds(), reloaded, "the frame after the reload reuses it");
     }
 
     /// Git's names replace the sidebar's, and the sections built under the
