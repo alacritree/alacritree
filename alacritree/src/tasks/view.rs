@@ -2056,7 +2056,15 @@ mod tests {
         );
         view.stale = true;
         view.last_reload = Some(Instant::now());
-        view.tick();
+        let started_by = Instant::now() + Duration::from_secs(10);
+        loop {
+            view.tick();
+            if view.reload.is_some() {
+                break;
+            }
+            assert!(Instant::now() < started_by, "the listing never landed");
+            std::thread::yield_now();
+        }
         let started_listing =
             view.reload.as_ref().expect("the repository listing is in flight").scope.clone();
         assert_eq!(started_listing, started);
