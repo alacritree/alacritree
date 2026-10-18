@@ -1818,7 +1818,7 @@ mod tests {
         due(&mut view);
         settle_reload(&mut view);
         assert_eq!(store.listings(), 2);
-        assert_eq!(view.tasks.len(), 1);
+        assert_eq!(view.tasks.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["b"]);
     }
     fn land(view: &mut TasksView, place: Place) {
         view.resolving = Some(Resolver {
