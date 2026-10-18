@@ -261,8 +261,14 @@ type QueuedWrite = (Option<String>, Vec<Edit>);
 /// A write in flight, with the row its failure is shown on.
 type PendingWrite = (Option<String>, Job<Result<(), TaskError>>);
 
-/// A listing in flight, with the count of writes finished when it started.
-type PendingReload = (u64, Job<Result<Vec<Task>, TaskError>>);
+/// A listing in flight: the write count and the scope it started under, and
+/// the job. A result whose scope is no longer current is discarded, because
+/// the cache write uses the scope the tab holds when the listing lands.
+struct PendingReload {
+    epoch: u64,
+    scope: Scope,
+    job: Job<Result<Vec<Task>, TaskError>>,
+}
 
 /// A row being typed that the store has not got yet.
 #[derive(Clone)]
@@ -663,7 +669,10 @@ impl TasksView {
         self.writes_finished
     }
 
-    fn finish_reload(&mut self, epoch: u64, result: Result<Vec<Task>, TaskError>) {
+    fn finish_reload(&mut self, epoch: u64, scope: &Scope, result: Result<Vec<Task>, TaskError>) {
+        if scope != &self.scope {
+            return;
+        }
         match result {
             Ok(tasks) => {
                 self.load_error = None;
@@ -723,21 +732,23 @@ impl TasksView {
         for (row, result) in finished {
             self.finish_write(row, result);
         }
-        if let Some((epoch, result)) =
-            self.reload.as_ref().and_then(|(epoch, job)| Some((*epoch, job.poll()?)))
-        {
-            self.reload = None;
-            self.finish_reload(epoch, result);
-        } else if self.reload.as_ref().is_some_and(|(_, job)| job.failed()) {
-            self.reload = None;
+        if let Some(pending) = self.reload.take() {
+            match pending.job.poll() {
+                Some(result) => self.finish_reload(pending.epoch, &pending.scope, result),
+                None if pending.job.failed() => {},
+                None => self.reload = Some(pending),
+            }
         }
         let due = self.last_reload.is_none_or(|t| t.elapsed() >= RELOAD_EVERY);
         if self.reload.is_none() && (self.stale || due) {
             self.stale = false;
-            let (store, scope) = (self.backend.clone(), self.scope.clone());
-            let job = jobs::pool()
-                .spawn(Priority::Background, move |b| store.list(&scope.side, &scope.filter(), b));
-            self.reload = Some((self.reload_epoch(), job));
+            let store = self.backend.clone();
+            let scope = self.scope.clone();
+            let listed = scope.clone();
+            let job = jobs::pool().spawn(Priority::Background, move |b| {
+                store.list(&listed.side, &listed.filter(), b)
+            });
+            self.reload = Some(PendingReload { epoch: self.reload_epoch(), scope, job });
             self.last_reload = Some(Instant::now());
         }
     }
@@ -1537,11 +1548,58 @@ mod tests {
     fn a_listing_that_panicked_does_not_stop_reloads() {
         let backend = Backend::from_config(&Default::default());
         let scope = Scope::for_workspace(None, None);
-        let mut view = TasksView::new(backend, scope, None, Vec::new(), Prefs::default(), None);
-        view.reload = Some((0, Job::panicked()));
+        let mut view =
+            TasksView::new(backend, scope.clone(), None, Vec::new(), Prefs::default(), None);
+        view.reload = Some(PendingReload { epoch: 0, scope, job: Job::panicked() });
         view.last_reload = Some(Instant::now());
         view.tick();
         assert!(view.reload.is_none());
+    }
+
+    /// A listing started for the repository subtree must not land in the
+    /// workspace cache once git has named the workspace.
+    #[test]
+    fn a_listing_from_an_earlier_scope_is_discarded() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FakeBackend::with_tasks(vec![
+            task("repo", "r"),
+            task("feat", "r.feat"),
+            task("sibling", "r.main"),
+            task("session", "r.main.codex-9"),
+        ]);
+        let started = Scope { side: Side::Native, repo: Some("r".into()), workspace: None };
+        let mut view = TasksView::new(
+            Backend::Fake(store),
+            started.clone(),
+            None,
+            Vec::new(),
+            Prefs::default(),
+            Some(dir.path().to_path_buf()),
+        );
+        view.stale = true;
+        view.last_reload = Some(Instant::now());
+        view.tick();
+        let started_listing =
+            view.reload.as_ref().expect("the repository listing is in flight").scope.clone();
+        assert_eq!(started_listing, started);
+        view.scope.adopt(&Place::Workspace { repo: "r".into(), branch: "feat".into() });
+        let current = view.scope.clone();
+        assert_ne!(started_listing, current);
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            view.tick();
+            if view.reload.is_none() {
+                break;
+            }
+            assert!(Instant::now() < deadline, "the listing never landed");
+            std::thread::yield_now();
+        }
+
+        let nodes: Vec<&str> = view.tasks.iter().map(Task::node).collect();
+        assert!(nodes.is_empty(), "the earlier listing is not the tab's: {nodes:?}");
+        assert!(!current.cache_file(dir.path()).exists(), "the workspace cache stays empty");
+        assert!(!started.cache_file(dir.path()).exists(), "the old scope is not written either");
     }
 
     #[test]
@@ -1931,10 +1989,10 @@ mod tests {
         h.click(h.checkbox("one"));
         let before_the_write = h.view.reload_epoch();
         h.view.finish_write(Some("a".into()), Ok(()));
-        h.view.finish_reload(before_the_write, Ok(vec![pending("a", "one")]));
+        h.view.finish_reload(before_the_write, &h.view.scope.clone(), Ok(vec![pending("a", "one")]));
         assert_eq!(h.view.plain_lines()[1], "- [x] one", "a reload older than the write");
         let after_the_write = h.view.reload_epoch();
-        h.view.finish_reload(after_the_write, Ok(vec![pending("a", "one")]));
+        h.view.finish_reload(after_the_write, &h.view.scope.clone(), Ok(vec![pending("a", "one")]));
         assert_eq!(h.view.plain_lines()[1], "- [ ] one", "the store has the last word");
     }
 
@@ -2001,7 +2059,7 @@ mod tests {
         let refused = TaskError::Failed { program: "task".into(), stderr: "no".into() };
         h.view.finish_write(None, Err(refused));
         let epoch = h.view.reload_epoch();
-        h.view.finish_reload(epoch, Ok(Vec::new()));
+        h.view.finish_reload(epoch, &h.view.scope.clone(), Ok(Vec::new()));
         h.frame(Vec::new());
         h.text("task failed: no");
     }
