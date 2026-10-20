@@ -67,7 +67,11 @@
   "integrations": {
     "checkout_hooks": [],
     "claude": {
+      "subagents": false,
       "terminal_bell": true
+    },
+    "codex": {
+      "subagents": false
     },
     "delta": {
       "path": "delta",

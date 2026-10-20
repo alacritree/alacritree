@@ -70,6 +70,7 @@ pub(crate) mod stale_exe;
 pub mod startup_log;
 pub mod state;
 pub(crate) mod status_cache;
+pub(crate) mod subagents;
 pub(crate) mod tasks;
 pub(crate) mod terminal_view;
 #[cfg(test)]

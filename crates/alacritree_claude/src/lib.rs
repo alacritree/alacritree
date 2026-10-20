@@ -1,7 +1,10 @@
-//! Claude Code as a checkout hook. A new worktree gets Claude Code's
-//! notification channel set to the terminal bell, so a session waiting on
-//! input rings and the sidebar flags it without the user configuring each
-//! worktree by hand.
+//! Claude Code as a checkout hook, and as the source of the sidebar's
+//! sub-agent rows. A new worktree gets Claude Code's notification channel set
+//! to the terminal bell, so a session waiting on input rings and the sidebar
+//! flags it without the user configuring each worktree by hand.
+//! [`subagents`] reads which sub-agents each Claude Code process has running.
+
+pub mod subagents;
 
 use std::path::Path;
 
@@ -18,22 +21,29 @@ pub struct RawClaude {
     /// `.claude/settings.local.json`, so Claude Code rings the bell when it
     /// waits on input. Other keys in the file are kept.
     terminal_bell: bool,
+    /// List the sub-agents each Claude Code session has running, workflow
+    /// agents included, in the sidebar under that session's row, or under its
+    /// workspace's row when the session is the only one there. They are read
+    /// from the transcripts Claude Code keeps in `CLAUDE_CONFIG_DIR` or
+    /// `~/.claude`, so a session running inside WSL lists none.
+    subagents: bool,
 }
 
 impl Default for RawClaude {
     fn default() -> Self {
-        Self { terminal_bell: true }
+        Self { terminal_bell: true, subagents: false }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct ClaudeConfig {
     pub terminal_bell: bool,
+    pub subagents: bool,
 }
 
 impl RawClaude {
     pub fn resolve(self) -> ClaudeConfig {
-        ClaudeConfig { terminal_bell: self.terminal_bell }
+        ClaudeConfig { terminal_bell: self.terminal_bell, subagents: self.subagents }
     }
 }
 

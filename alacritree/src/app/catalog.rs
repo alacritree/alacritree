@@ -18,7 +18,9 @@ use alacritree_vcs::{ChangeKind, DiffStat, FileChange};
 use eframe::egui;
 use egui::RichText;
 
-use super::sidebar::{PaintedIcons, RowName, SessionRowData, home_row, session_row};
+use super::sidebar::{
+    PaintedIcons, RowName, SessionRowData, SubagentRowData, home_row, session_row, subagent_row,
+};
 use super::widgets::agent_hint;
 use super::*;
 
@@ -470,6 +472,33 @@ impl Catalog {
                 ];
                 for (index, row) in rows.iter().enumerate() {
                     session_row(ui, row, index == 3, false, false, &self.icons, &self.theme);
+                }
+            },
+        );
+        self.story(
+            ui,
+            "Sub-agent rows",
+            "A Claude Code session's running sub-agents, the second a workflow agent",
+            |ui| {
+                let parent = session(
+                    1,
+                    "Fix the data sync deadline",
+                    SessionActivity::agent(Some("claude"), LiveState::Working),
+                    true,
+                    true,
+                    false,
+                );
+                session_row(ui, &parent, false, false, false, &self.icons, &self.theme);
+                for (name, detail) in [
+                    ("Map driverctl service install", "Explore"),
+                    ("implement:labos", "aut-968-labos-run-id, Implement"),
+                ] {
+                    let row = SubagentRowData {
+                        session: parent.id,
+                        name: name.into(),
+                        detail: Some(detail.into()),
+                    };
+                    subagent_row(ui, &row, 40, &self.icons, &self.theme);
                 }
             },
         );

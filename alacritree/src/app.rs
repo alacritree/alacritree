@@ -85,8 +85,8 @@ use modals::{BaseBranchPicker, CreateState, DeleteRequest, ProjectRemoveState, R
 use panes::managed_tooltip;
 use session_list::SessionList;
 use sidebar::{
-    PaintedIcons, PaneRowData, SessionRowData, WorkspaceRowData, any_pr_toggle_active,
-    project_filter_toggles, session_row_name,
+    PaintedIcons, PaneRowData, SessionRowData, SubagentRowData, WorkspaceRowData,
+    any_pr_toggle_active, project_filter_toggles, session_row_name,
 };
 use widgets::{
     ATTENTION_HINT, ICON_CLUSTER_SPACING, IconHints, ROW_STATUS_ICON_W, RowStatus,
@@ -556,6 +556,9 @@ pub struct AlacritreeApp {
     /// The probe job in flight, if any.  One at a time: a path slower than
     /// the interval stretches freshness rather than queueing more work.
     liveness_probe: Option<jobs::Job<Vec<(PathBuf, alacritree_vcs::Probe)>>>,
+    /// The sub-agents each session's coding agent has running, for the rows
+    /// under it.  Empty unless a harness's `subagents` key is on.
+    subagents: crate::subagents::SubagentWatch,
     /// When the user last gave the app an event.  Timed wake-ups are armed
     /// only just after one, so an app left open overnight goes fully quiet.
     last_input: Instant,
@@ -665,6 +668,7 @@ impl AlacritreeApp {
             multiplexers,
             liveness: Default::default(),
             liveness_probe: None,
+            subagents: Default::default(),
             last_input: Instant::now(),
             last_direct_input: None,
             mouse_hide: Default::default(),
@@ -976,6 +980,38 @@ impl AlacritreeApp {
         if self.config.ui.worktree_liveness
             && self.last_input.elapsed() < PROBE_GRACE
             && let Some(wait) = self.liveness.wait(now)
+        {
+            ctx.request_repaint_after(wait);
+        }
+    }
+
+    /// Keep the sub-agent rows current.  A running sub-agent's row animates,
+    /// which keeps frames coming until it finishes, so the only timed wake-up
+    /// is the one that catches a sub-agent starting just after the user last
+    /// touched the app, armed on the same grace window the liveness probe
+    /// uses so an idle app still goes quiet.
+    fn poll_subagents(&mut self, ctx: &Context) {
+        let integrations = &self.config.integrations;
+        let harnesses = crate::subagents::Harnesses {
+            claude: integrations.claude.subagents,
+            codex: integrations.codex.subagents,
+        };
+        let sessions = &self.sessions;
+        self.subagents.poll(ctx, harnesses, || {
+            sessions
+                .iter()
+                .filter_map(|s| {
+                    let host = alacritree_subagents::Host {
+                        cwd: s.reported_cwd.clone().or_else(|| s.working_directory.clone()),
+                        agent: s.activity().name(),
+                    };
+                    Some((s.id, s.shell_pid()?, host))
+                })
+                .collect()
+        });
+        if (harnesses.claude || harnesses.codex)
+            && self.last_input.elapsed() < PROBE_GRACE
+            && let Some(wait) = self.subagents.wait(Instant::now())
         {
             ctx.request_repaint_after(wait);
         }
@@ -3185,13 +3221,13 @@ impl AlacritreeApp {
         let Some(entries) = listed.get(ws) else { return Vec::new() };
         let active = self.sessions.active(ws);
         let is_current = self.current_workspace == *ws;
-        entries
-            .iter()
-            .filter_map(|entry| match entry {
+        let mut rows = Vec::with_capacity(entries.len());
+        for entry in entries {
+            match entry {
                 sidebar_nav::WorkspaceEntry::Session(id) => {
-                    let s = self.sessions.iter().find(|s| s.id == *id)?;
+                    let Some(s) = self.sessions.iter().find(|s| s.id == *id) else { continue };
                     let activity = pane_backed_activity(s.activity(), self.session_pane_status(s));
-                    Some(WorkspaceRowData::Session(SessionRowData {
+                    rows.push(WorkspaceRowData::Session(SessionRowData {
                         id: s.id,
                         name: session_row_name(&s.title, activity, self.session_pane(s)),
                         reported_cwd: s.reported_cwd.clone(),
@@ -3203,15 +3239,50 @@ impl AlacritreeApp {
                         is_active: active == Some(s.id),
                         is_displayed: is_current && active == Some(s.id),
                         managed: self.session_managed(s),
-                    }))
+                    }));
+                    rows.extend(self.subagent_rows(s.id).map(WorkspaceRowData::Subagent));
                 },
                 sidebar_nav::WorkspaceEntry::Pane(key) => {
-                    let pane = self.find_pane(key)?;
+                    let Some(pane) = self.find_pane(key) else { continue };
                     let managed = self.pane_managed(key, pane);
-                    Some(WorkspaceRowData::Pane(PaneRowData::new(key.clone(), pane, managed)))
+                    rows.push(WorkspaceRowData::Pane(PaneRowData::new(key.clone(), pane, managed)));
                 },
-            })
-            .collect()
+            }
+        }
+        rows
+    }
+
+    /// `session`'s running sub-agents as rows.
+    fn subagent_rows(&self, session: SessionId) -> impl Iterator<Item = SubagentRowData> + '_ {
+        self.subagents.of(session).iter().map(move |agent| SubagentRowData {
+            session,
+            name: agent.name.clone(),
+            detail: agent.detail.clone(),
+        })
+    }
+
+    /// The sub-agents of every session `listed` does not show, by workspace:
+    /// a workspace's only session is folded into the workspace's own row, so
+    /// its sub-agents hang there instead.
+    fn folded_subagents(
+        &self,
+        listed: &sidebar_nav::ListedRows,
+    ) -> HashMap<WorkspaceKey, Vec<SubagentRowData>> {
+        let mut folded: HashMap<WorkspaceKey, Vec<SubagentRowData>> = HashMap::new();
+        if self.subagents.is_empty() {
+            return folded;
+        }
+        for s in &self.sessions {
+            let shown = listed
+                .get(&s.working_directory)
+                .is_some_and(|entries| entries.contains(&sidebar_nav::WorkspaceEntry::Session(s.id)));
+            if !shown {
+                let rows = self.subagent_rows(s.id);
+                folded.entry(s.working_directory.clone()).or_default().extend(rows);
+            }
+        }
+        folded.retain(|_, rows| !rows.is_empty());
+        folded
     }
 }
 
@@ -3302,6 +3373,7 @@ impl AlacritreeApp {
         self.poll_multiplexers();
         self.reconcile_pane_sessions(ctx);
         self.sync_pane_views(ctx);
+        self.poll_subagents(ctx);
         if let Some(err) = self.gpu_grid.take_build_error() {
             self.modals.error_dialog = Some(format!("the terminal grid cannot be drawn: {err}"));
         }
@@ -10653,6 +10725,54 @@ mod tests {
         assert_eq!(row.managed.status, None);
         assert!(row.managed.shared_view);
         assert_eq!(managed_tooltip(&row.managed), r#"scripted, shared view, "~/G/g/alacritree"."#);
+    }
+
+    /// A lone session is folded into its workspace's row, so its sub-agents
+    /// hang there; once a second session lists both, they move under their
+    /// own session's row, right after it.
+    #[test]
+    fn sub_agents_follow_their_session_into_the_list() {
+        let mut app = test_app();
+        let first = app.sessions[0].id;
+        let agent = alacritree_subagents::Subagent {
+            id: "a1".into(),
+            name: "Map the service install".into(),
+            detail: Some("Explore".into()),
+        };
+        app.subagents.set_for_test(first, vec![agent]);
+        let row = SubagentRowData {
+            session: first,
+            name: "Map the service install".into(),
+            detail: Some("Explore".into()),
+        };
+
+        let listed = app.listed_workspace_rows();
+        assert!(app.workspace_rows(&None, &listed).is_empty());
+        assert_eq!(app.folded_subagents(&listed).get(&None), Some(&vec![row.clone()]));
+
+        let (second, _) = Session::pending_shell(
+            Context::default(),
+            &app.config,
+            None,
+            TermSize { columns: 80, screen_lines: 24 },
+            (8.0, 16.0),
+            None,
+            None,
+            None,
+        );
+        app.sessions.push(second);
+        let listed = app.listed_workspace_rows();
+        assert!(app.folded_subagents(&listed).is_empty());
+        let rows = app.workspace_rows(&None, &listed);
+        let kinds: Vec<_> = rows
+            .iter()
+            .map(|listed| match listed {
+                WorkspaceRowData::Session(session) => format!("session {}", session.id == first),
+                WorkspaceRowData::Subagent(sub) => format!("sub-agent {}", *sub == row),
+                WorkspaceRowData::Pane(_) => "pane".into(),
+            })
+            .collect();
+        assert_eq!(kinds, ["session true", "sub-agent true", "session false"]);
     }
 
     #[test]

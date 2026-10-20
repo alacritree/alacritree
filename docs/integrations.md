@@ -27,6 +27,13 @@ Panes of a running multiplexer appear in the sidebar under the worktree their di
 - [herdr](https://github.com/herdrdev/herdr) lists the coding agents it manages, with their status. See [herdr agents](alacritree.md#herdr-agents). [`[integrations.herdr]`](config-reference.md#integrationsherdr)
 - [zellij](https://zellij.dev) lists the panes of every running session. Opening one attaches to the whole session with that pane focused. [`[integrations.zellij]`](config-reference.md#integrationszellij)
 
+## Sub-agents
+
+[Sub-agent rows](alacritree.md#sub-agents) list the sub-agents a coding agent has running under the session that started them. Each agent has its own switch, off by default.
+
+- [Claude Code](https://www.anthropic.com/claude-code) lists its sub-agents and workflow agents. [`[integrations.claude]`](config-reference.md#integrationsclaude)
+- [Codex](https://github.com/openai/codex) lists the sub-agents its threads spawn. [`[integrations.codex]`](config-reference.md#integrationscodex)
+
 ## Task lists
 
 The [tasks tab](alacritree.md#workspace-tasks) shows the lists for the current workspace, and `alacritree hook` hands them to agents.

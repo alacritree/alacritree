@@ -51,8 +51,7 @@ impl ProbeHandle {
         self.cache.set(AgentCache::default());
     }
 
-    /// The shell the probe reads, for a test that drives a real one.
-    #[cfg(all(test, target_os = "macos"))]
+    /// The shell the probe reads.
     pub(crate) fn shell_pid(&self) -> Option<u32> {
         self.shell_pid
     }
@@ -105,6 +104,89 @@ impl ProbeHandle {
 /// The pid of the shell a PTY started, where the platform will say.
 pub(crate) fn shell_pid_of(pty: &alacritty_terminal::tty::Pty) -> Option<u32> {
     pty_shell_pid(pty)
+}
+
+/// How far [`Parents::shell_of`] walks up before giving up. A program a
+/// shell starts sits a few levels below it, and a cycle left by a reused pid
+/// has to end somewhere.
+const MAX_ANCESTRY: usize = 32;
+
+/// Parent links, for asking which terminal a process outside the probe's own
+/// view runs in. Windows has no cheap per-pid parent read, so it reads the
+/// table once per snapshot; elsewhere each step reads one process's record.
+/// Blocking either way, so it belongs on a pool worker.
+pub(crate) struct Parents {
+    #[cfg(windows)]
+    table: std::collections::HashMap<u32, u32>,
+}
+
+impl Parents {
+    pub(crate) fn snapshot() -> Self {
+        #[cfg(windows)]
+        {
+            use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+            let mut sys = System::new();
+            sys.refresh_processes_specifics(
+                ProcessesToUpdate::All,
+                true,
+                ProcessRefreshKind::nothing(),
+            );
+            let table = sys
+                .processes()
+                .iter()
+                .filter_map(|(pid, p)| Some((pid.as_u32(), p.parent()?.as_u32())))
+                .collect();
+            Self { table }
+        }
+        #[cfg(not(windows))]
+        Self {}
+    }
+
+    /// The first of `shells` found walking up from `pid`, `pid` included.
+    pub(crate) fn shell_of(
+        &self,
+        pid: u32,
+        shells: &std::collections::HashSet<u32>,
+    ) -> Option<u32> {
+        let mut at = pid;
+        for _ in 0..MAX_ANCESTRY {
+            if shells.contains(&at) {
+                return Some(at);
+            }
+            at = self.parent(at).filter(|&parent| parent != 0 && parent != at)?;
+        }
+        None
+    }
+
+    #[cfg(target_os = "linux")]
+    fn parent(&self, pid: u32) -> Option<u32> {
+        stat_ppid(&std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn parent(&self, pid: u32) -> Option<u32> {
+        bsdinfo_for_pid(pid).map(|info| info.pbi_ppid)
+    }
+
+    #[cfg(windows)]
+    fn parent(&self, pid: u32) -> Option<u32> {
+        self.table.get(&pid).copied()
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    fn parent(&self, _pid: u32) -> Option<u32> {
+        // No probe wired for this platform (BSDs would mirror the macOS sysctl).
+        None
+    }
+}
+
+/// `ppid` from a `/proc/<pid>/stat` line, split on the last `)` for the
+/// reason [`stat_pgrp_tpgid`] gives.
+#[cfg(any(target_os = "linux", test))]
+fn stat_ppid(stat: &str) -> Option<u32> {
+    let close = stat.rfind(')')?;
+    // After `comm`: state(0) ppid(1).
+    stat[close + 1..].split_whitespace().nth(1)?.parse().ok()
 }
 
 #[derive(Clone, Copy, Default)]
@@ -1021,6 +1103,28 @@ mod tests {
             Some(("tmux: (server)", 88))
         );
         assert_eq!(stat_comm_pgrp("garbage with no paren"), None);
+    }
+    #[test]
+    fn stat_ppid_reads_the_parent_past_a_parenthesized_comm() {
+        assert_eq!(
+            stat_ppid("3094829 (claude (2.1)) S 3094100 3094829 3094100 34816"),
+            Some(3094100)
+        );
+        assert_eq!(stat_ppid("1 (sh) S"), None);
+    }
+    /// The walk this test runs on is the real process table, so it holds on
+    /// every platform the probe is wired for: this test's own process
+    /// descends from its parent, and from no pid that is not an ancestor.
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+    #[test]
+    fn a_process_descends_from_its_parent_and_from_nothing_else() {
+        use std::collections::HashSet;
+        let me = std::process::id();
+        let parents = Parents::snapshot();
+        let parent = parents.parent(me).expect("the test process has a parent");
+        assert_eq!(parents.shell_of(me, &HashSet::from([parent])), Some(parent));
+        assert_eq!(parents.shell_of(me, &HashSet::from([me])), Some(me));
+        assert_eq!(parents.shell_of(parent, &HashSet::from([me])), None);
     }
     #[test]
     fn tree_walk_collects_root_and_descendants_only() {
