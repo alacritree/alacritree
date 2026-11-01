@@ -47,7 +47,13 @@ pub(crate) fn prepare(
 
     bail_if_cancelled!();
     on_step("Fetching latest changes…");
-    run_git_cancellable(blocking, main, &["fetch", "origin", &base])?;
+    // Creates side by side fetch the same branch, as a batch of isolated
+    // subagents does. Git lets one of them move the ref and fails the rest, and
+    // those have what they came for.
+    match run_git_cancellable(blocking, main, &["fetch", "origin", &base]) {
+        Err(VcsError::Failed { stderr, .. }) if stderr.contains("cannot lock ref") => {},
+        result => result?,
+    }
 
     bail_if_cancelled!();
     on_step("Creating git worktree…");
@@ -188,7 +194,7 @@ pub(crate) fn validate_branch_name(name: &str) -> Result<(), BranchNameError> {
 /// paths, the same command inside the owning distro for WSL paths. Path
 /// *arguments* for WSL repos must already be Linux paths (`git_path_arg`).
 fn git_command(cwd: &Path) -> Command {
-    match wsl::classify(cwd) {
+    let mut cmd = match wsl::classify(cwd) {
         wsl::Location::Windows(path) => {
             let mut cmd = command_ext::hidden(tools::program(Tool::Git));
             cmd.arg("-C").arg(path);
@@ -199,7 +205,11 @@ fn git_command(cwd: &Path) -> Command {
             cmd.arg(tools::wsl_program(Tool::Git)).arg("-C").arg(linux_path);
             cmd
         },
-    }
+    };
+    // Nobody is at a terminal to answer. A hook's git would otherwise prompt on
+    // the one a harness's own interface is drawing on.
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
+    cmd
 }
 
 /// The form of `path` git receives as an argument: Linux for WSL repos
@@ -570,6 +580,30 @@ mod tests {
             Ok(Ok(base)) => panic!("prepare resolved a base nobody was waiting for: {base:?}"),
             Err(e) => panic!("prepare never returned: {e}"),
         }
+    }
+
+    /// A fetch that loses the ref to another create still has a base to branch
+    /// from, or every subagent but one in a batch would fail to start.
+    #[test]
+    #[allow(clippy::disallowed_methods)] // A fixture waiting on git; no frame is pending.
+    fn prepare_survives_another_fetch_holding_the_ref() {
+        let dir = tempfile::tempdir().unwrap();
+        let main = crate::test_support::clone_with_origin(dir.path());
+        let moved = command_ext::hidden("git")
+            .arg("-C")
+            .arg(dir.path().join("origin"))
+            .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
+            .args(["commit", "-q", "--allow-empty", "-m", "moved"])
+            .status()
+            .unwrap();
+        assert!(moved.success());
+        let refs = main.join(".git/refs/remotes/origin");
+        std::fs::create_dir_all(&refs).unwrap();
+        std::fs::write(refs.join("main.lock"), "").unwrap();
+
+        let base =
+            jobs::on_this_thread(|b| backend().prepare_checkout(&main, None, &mut |_| {}, b));
+        assert_eq!(base.unwrap().revision, "origin/main");
     }
 
     #[test]
