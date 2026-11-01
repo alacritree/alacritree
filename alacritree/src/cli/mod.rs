@@ -331,7 +331,26 @@ enum SchemaCommand {
 #[derive(Debug, Subcommand)]
 enum WorktreeCommand {
     /// Create a worktree on a new branch, off the project's default branch.
-    Create { project_root: PathBuf, branch: String },
+    Create {
+        /// The project's root. With `--temporary`, any path in the checkout
+        /// to make it from, such as `.`.
+        project_root: PathBuf,
+        branch: String,
+        /// For throwaway work: the sidebar files it under your session in a
+        /// collapsed section, and you remove it with `worktree remove` when
+        /// you are done.
+        #[arg(long)]
+        temporary: bool,
+    },
+    /// Remove a temporary worktree and its branch. Any other worktree is
+    /// refused: those are removed from the sidebar.
+    Remove {
+        /// A path in the worktree.
+        path: PathBuf,
+        /// Remove it even with modified or untracked files in it.
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 /// Run the CLI, or hand back to the caller to open a window.
@@ -491,7 +510,13 @@ fn execute(
     as_json: bool,
     config: ConfigSource<'_>,
 ) -> i32 {
+    // Read before `dispatch` can point it at `[general] state_dir`: the hook
+    // that reads this list back never loads the config.
+    let state_dir = config.dir.map(Path::to_path_buf).or_else(crate::state::config_dir);
     let result = dispatch(request, &LocalSocket(socket), config);
+    if let Ok(reply) = &result {
+        crate::temporary::note_created(request, reply, state_dir.as_deref());
+    }
     report(request, result, as_json)
 }
 
@@ -554,6 +579,8 @@ fn timeout_for(request: &IpcRequest) -> Duration {
         IpcRequest::CreateWorktree { .. } => Duration::from_secs(300),
         // Walks the working tree; large repos take a while cold.
         IpcRequest::GitStatus { .. } => Duration::from_secs(60),
+        // Deletes a whole tree and runs the checkout hooks.
+        IpcRequest::RemoveWorktree { .. } => Duration::from_secs(60),
         _ => Duration::from_secs(15),
     }
 }
@@ -608,8 +635,17 @@ fn to_request(command: Command) -> IpcRequest {
         Command::GitStatus { path } => IpcRequest::GitStatus { path: absolute(path) },
         Command::Action { name } => IpcRequest::RunAction { action: name },
         Command::Worktree { command } => match command {
-            WorktreeCommand::Create { project_root, branch } => {
-                IpcRequest::CreateWorktree { project_root: absolute(project_root), branch }
+            WorktreeCommand::Create { project_root, branch, temporary } => {
+                let session_id = crate::temporary::own_session(|key| std::env::var(key).ok());
+                IpcRequest::CreateWorktree {
+                    project_root: absolute(project_root),
+                    branch,
+                    temporary,
+                    session_id: session_id.filter(|_| temporary),
+                }
+            },
+            WorktreeCommand::Remove { path, force } => {
+                IpcRequest::RemoveWorktree { path: absolute(path), force }
             },
         },
         // None of these reach an alacritree, so none has a request to build.

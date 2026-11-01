@@ -636,8 +636,11 @@ impl Catalog {
             "Shares the editor's tasks, section folds, and completion state",
             |ui| {
                 let view = self.samples.tasks.view();
-                for section in view.sidebar_sections() {
-                    tasks_panel::paint_section(ui, view, &section, &self.theme);
+                view.refresh_sections();
+                let indexes = view.sidebar_indexes().collect::<Vec<_>>();
+                let _hold = view.hold_sections();
+                for i in indexes {
+                    tasks_panel::paint_section(ui, view, i, &self.theme);
                 }
             },
         );

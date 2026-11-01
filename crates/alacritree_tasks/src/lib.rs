@@ -179,6 +179,28 @@ pub trait TaskBackend {
     /// What an agent is told about writing its own tasks to `project`, ahead
     /// of the lists it is shown.
     fn agent_guide(&self, project: &str) -> ::std::string::String;
+
+    /// The replica's files and the directory they sit in, when this backend
+    /// has files to stamp. `None` means the caller lists every interval.
+    fn replica_stamp(
+        &self,
+        side: &::alacritree_common::side::Side,
+        known: ::std::option::Option<&::std::path::Path>,
+        blocking: &::alacritree_common::jobs::Blocking,
+    ) -> ::std::result::Result<
+        ::std::option::Option<(::alacritree_tasks::Stamp, ::std::path::PathBuf)>,
+        ::alacritree_tasks::TaskError,
+    > {
+        let _ = (side, known, blocking);
+        Ok(None)
+    }
+}
+
+/// Files a backend compares between listings. The bytes are the backend's own
+/// stamp, compared as a value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Stamp {
+    pub bytes: ::std::vec::Vec<u8>,
 }
 
 #[cfg(test)]

@@ -165,8 +165,10 @@ fn an_unchanged_list_is_injected_once() {
     }
 }
 
+/// No task store is no reason to withhold what an agent needs to know about
+/// worktrees, and the task guide must not appear for a store that is not there.
 #[test]
-fn a_missing_task_binary_prints_nothing_and_exits_zero() {
+fn a_missing_task_binary_still_explains_temporary_worktrees() {
     let sandbox = without_task();
     let args = [
         "-o",
@@ -180,7 +182,32 @@ fn a_missing_task_binary_prints_nothing_and_exits_zero() {
     ];
     let out = hook(&sandbox, &args, &fixture("claude-session-start.json", &sandbox.repo));
     assert!(out.status.success());
-    assert!(out.stdout.is_empty());
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let ctx = json["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
+    assert!(ctx.contains("alacritree worktree create --temporary"), "{ctx}");
+    assert!(ctx.contains("alacritree worktree remove"), "{ctx}");
+    assert!(!ctx.contains("taskwarrior"), "{ctx}");
+}
+
+/// Outside a repository there is nothing to make a worktree of, and with no
+/// task store either the hook has nothing to say.
+#[test]
+fn outside_a_repository_a_missing_task_binary_prints_nothing() {
+    let sandbox = without_task();
+    let outside = tempfile::tempdir().unwrap();
+    let args = [
+        "-o",
+        "integrations.taskwarrior.path='alacritree-no-such-task-binary'",
+        "-o",
+        "integrations.taskwarrior.wsl_path='alacritree-no-such-task-binary'",
+        "hook",
+        "session-start",
+        "--harness",
+        "claude",
+    ];
+    let out = hook(&sandbox, &args, &fixture("claude-session-start.json", outside.path()));
+    assert!(out.status.success());
+    assert!(out.stdout.is_empty(), "{}", String::from_utf8_lossy(&out.stdout));
 }
 
 /// A configured command answers the hook in taskwarrior's place, guide and
@@ -220,6 +247,62 @@ fn a_task_command_answers_the_hook() {
     assert!(ctx.starts_with("Use todo for myrepo.main.claude-"), "{ctx}");
     assert!(ctx.contains("from the command"), "{ctx}");
     assert!(!ctx.contains("another repo"), "{ctx}");
+}
+
+/// What an agent lives through, on the real binary: make a temporary worktree,
+/// get asked about it once on stopping, remove it, and hear no more. `--socket`
+/// names nothing, so a developer's running window is never touched.
+#[test]
+fn stopping_asks_about_a_temporary_worktree_until_it_is_removed() {
+    let mut sandbox = without_task();
+    let repo = sandbox.repo.to_str().unwrap().to_string();
+    let identity = ["-c", "user.name=t", "-c", "user.email=t@example.com"];
+    run(
+        "git",
+        &[&["-C", &repo], &identity[..], &["commit", "-q", "--allow-empty", "-m", "x"]].concat(),
+    );
+    run("git", &["-C", &repo, "remote", "add", "origin", &repo]);
+    sandbox.env.push(("CLAUDE_CODE_SESSION_ID", "k-123".to_string()));
+    sandbox.env.push(("CODEX_SESSION_ID", String::new()));
+    let dead = sandbox.state.path().join("no-such-socket");
+    let dead = dead.to_str().unwrap();
+    let stop = format!(
+        r#"{{"session_id":"k-123","cwd":{},"hook_event_name":"Stop"}}"#,
+        serde_json::to_string(&repo).unwrap()
+    );
+    let stop_args = ["hook", "stop", "--harness", "claude"];
+
+    assert!(hook(&sandbox, &stop_args, &stop).stdout.is_empty(), "nothing is open yet");
+
+    let args = ["--socket", dead, "worktree", "create", "--temporary", ".", "scratch"];
+    let made = hook(&sandbox, &args, "");
+    assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
+    let path = String::from_utf8(made.stdout).unwrap().trim().to_string();
+    assert!(path.contains(".temporary"), "{path}");
+    assert!(
+        String::from_utf8_lossy(&made.stderr).contains("worktree remove"),
+        "the create itself says how to clean up"
+    );
+
+    let asked = hook(&sandbox, &stop_args, &stop);
+    let reply: serde_json::Value = serde_json::from_slice(&asked.stdout).unwrap();
+    assert_eq!(reply["decision"], "block");
+    assert!(reply["reason"].as_str().unwrap().contains(&path));
+    assert!(hook(&sandbox, &stop_args, &stop).stdout.is_empty(), "asked once, not every stop");
+
+    let prompt = hook(
+        &sandbox,
+        &["hook", "user-prompt-submit", "--harness", "claude"],
+        &stop.replace("Stop", "UserPromptSubmit"),
+    );
+    let reply: serde_json::Value = serde_json::from_slice(&prompt.stdout).unwrap();
+    let ctx = reply["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
+    assert!(ctx.contains(&path), "the next prompt lists what is still open: {ctx}");
+
+    let removed = hook(&sandbox, &["--socket", dead, "worktree", "remove", &path], "");
+    assert!(removed.status.success(), "{}", String::from_utf8_lossy(&removed.stderr));
+    assert!(!Path::new(&path).exists());
+    assert!(hook(&sandbox, &stop_args, &stop).stdout.is_empty(), "nothing left to ask about");
 }
 
 #[test]

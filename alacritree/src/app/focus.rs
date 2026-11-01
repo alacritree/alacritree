@@ -64,6 +64,7 @@ impl AlacritreeApp {
                 active_workspace,
                 active_branch,
                 panes_generation: self.panes_generation(),
+                temporary_generation: self.sidebar.temporary.generation(),
             },
         }
     }
@@ -168,10 +169,17 @@ impl AlacritreeApp {
                     self.activate_session_by_id(id);
                     self.focus_terminal();
                 },
+                SidebarRow::TemporarySection(owner) => {
+                    self.sidebar.temporary.set_open(owner, true);
+                },
                 _ => {},
             },
             Key::ArrowLeft => match &cursor {
                 SidebarRow::Project(root) => self.set_project_expanded(root, false),
+                SidebarRow::TemporarySection(owner) if self.sidebar.temporary.is_open(owner) => {
+                    self.sidebar.temporary.set_open(owner, false);
+                },
+                SidebarRow::TemporarySection(_) => self.sidebar.model.move_cursor(Step::Left),
                 SidebarRow::Worktree(_) | SidebarRow::Session(_) | SidebarRow::Pane(_) => {
                     self.sidebar.model.move_cursor(Step::Left);
                 },
@@ -210,8 +218,13 @@ impl AlacritreeApp {
     /// search exit: search lists matched children whatever their project's
     /// `expanded` flag says, so a child under a collapsed project would vanish
     /// the moment the query clears. Expand-only, and headers are left alone, so
-    /// confirming a project row never toggles it.
+    /// confirming a project row never toggles it. Search lists a shut section's
+    /// worktrees the same way, so the section opens too.
     pub(super) fn reveal_search_row(&mut self, row: &SidebarRow) {
+        let holding = self.temporary_section_holding(row);
+        if let Some(owner) = holding {
+            self.sidebar.temporary.set_open(&owner, true);
+        }
         let root = {
             let session_workspace = |id: SessionId| {
                 self.sessions.iter().find(|s| s.id == id).map(|s| s.working_directory.clone())
@@ -221,6 +234,28 @@ impl AlacritreeApp {
         if let Some(root) = root {
             self.set_project_expanded(&root, true);
         }
+    }
+
+    /// The section `row` would vanish with, if any: a temporary worktree's, or
+    /// one holding a session that lives in such a worktree.
+    fn temporary_section_holding(&self, row: &SidebarRow) -> Option<sidebar_nav::TemporaryOwner> {
+        let session_workspace = |id: SessionId| {
+            self.sessions.iter().find(|s| s.id == id).and_then(|s| s.working_directory.clone())
+        };
+        let path = match row {
+            SidebarRow::Worktree(path) => path.clone(),
+            SidebarRow::Session(id) => session_workspace(*id)?,
+            _ => return None,
+        };
+        let listed = self.listed_workspace_rows();
+        listed.values().flatten().find_map(|entry| match entry {
+            sidebar_nav::WorkspaceEntry::Temporary(section)
+                if section.worktrees.contains(&path) =>
+            {
+                Some(section.owner.clone())
+            },
+            _ => None,
+        })
     }
 
     /// Leave search and land the projects cursor on `requested`, falling back
@@ -369,7 +404,10 @@ pub(super) fn search_reveal_root(
     session_workspace: impl Fn(SessionId) -> Option<WorkspaceKey>,
     row: &SidebarRow,
 ) -> Option<PathBuf> {
-    if !matches!(row, SidebarRow::Worktree(_) | SidebarRow::Session(_)) {
+    if !matches!(
+        row,
+        SidebarRow::Worktree(_) | SidebarRow::Session(_) | SidebarRow::TemporarySection(_)
+    ) {
         return None;
     }
     row_project_root(projects, session_workspace, row)
@@ -440,7 +478,7 @@ mod tests {
             };
             assert_eq!(
                 arena_parent,
-                sidebar_nav::left_target(&rows, row),
+                sidebar_nav::left_target(&rows, &listed, row),
                 "arena parent must agree with the row model for {row:?}"
             );
         }

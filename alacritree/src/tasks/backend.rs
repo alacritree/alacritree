@@ -6,6 +6,7 @@ use alacritree_common::side::Side;
 use alacritree_tasks::{Edit, TaskBackend, TaskCommand, TaskError, ambassador_impl_TaskBackend};
 use alacritree_taskwarrior::Taskwarrior;
 use ambassador::Delegate;
+use std::path::{Path, PathBuf};
 
 use crate::config::IntegrationsConfig;
 
@@ -28,6 +29,23 @@ impl Backend {
         match &integrations.tasks.command {
             Some(command) => Self::Command(command.clone()),
             None => Self::Taskwarrior(Taskwarrior::default()),
+        }
+    }
+}
+
+impl Backend {
+    /// The stamp and the directory it was read from. A missing directory is
+    /// located again on the next read. Delegates to the backend, so a command
+    /// backend with no files returns none.
+    pub(crate) fn replica(
+        &self,
+        side: &Side,
+        known: Option<&Path>,
+        blocking: &Blocking,
+    ) -> (Option<alacritree_tasks::Stamp>, Option<PathBuf>) {
+        match self.replica_stamp(side, known, blocking) {
+            Ok(Some((stamp, dir))) => (Some(stamp), Some(dir)),
+            _ => (None, None),
         }
     }
 }

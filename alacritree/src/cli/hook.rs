@@ -1,10 +1,10 @@
 //! `alacritree hook <event>`: the one command a harness's hook config calls.
 //!
-//! The task events (`session-start`, `user-prompt-submit`) never block a
-//! turn; `tasks::hook` holds them. The worktree events keep every checkout an
-//! agent makes alacritree's: `worktree-create` makes Claude Code's worktree
-//! the way the sidebar's + button does, `worktree-remove` leaves it for the
-//! sidebar to delete, and `pre-tool-use` turns away a shell
+//! The context events (`session-start`, `user-prompt-submit`, `stop`) never
+//! fail a turn; `tasks::hook` holds them. The worktree events keep every
+//! checkout an agent makes alacritree's: `worktree-create` makes Claude Code's
+//! worktree the way the sidebar's + button does, `worktree-remove` leaves it
+//! for the sidebar to delete, and `pre-tool-use` turns away a shell
 //! `git worktree add`. `worktree-create` and `worktree-remove` refuse with
 //! the reason on stderr and exit 1, since Claude Code then gives the
 //! operation up rather than falling back to its own git.
@@ -26,6 +26,7 @@ use crate::ipc::protocol::{IpcRequest, LocalSocket, SendError};
 pub(crate) enum Event {
     SessionStart,
     UserPromptSubmit,
+    Stop,
     PreToolUse,
     WorktreeCreate,
     WorktreeRemove,
@@ -54,7 +55,9 @@ const DENY_WORKTREE_ADD: &str = "alacritree manages the worktrees here, so `git 
                                  turned away. Run `alacritree worktree create <project-root> \
                                  <branch>` (or the `create_worktree` MCP tool) instead: it \
                                  branches off the default branch, copies the LLM config files \
-                                 and shows the worktree in the sidebar.";
+                                 and shows the worktree in the sidebar. For throwaway work, run \
+                                 `alacritree worktree create --temporary . <name>` and remove it \
+                                 with `alacritree worktree remove <path>` when you are done.";
 
 pub(super) fn run(
     event: Event,
@@ -73,7 +76,7 @@ pub(super) fn run(
     let printed = match event {
         // A harness waits on this before the model sees the turn, so it
         // answers from disk with no window and never fails the hook.
-        Event::SessionStart | Event::UserPromptSubmit => {
+        Event::SessionStart | Event::UserPromptSubmit | Event::Stop => {
             payload.ok().and_then(|payload| tasks(&payload, harness, config))
         },
         // Runs before every shell command, so it reads no config and lets
@@ -121,7 +124,9 @@ fn guard(payload: &AnyPayload) -> Option<String> {
 /// Create the worktree through a running alacritree, or the offline path
 /// when none is listening, exactly as `alacritree worktree create` would.
 /// The branch is the name Claude Code chose, and the project is the one the
-/// session's cwd belongs to, whichever of its checkouts that is.
+/// session's cwd belongs to, whichever of its checkouts that is. It is an
+/// ordinary worktree: `claude --worktree` can be work someone comes back to,
+/// and nothing here can tell that from an isolated subagent's.
 fn create(
     payload: &AnyPayload,
     socket: Option<&Path>,
@@ -138,7 +143,12 @@ fn create(
     let backends = crate::vcs::backends(&integrations);
     let located = jobs::on_this_thread(|b| backends.iter().find_map(|vcs| vcs.locate(&cwd, b)));
     let main = located.ok_or_else(|| VcsError::NotARepository(cwd.clone()))?.main;
-    let request = IpcRequest::CreateWorktree { project_root: main, branch: name.to_string() };
+    let request = IpcRequest::CreateWorktree {
+        project_root: main,
+        branch: name.to_string(),
+        temporary: false,
+        session_id: None,
+    };
     let reply = super::dispatch(&request, &LocalSocket(socket), config)?;
     let path = reply["path"].as_str().ok_or(HookError::NoPath)?;
     // A harness inside WSL reads the path in its own form.
@@ -265,15 +275,22 @@ mod tests {
 
     #[test]
     fn event_names_are_the_wire_names() {
-        let names: [&str; 5] = [
+        let names: [&str; 6] = [
             Event::SessionStart.into(),
             Event::UserPromptSubmit.into(),
+            Event::Stop.into(),
             Event::PreToolUse.into(),
             Event::WorktreeCreate.into(),
             Event::WorktreeRemove.into(),
         ];
-        let wire =
-            ["SessionStart", "UserPromptSubmit", "PreToolUse", "WorktreeCreate", "WorktreeRemove"];
+        let wire = [
+            "SessionStart",
+            "UserPromptSubmit",
+            "Stop",
+            "PreToolUse",
+            "WorktreeCreate",
+            "WorktreeRemove",
+        ];
         assert_eq!(names, wire);
     }
 
@@ -337,6 +354,8 @@ mod tests {
         let denied = guard(&bash("git worktree add ../x")).expect("a deny");
         let denied: serde_json::Value = serde_json::from_str(&denied).unwrap();
         assert_eq!(denied["hookSpecificOutput"]["permissionDecision"], "deny");
+        let reason = denied["hookSpecificOutput"]["permissionDecisionReason"].as_str().unwrap();
+        assert!(reason.contains("--temporary"), "throwaway work has somewhere to go: {reason}");
         assert!(guard(&bash("git worktree list")).is_none());
         let read = r#"{"hook_event_name":"PreToolUse","tool_name":"Read","tool_input":{}}"#;
         assert!(guard(&claude("PreToolUse", read)).is_none());

@@ -168,7 +168,7 @@ fn climb(from_tree: &TreeSnapshot, next: &TreeSnapshot, from: NodeId) -> Option<
 fn follow_target(next: &TreeSnapshot, landing: &SidebarRow) -> Option<FollowTarget> {
     match landing {
         SidebarRow::Session(id) => Some(FollowTarget::Session(*id)),
-        SidebarRow::Project(_) | SidebarRow::Pane(_) => None,
+        SidebarRow::Project(_) | SidebarRow::Pane(_) | SidebarRow::TemporarySection(_) => None,
         SidebarRow::Home | SidebarRow::Worktree(_) => {
             let id = next.find(landing)?;
             let has_session = next.nodes.iter().any(|node| {
@@ -325,6 +325,9 @@ pub struct UiInputs<'a> {
     /// no row shows deliberately does not move it, so an idle agent repainting
     /// does not rebuild the tree.
     pub panes_generation: u64,
+    /// Advances when a section of temporary worktrees opens, closes, or gains
+    /// a known owner.
+    pub temporary_generation: u64,
 }
 
 #[cfg(test)]
@@ -412,6 +415,7 @@ pub struct ObservedInputs {
     active_workspace: Option<PathBuf>,
     active_branch: Option<String>,
     panes_generation: u64,
+    temporary_generation: u64,
 }
 
 impl ObservedInputs {
@@ -451,6 +455,7 @@ impl ObservedInputs {
             active_workspace: ui.active_workspace.map(Path::to_path_buf),
             active_branch: ui.active_branch.map(str::to_string),
             panes_generation: ui.panes_generation,
+            temporary_generation: ui.temporary_generation,
         }
     }
 
@@ -477,6 +482,7 @@ impl ObservedInputs {
             || self.active_workspace.as_deref() != ui.active_workspace
             || self.active_branch.as_deref() != ui.active_branch
             || self.panes_generation != ui.panes_generation
+            || self.temporary_generation != ui.temporary_generation
         {
             return false;
         }
@@ -541,6 +547,7 @@ mod tests {
             active_workspace: None,
             active_branch: None,
             panes_generation: 0,
+            temporary_generation: 0,
         }
     }
 
@@ -562,6 +569,7 @@ mod tests {
             active_workspace,
             active_branch,
             panes_generation: 0,
+            temporary_generation: 0,
         }
     }
 
@@ -643,6 +651,7 @@ mod tests {
             active_workspace: Some(home.as_path()),
             active_branch: Some("main"),
             panes_generation: 0,
+            temporary_generation: 0,
         };
         let captured = ObservedInputs::capture(&[], std::iter::empty(), baseline());
         assert!(
@@ -666,6 +675,7 @@ mod tests {
             }),
             ("active_branch", UiInputs { active_branch: Some("release"), ..baseline() }),
             ("panes_generation", UiInputs { panes_generation: 1, ..baseline() }),
+            ("temporary_generation", UiInputs { temporary_generation: 1, ..baseline() }),
         ];
         for (name, varied) in variants {
             assert!(
@@ -1271,6 +1281,7 @@ mod tests {
             active_workspace: None,
             active_branch: None,
             panes_generation: 0,
+            temporary_generation: 0,
         };
 
         let base_small = ObservedInputs::capture(&small, std::iter::empty(), ui);

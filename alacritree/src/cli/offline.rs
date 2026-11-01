@@ -73,9 +73,11 @@ fn handle_at(state_path: &Path, request: &IpcRequest, config: &CreateConfig) -> 
             },
             None => Ok(status_json(&Status::default(), Some("version control is disabled"))),
         },
-        IpcRequest::CreateWorktree { project_root, branch } => {
-            create_worktree(project_root.clone(), branch.clone(), config)
+        // No window means no session to file it under, so the session is moot.
+        IpcRequest::CreateWorktree { project_root, branch, temporary, session_id: _ } => {
+            create_worktree(project_root.clone(), branch.clone(), *temporary, config)
         },
+        IpcRequest::RemoveWorktree { path, force } => remove_worktree(path, *force, config),
         IpcRequest::ReadScratchpad { workspace } => match workspace.as_deref() {
             None | Some("current") => {
                 Err("alacritree is not running; specify `home` or a workspace path".to_string())
@@ -158,17 +160,36 @@ fn discover_all(state_path: &Path, backends: &[Vcs]) -> Vec<Project> {
 /// The app's create also asks the sidebar to re-scan afterwards; here there is
 /// no sidebar to tell, and the next `project list` discovers the new worktree
 /// from git anyway.
-fn create_worktree(project_root: PathBuf, branch: String, config: &CreateConfig) -> IpcResult {
+fn create_worktree(
+    project_root: PathBuf,
+    branch: String,
+    temporary: bool,
+    config: &CreateConfig,
+) -> IpcResult {
     let vcs = crate::vcs::for_path(&config.vcs, &project_root)
         .ok_or_else(|| VcsError::NotARepository(project_root.clone()).to_string())?;
     vcs.validate_name(&branch).map_err(|e| e.to_string())?;
-    let request = CreateRequest::new(project_root, None, branch, &config.workspace, vcs);
     let mut steps = Vec::new();
     let path = jobs::on_this_thread(|blocking| {
+        let request = if temporary {
+            CreateRequest::temporary(&project_root, branch, &config.workspace, vcs, blocking)?
+        } else {
+            CreateRequest::new(project_root, None, branch, &config.workspace, vcs)
+        };
         wt::create(&request, config.hooks.as_slice(), |step| steps.push(step.to_string()), blocking)
     })
     .map_err(|e| e.to_string())?;
-    Ok(json!({ "path": path, "steps": steps }))
+    Ok(crate::temporary::created_reply(&path, steps))
+}
+
+fn remove_worktree(path: &Path, force: bool, config: &CreateConfig) -> IpcResult {
+    let vcs = crate::vcs::for_path(&config.vcs, path)
+        .ok_or_else(|| VcsError::NotARepository(path.to_path_buf()).to_string())?;
+    jobs::on_this_thread(|blocking| {
+        wt::remove_temporary(&vcs, path, force, config.hooks.as_slice(), blocking)
+    })
+    .map_err(|e| e.to_string())?;
+    Ok(json!({ "removed": path }))
 }
 
 #[cfg(test)]
@@ -373,7 +394,12 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let project = clone_with_origin(dir.path());
         let base = dir.path().join("worktrees");
-        let request = IpcRequest::CreateWorktree { project_root: project, branch: "topic".into() };
+        let request = IpcRequest::CreateWorktree {
+            project_root: project,
+            branch: "topic".into(),
+            temporary: false,
+            session_id: None,
+        };
 
         let config = CreateConfig { workspace: workspace_under(&base), ..CreateConfig::default() };
         let reply = handle_at(&state_file(&dir), &request, &config).expect("create succeeds");
@@ -381,5 +407,32 @@ mod tests {
         let path = PathBuf::from(reply["path"].as_str().expect("a path"));
         assert!(path.starts_with(&base), "{} is not under {}", path.display(), base.display());
         assert!(path.is_dir());
+    }
+
+    /// The round trip an agent makes with no window: the create says how to
+    /// clean up, and following it leaves nothing behind.
+    #[test]
+    fn an_offline_temporary_worktree_can_be_created_and_removed() {
+        let dir = TempDir::new().unwrap();
+        let project = clone_with_origin(dir.path());
+        let config = CreateConfig {
+            workspace: workspace_under(&dir.path().join("worktrees")),
+            ..CreateConfig::default()
+        };
+        let create = IpcRequest::CreateWorktree {
+            project_root: project,
+            branch: "scratch".into(),
+            temporary: true,
+            session_id: None,
+        };
+        let reply = handle_at(&state_file(&dir), &create, &config).expect("create succeeds");
+
+        let path = PathBuf::from(reply["path"].as_str().expect("a path"));
+        assert!(crate::temporary::is_temporary(&path), "{}", path.display());
+        assert!(reply["cleanup"].as_str().expect("a note").contains("worktree remove"));
+
+        let remove = IpcRequest::RemoveWorktree { path: path.clone(), force: false };
+        handle_at(&state_file(&dir), &remove, &config).expect("removal succeeds");
+        assert!(!path.exists());
     }
 }

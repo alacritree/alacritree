@@ -140,6 +140,8 @@ The CLI covers the same operations as the MCP server, for agents that shell out 
 ```sh
 alacritree project add ~/Git/myrepo     # also: list, remove, refresh, rename
 alacritree worktree create ~/Git/myrepo my-feature
+alacritree worktree create --temporary . scratch   # filed in a collapsed section
+alacritree worktree remove <path>                  # temporary worktrees only
 alacritree git-status ~/Git/myrepo
 
 alacritree session create --workspace ~/Git/myrepo   # prints the new session id

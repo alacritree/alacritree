@@ -6,7 +6,7 @@
 //! a right-click on its heading opens the tasks tab.
 
 use alacritree_tasks::Status;
-use alacritree_tasks::tree::{self, Row, Section};
+use alacritree_tasks::tree::{self, Row};
 use egui::{Sense, StrokeKind, Vec2, vec2};
 
 use crate::config::TasksSidebar;
@@ -100,10 +100,10 @@ pub(super) fn show(
     theme: &Theme,
     side: TasksSidebar,
 ) -> bool {
+    view.refresh_sections();
     view.tick();
     ui.ctx().request_repaint_after(tasks_view::RELOAD_EVERY);
-    let sections = view.sidebar_sections();
-    if sections.is_empty() {
+    if view.sidebar_indexes().next().is_none() {
         return false;
     }
     let id = panel_id(side);
@@ -138,8 +138,11 @@ pub(super) fn show(
         let above = ui.cursor().top() - top;
         let area = ScrollArea::vertical().auto_shrink([false, false]).min_scrolled_height(0.0);
         let rows = area.show(ui, |ui| {
-            for section in &sections {
-                paint_section(ui, view, section, theme);
+            let drawn: Vec<_> =
+                view.sidebar_indexes().map(|i| (i, view.sections()[i].section.clone())).collect();
+            let _hold = view.hold_sections();
+            for (_, section) in &drawn {
+                paint_section_rows(ui, view, section, theme);
             }
         });
         above + rows.content_size.y
@@ -183,16 +186,22 @@ fn filter_button(ui: &mut egui::Ui, view: &mut TasksView, theme: &Theme) {
 
 /// A heading that folds the section, the same fold the tab shows, then a
 /// bar of how much of it is done and the rows the filter leaves.
-pub(super) fn paint_section(
+pub(super) fn paint_section(ui: &mut egui::Ui, view: &mut TasksView, index: usize, theme: &Theme) {
+    let section = view.section(index).clone();
+    paint_section_rows(ui, view, &section, theme);
+}
+
+fn paint_section_rows(
     ui: &mut egui::Ui,
     view: &mut TasksView,
-    section: &Section,
+    section: &tree::Section,
     theme: &Theme,
 ) {
     let (s, c) = (theme.ui_scale, theme.tasks_sidebar);
-    let open = !view.is_collapsed(&section.node);
-    let done = section.rows.iter().filter(|r| r.status == Status::Completed).count();
-    let total = section.rows.len();
+    let node = section.node.clone();
+    let (done, total) =
+        (section.rows.iter().filter(|r| r.status == Status::Completed).count(), section.rows.len());
+    let open = !view.is_collapsed(&node);
     ui.add_space(4.0 * s);
     let rect = row_with_trailing(
         ui,
@@ -201,27 +210,28 @@ pub(super) fn paint_section(
             let (chevron, _) = ui.allocate_exact_size(size, Sense::hover());
             let stroke = Stroke::new(1.5 * s, c.chevron);
             tasks_view::paint_chevron(ui, chevron.center(), open, stroke);
-            let name = RichText::new(view.short_name(&section.node)).color(c.section).small();
+            let name = RichText::new(view.short_name(&node)).color(c.section).small();
             ui.add(egui::Label::new(name.strong()).truncate());
         },
         |ui| {
             ui.label(RichText::new(format!("{done}/{total}")).color(c.count).small());
         },
     );
-    let header = ui.interact(rect, ui.id().with(("tasks-section", &section.node)), Sense::click());
-    if header.on_hover_text(&section.node).on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
-    {
-        view.toggle_collapsed(&section.node);
+    let header = ui.interact(rect, ui.id().with(("tasks-section", &node)), Sense::click());
+    if header.on_hover_text(&node).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+        view.toggle_collapsed(&node);
     }
     paint_bar(ui, done as f32 / total as f32, &c, 3.0 * s);
     if !open {
         return;
     }
-    let rows = match view.hides_completed() {
-        true => tree::without_completed(section.rows.clone()),
-        false => section.rows.clone(),
+    let shown = match view.hides_completed() {
+        true => tree::open_rows(&section.rows),
+        false => section.rows.iter().collect(),
     };
-    rows.iter().for_each(|row| paint_row(ui, row, theme));
+    for row in &shown {
+        paint_row(ui, row, theme);
+    }
 }
 
 fn paint_bar(ui: &mut egui::Ui, done: f32, c: &Colors, height: f32) {
@@ -387,6 +397,25 @@ mod tests {
 
     fn task(id: &str) -> alacritree_tasks::Task {
         alacritree_tasks::fake::task(id, alacritree_tasks::scope::GLOBAL)
+    }
+
+    /// The dock draws the sections the tab built for the same listing, so
+    /// the two do not each split it.
+    #[test]
+    fn the_dock_draws_the_sections_the_tab_built() {
+        let mut h = Harness::of(vec![task("plan"), task("step")]);
+        let built = h.view.builds();
+        let shortcuts = crate::shortcut::Shortcuts::new(&[]);
+        let style = h.theme.tasks;
+        let view = &mut h.view;
+        let _ = h.ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let _ = crate::tasks::view::show(ui, view, true, &shortcuts, style);
+            });
+        });
+        assert_eq!(h.view.builds(), built, "the tab drew the sections the dock built");
+        h.frame(Vec::new());
+        assert_eq!(h.view.builds(), built, "the dock drew the tab's sections");
     }
 
     #[test]

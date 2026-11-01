@@ -89,7 +89,7 @@ The tab shows the global section, the project, the workspace, and one section fo
 
 Deleting a task that has subtasks deletes them too, after asking. The keys act on the row being edited, or the last one that was, which the tab highlights. They are the task actions under [Keyboard shortcuts](keyboard-shortcuts.md), so they can be rebound, and they fire only while the tasks tab is focused.
 
-The tab reloads from taskwarrior every second while it is shown, so tasks an agent adds appear on their own. The last listing for each project is kept in the local state directory, so reopening the tab shows it at once while the first reload runs. A project inside WSL reads and writes that distro's taskwarrior, through `[wsl] resident_helper` when it is on, so a call skips starting `wsl.exe`. Taskwarrior 3 has no Windows build, so a Windows project uses the default distro's taskwarrior when `task` is not on the Windows `PATH`. Linux and macOS always use the native install.
+The tab checks the replica stamps every second while it is shown, and exports when they differ, so tasks an agent adds appear on their own. It asks for the global list, the repository's own node, and the workspace's subtree. A worktree does not receive a sibling worktree's session tasks. Until git has named the workspace, it asks for the repository subtree. The last listing for each workspace is kept in the local state directory, so reopening the tab shows it at once while the first reload runs. Two worktrees of one repository keep separate listings. A project inside WSL reads and writes that distro's taskwarrior, through `[wsl] resident_helper` when it is on, so a call skips starting `wsl.exe`. Taskwarrior 3 has no Windows build, so a Windows project uses the default distro's taskwarrior when `task` is not on the Windows `PATH`. Linux and macOS always use the native install.
 
 #### Tasks in a sidebar
 
@@ -102,7 +102,7 @@ sidebar = "right"
 
 The section holds the tab's sections that have tasks, less the global list, which it shows only on Home. Each section is named below the workspace, so an agent session reads as `claude-<id>`, and carries a `done/total` count and a bar. Rows are read-only: a filled box marks a started task and a ticked one a completed task. Clicking a section header folds it in the sidebar and the tab alike. The "hide completed" button beside the heading is the tab's filter, so it hides the completed tasks in both, while the counts and bars still include them. Right-clicking the `Tasks` heading opens the workspace's tasks tab, or brings it on screen when it is already open. Drag the divider above the section to resize it, or double-click the divider to fit the section to its tasks, up to half the sidebar. `[ui.tasks.sidebar_colors]` sets every color it draws, listed in the [config reference](config-reference.md).
 
-The section lists only while its sidebar shows it, reloading every second like the tab. When the workspace's tasks tab is open, both draw the same listing.
+The section lists only while its sidebar shows it, checking stamps every second like the tab and exporting when they differ. When the workspace's tasks tab is open, both draw the same listing.
 
 #### A task store of your own
 
@@ -155,13 +155,15 @@ codex, in `hooks.json` next to its `config.toml`:
 }
 ```
 
+Add `Stop` too and an agent that finishes with [temporary worktrees](#temporary-worktrees) still open is asked about them before its turn ends. It is asked once for each set of them, so one it means to keep is not nagged about at every stop. The command is `alacritree hook stop --harness <claude|codex>`, in the same shape as the two above. Update alacritree before adding it: an older binary rejects `stop` with exit status 2, which Claude Code reads as a request to keep going.
+
 #### Agents' worktrees
 
 Three more events keep the worktrees agents make inside alacritree, so each one gets the [create flow](#creating-a-worktree), shows in the sidebar and runs the [checkout hooks](#checkout-hooks):
 
-- `worktree-create` makes the worktree Claude Code asks for, from `claude --worktree`, the `EnterWorktree` tool or an isolated subagent, the way `alacritree worktree create` does. It goes through the running window, or straight to git when none is listening. The branch is the name Claude Code picked, cut from the project's default branch after a fetch, and stdout is the new worktree's path. On failure it exits 1 with the reason on stderr, and Claude Code gives up instead of running its own `git worktree add`. Every isolated subagent waits on that fetch and leaves a branch and a sidebar row behind.
+- `worktree-create` makes the worktree Claude Code asks for, from `claude --worktree`, the `EnterWorktree` tool or an isolated subagent, the way `alacritree worktree create` does. It goes through the running window, or straight to git when none is listening. The branch is the name Claude Code picked, cut from the project's default branch after a fetch, and stdout is the new worktree's path. On failure it exits 1 with the reason on stderr, and Claude Code gives up instead of running its own `git worktree add`. Every isolated subagent waits on that fetch and leaves a branch and a sidebar row behind. It makes an ordinary worktree, not a [temporary one](#temporary-worktrees), since a `--worktree` session can be work someone comes back to.
 - `worktree-remove` keeps the worktree. It exits 1 naming the worktree, so Claude Code reports it kept instead of removing it with its own `git worktree remove`. Delete it from the sidebar when it is done.
-- `pre-tool-use` denies a shell command that runs `git worktree add` and tells the agent to run `alacritree worktree create` instead. It splits the command the way a shell does, so the phrase inside a quoted argument passes. It catches the call an agent types, not a script or alias that wraps it. Every other call, and any payload it cannot read, goes on to the harness's own permission flow.
+- `pre-tool-use` denies a shell command that runs `git worktree add` and tells the agent to run `alacritree worktree create` instead, with `--temporary` for throwaway work. It splits the command the way a shell does, so the phrase inside a quoted argument passes. It catches the call an agent types, not a script or alias that wraps it. Every other call, and any payload it cannot read, goes on to the harness's own permission flow.
 
 The worktree events are Claude Code's own; codex sends none, so it gets the shell check only.
 
@@ -258,6 +260,28 @@ Confirmation runs `git worktree remove` (with `--force` if requested) and then
 `git branch -D <branch>`. The branch deletion is best-effort, so a detached
 HEAD doesn't block worktree cleanup. The [checkout hooks](#checkout-hooks)
 run after that, from the main checkout.
+
+### Temporary worktrees
+
+A temporary worktree is for throwaway work, such as a build, a test run or a look at other code. It is made like any other, with the fetch, the copied configs and the checkout hooks, but it stays out of your project's list of worktrees and is removed by whoever made it.
+
+```sh
+alacritree worktree create --temporary . scratch
+alacritree worktree remove <path>
+```
+
+Over MCP these are `create_worktree` with `temporary: true`, and `remove_worktree`. `create` takes any path in the checkout to make it from, and prints the new path on standard output with a reminder on standard error. `remove` also deletes the branch, as the sidebar's delete does, and refuses a tree with modified or untracked files unless given `--force`. It refuses any worktree that is not temporary, so an agent cannot remove a checkout you rely on. It leaves a session open in the worktree running, and that session's row stays until the session ends, as it does for a worktree removed outside alacritree.
+
+**In the sidebar.** Temporary worktrees sit in a collapsed `Temporary (n)` section rather than among the project's worktrees:
+
+- Under the session that made one, when that session has a row. The CLI and the MCP server read `ALACRITREE_SESSION_ID` to know which that is.
+- Otherwise under the checkout it was made from, which is where it goes when its session closes or the app restarts, and where it starts when a checkout's only session is folded into the checkout's row. A checkout that has gone hands it to the main checkout.
+
+Click the header, or press Enter or the arrow keys on it, to open and close it. Sections start closed after a restart. One opens by itself while the workspace on screen is inside it, and a search or filter reaches inside closed sections and shows what matches. Sections are skipped by `SelectNextWorkspace` unless a session is running inside, and their worktrees poll no PR status. The mark that says a session wants attention shows on a closed section's header.
+
+**What an agent is told.** With [agent hooks](#agent-hooks) set up, `alacritree hook` explains all this to an agent in any repository whether or not a task store is configured, and lists the temporary worktrees that agent has made and not yet removed. Each agent sees only its own. With the `Stop` hook, it is also asked about them when it finishes.
+
+A worktree counts as temporary because of where it lives, `<base>/<project>-<hash>/.temporary/<origin>/<branch>`, so the path alone decides how it is drawn, with or without a window. Moving one out of there makes it an ordinary worktree.
 
 ### Checkout hooks
 
@@ -817,7 +841,8 @@ Tools:
 | `read_scratchpad` | Read the auto-saved Markdown scratchpad for the current, Home, or a specified workspace |
 | `move_session` | Re-home a session under another worktree (`alacritree session move <session_id> <path>`); path may be anywhere inside it |
 | `git_status` | Staged/unstaged files and per-file +/- vs the default branch |
-| `create_worktree` | Create a worktree + branch, same flow as the sidebar's `+` button |
+| `create_worktree` | Create a worktree + branch, same flow as the sidebar's `+` button, or a [temporary one](#temporary-worktrees) |
+| `remove_worktree` | Remove a [temporary worktree](#temporary-worktrees) and its branch |
 | `refresh_project` | Re-scan a project's worktrees |
 
 `read_scratchpad` reads the backing file directly, so it remains useful when

@@ -27,16 +27,43 @@ pub enum SidebarRow {
     Session(SessionId),
     /// A pane a multiplexer owns and no session holds.
     Pane(PaneKey),
+    /// The header of a section of temporary worktrees.
+    TemporarySection(TemporaryOwner),
 }
 
-/// One row listed under a workspace: a session alacritree runs, or a
-/// multiplexer's pane nothing is attached to.  The two are one sequence
-/// rather than two blocks because attaching turns the second into the first,
-/// and a pane that changed how it is drawn has not changed where it belongs.
+/// What a section of temporary worktrees hangs off, which is also what keys it.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum TemporaryOwner {
+    Session(SessionId),
+    Checkout(PathBuf),
+}
+
+impl From<PathBuf> for TemporaryOwner {
+    fn from(checkout: PathBuf) -> Self {
+        Self::Checkout(checkout)
+    }
+}
+
+/// A group of temporary worktrees.  `worktrees` holds them whether or not the
+/// section is open, because a shut section's rows still exist: the cursor
+/// climbs out of one that closes rather than treating its rows as deleted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TemporarySection {
+    pub owner: TemporaryOwner,
+    pub open: bool,
+    pub worktrees: Vec<PathBuf>,
+}
+
+/// One row listed under a workspace: a session alacritree runs, a
+/// multiplexer's pane nothing is attached to, or a section of temporary
+/// worktrees.  The first two are one sequence rather than two blocks because
+/// attaching turns the second into the first, and a pane that changed how it
+/// is drawn has not changed where it belongs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkspaceEntry {
     Session(SessionId),
     Pane(PaneKey),
+    Temporary(TemporarySection),
 }
 
 impl WorkspaceEntry {
@@ -44,13 +71,14 @@ impl WorkspaceEntry {
         match self {
             Self::Session(id) => SidebarRow::Session(*id),
             Self::Pane(key) => SidebarRow::Pane(key.clone()),
+            Self::Temporary(section) => SidebarRow::TemporarySection(section.owner.clone()),
         }
     }
 
     pub(crate) fn session(&self) -> Option<SessionId> {
         match self {
             Self::Session(id) => Some(*id),
-            Self::Pane(_) => None,
+            Self::Pane(_) | Self::Temporary(_) => None,
         }
     }
 }
@@ -62,21 +90,29 @@ impl WorkspaceEntry {
 pub(crate) type ListedRows = HashMap<WorkspaceKey, Vec<WorkspaceEntry>>;
 
 fn push_entry_rows(rows: &mut Vec<SidebarRow>, listed: &ListedRows, ws: &WorkspaceKey) {
-    if let Some(entries) = listed.get(ws) {
-        rows.extend(entries.iter().map(WorkspaceEntry::row));
+    for entry in listed.get(ws).into_iter().flatten() {
+        rows.push(entry.row());
+        if let WorkspaceEntry::Temporary(TemporarySection { open: true, worktrees, .. }) = entry {
+            for path in worktrees {
+                rows.push(SidebarRow::Worktree(path.clone()));
+                push_entry_rows(rows, listed, &Some(path.clone()));
+            }
+        }
     }
 }
 
 /// Every row the sidebar currently renders, in render order: Home first,
 /// then each project's header followed by its worktrees when expanded, with
-/// each workspace's listed rows directly after its own row.
+/// each workspace's listed rows directly after its own row.  A temporary
+/// worktree is one of those listed rows' children, not a worktree of the
+/// project's own.
 pub(crate) fn visible_rows(projects: &[Project], listed: &ListedRows) -> Vec<SidebarRow> {
     let mut rows = vec![SidebarRow::Home];
     push_entry_rows(&mut rows, listed, &None);
     for p in projects {
         rows.push(SidebarRow::Project(p.root.clone()));
         if p.expanded {
-            for wt in &p.checkouts {
+            for wt in p.top_level() {
                 rows.push(SidebarRow::Worktree(wt.path.clone()));
                 push_entry_rows(&mut rows, listed, &Some(wt.path.clone()));
             }
@@ -236,17 +272,50 @@ pub(crate) fn step(rows: &[SidebarRow], cursor: &SidebarRow, delta: i32) -> Side
     rows[new].clone()
 }
 
+/// The parent `listed` names for `cursor`: the workspace a session or pane is
+/// listed under, what a section hangs off, or the section a temporary worktree
+/// sits in.
+fn listed_parent(listed: &ListedRows, cursor: &SidebarRow) -> Option<SidebarRow> {
+    let workspace_row = |ws: &WorkspaceKey| match ws {
+        Some(path) => SidebarRow::Worktree(path.clone()),
+        None => SidebarRow::Home,
+    };
+    listed.iter().find_map(|(ws, entries)| {
+        entries.iter().find_map(|entry| match entry {
+            WorkspaceEntry::Temporary(section) => match (cursor, &section.owner) {
+                (SidebarRow::Worktree(path), _) if section.worktrees.contains(path) => {
+                    Some(entry.row())
+                },
+                _ if entry.row() != *cursor => None,
+                (_, TemporaryOwner::Session(id)) => Some(SidebarRow::Session(*id)),
+                (_, TemporaryOwner::Checkout(path)) => Some(SidebarRow::Worktree(path.clone())),
+            },
+            _ => (entry.row() == *cursor).then(|| workspace_row(ws)),
+        })
+    })
+}
+
 /// The row owning `cursor` — the standard tree-view "Left jumps to parent"
 /// idiom.  A worktree's parent is its project header; a session's or herdr
 /// agent's parent is the worktree (or Home) row it's listed under.  `None`
-/// for Home and project cursors.
-pub(crate) fn left_target(rows: &[SidebarRow], cursor: &SidebarRow) -> Option<SidebarRow> {
+/// for Home and project cursors.  The listing answers first: a section's rows
+/// sit between a workspace's sessions, so the nearest worktree above one of
+/// those can be a temporary worktree it has nothing to do with.
+pub(crate) fn left_target(
+    rows: &[SidebarRow],
+    listed: &ListedRows,
+    cursor: &SidebarRow,
+) -> Option<SidebarRow> {
     let pos = rows.iter().position(|r| r == cursor)?;
+    if let Some(parent) = listed_parent(listed, cursor).filter(|parent| rows.contains(parent)) {
+        return Some(parent);
+    }
     match cursor {
         SidebarRow::Worktree(_) => {
             rows[..pos].iter().rev().find(|r| matches!(r, SidebarRow::Project(_))).cloned()
         },
-        SidebarRow::Session(_) | SidebarRow::Pane(_) => rows[..pos]
+        SidebarRow::Session(_) | SidebarRow::Pane(_) | SidebarRow::TemporarySection(_) => rows
+            [..pos]
             .iter()
             .rev()
             .find(|r| matches!(r, SidebarRow::Worktree(_) | SidebarRow::Home))
@@ -336,36 +405,69 @@ pub(crate) fn filtered_rows(
     mut preds: RowPredicates<'_>,
 ) -> Vec<SidebarRow> {
     /// The rows a surviving workspace contributes, and whether a child match
-    /// is what surfaced it.  A name match takes every child and leaves that
-    /// flag false, since the workspace is already kept; otherwise only the
-    /// matches survive, so searching for a child does not hand back its
-    /// siblings.
+    /// is what surfaced it.  A name match takes every session and pane and
+    /// leaves that flag false, since the workspace is already kept; otherwise
+    /// only the matches survive, so searching for a child does not hand back
+    /// its siblings.  A section survives only through a worktree of its own
+    /// that does, since that is the one thing a filter can be looking for in
+    /// it, and it is forced open then for the same reason a project is.
     fn children(
         preds: &mut RowPredicates<'_>,
         listed: &ListedRows,
+        project: Option<&Project>,
         ws: &WorkspaceKey,
         name_matched: bool,
     ) -> (Vec<SidebarRow>, bool) {
-        let Some(entries) = listed.get(ws) else {
-            return (Vec::new(), false);
-        };
-        if name_matched {
-            return (entries.iter().map(WorkspaceEntry::row).collect(), false);
+        let mut rows = Vec::new();
+        let mut child_matched = false;
+        for entry in listed.get(ws).into_iter().flatten() {
+            if let WorkspaceEntry::Temporary(section) = entry {
+                let Some(project) = project else { continue };
+                let worktrees = section_rows(preds, listed, project, section);
+                if !worktrees.is_empty() {
+                    rows.push(entry.row());
+                    rows.extend(worktrees);
+                    child_matched = true;
+                }
+            } else if name_matched {
+                rows.push(entry.row());
+            } else if preds.child.as_mut().is_some_and(|child| child(entry)) {
+                rows.push(entry.row());
+                child_matched = true;
+            }
         }
-        let Some(child) = preds.child.as_mut() else {
-            return (Vec::new(), false);
-        };
-        let matching: Vec<SidebarRow> =
-            entries.iter().filter(|&e| child(e)).map(WorkspaceEntry::row).collect();
-        let any = !matching.is_empty();
-        (matching, any)
+        (rows, child_matched && !name_matched)
+    }
+
+    /// The worktrees of `section` that survive, each with its own children.
+    fn section_rows(
+        preds: &mut RowPredicates<'_>,
+        listed: &ListedRows,
+        project: &Project,
+        section: &TemporarySection,
+    ) -> Vec<SidebarRow> {
+        let mut rows = Vec::new();
+        for path in &section.worktrees {
+            let Some(wt) = project.checkouts.iter().find(|wt| wt.path == *path) else { continue };
+            let ws = Some(path.clone());
+            if !(preds.gate)(&ws) {
+                continue;
+            }
+            let name_matched = (preds.name)(project, wt);
+            let (child_rows, child_matched) = children(preds, listed, None, &ws, name_matched);
+            if name_matched || child_matched {
+                rows.push(SidebarRow::Worktree(path.clone()));
+                rows.extend(child_rows);
+            }
+        }
+        rows
     }
 
     let mut rows = Vec::new();
     // Read before the `&mut preds` borrow: an argument list evaluates left to
     // right, so a field read after it would be a use of a borrowed value.
     let (home_gate, home_name) = (preds.home_gate, preds.home_name);
-    let (home_children, home_child_matched) = children(&mut preds, listed, &None, home_name);
+    let (home_children, home_child_matched) = children(&mut preds, listed, None, &None, home_name);
     if home_gate && (home_name || home_child_matched) {
         rows.push(SidebarRow::Home);
         rows.extend(home_children);
@@ -373,13 +475,14 @@ pub(crate) fn filtered_rows(
     for p in projects {
         let self_matches = (preds.project_self)(p);
         let mut visible_worktrees: Vec<SidebarRow> = Vec::new();
-        for wt in &p.checkouts {
+        for wt in p.top_level() {
             let ws = Some(wt.path.clone());
             if !(preds.gate)(&ws) {
                 continue;
             }
             let name_matched = (preds.name)(p, wt);
-            let (child_rows, child_matched) = children(&mut preds, listed, &ws, name_matched);
+            let (child_rows, child_matched) =
+                children(&mut preds, listed, Some(p), &ws, name_matched);
             if !name_matched && !child_matched {
                 continue;
             }
@@ -673,14 +776,89 @@ pub(crate) mod tests {
     fn left_target_is_the_owning_project_header() {
         let rows =
             vec![project("/a", true, &["/a/wt1"]), project("/b", true, &["/b/wt1", "/b/wt2"])];
-        let rows = visible_rows(&rows, &no_sessions());
+        let listed = no_sessions();
+        let rows = visible_rows(&rows, &listed);
         assert_eq!(
-            left_target(&rows, &SidebarRow::Worktree(PathBuf::from("/b/wt2"))),
+            left_target(&rows, &listed, &SidebarRow::Worktree(PathBuf::from("/b/wt2"))),
             Some(SidebarRow::Project(PathBuf::from("/b")))
         );
         // Only worktree rows have a left-jump target.
-        assert_eq!(left_target(&rows, &SidebarRow::Home), None);
-        assert_eq!(left_target(&rows, &SidebarRow::Project(PathBuf::from("/a"))), None);
+        assert_eq!(left_target(&rows, &listed, &SidebarRow::Home), None);
+        assert_eq!(left_target(&rows, &listed, &SidebarRow::Project(PathBuf::from("/a"))), None);
+    }
+
+    fn with_temporary(open: bool) -> (Vec<Project>, ListedRows) {
+        let mut repo = project("/a", true, &["/a/wt1"]);
+        let mut wt = repo.checkouts[0].clone();
+        wt.name = "scratch".into();
+        wt.path = PathBuf::from("/x/.temporary/wt1/scratch");
+        repo.checkouts.push(wt);
+        let section = TemporarySection {
+            owner: TemporaryOwner::Checkout(PathBuf::from("/a/wt1")),
+            open,
+            worktrees: vec![PathBuf::from("/x/.temporary/wt1/scratch")],
+        };
+        let listed = ListedRows::from([(Some(PathBuf::from("/a/wt1")), vec![
+            WorkspaceEntry::Temporary(section),
+        ])]);
+        (vec![repo], listed)
+    }
+
+    fn scratch_row() -> SidebarRow {
+        SidebarRow::Worktree(PathBuf::from("/x/.temporary/wt1/scratch"))
+    }
+
+    fn section_row() -> SidebarRow {
+        SidebarRow::TemporarySection(TemporaryOwner::Checkout(PathBuf::from("/a/wt1")))
+    }
+
+    #[test]
+    fn a_temporary_worktree_draws_only_inside_its_open_section() {
+        let (projects, shut) = with_temporary(false);
+        let rows = visible_rows(&projects, &shut);
+        assert!(rows.contains(&section_row()));
+        assert!(!rows.contains(&scratch_row()));
+
+        let (projects, open) = with_temporary(true);
+        let rows = visible_rows(&projects, &open);
+        let section = rows.iter().position(|r| *r == section_row()).unwrap();
+        assert_eq!(rows[section + 1], scratch_row());
+        assert_eq!(rows.iter().filter(|r| **r == scratch_row()).count(), 1);
+    }
+
+    /// A shut section still answers a filter, and is forced open by a match.
+    #[test]
+    fn a_filter_reaches_into_a_shut_section_only_for_a_match() {
+        let (projects, listed) = with_temporary(false);
+        let filter = |wanted: &'static str| {
+            let mut name = |_: &Project, wt: &Checkout| wt.name == wanted;
+            filtered_rows(&projects, &listed, RowPredicates {
+                home_gate: true,
+                home_name: false,
+                project_self: &|_| false,
+                gate: &|_| true,
+                name: &mut name,
+                child: None,
+            })
+        };
+        let rows = filter("scratch");
+        assert!(rows.contains(&section_row()), "{rows:?}");
+        assert!(rows.contains(&scratch_row()), "{rows:?}");
+
+        let rows = filter("nothing");
+        assert!(rows.is_empty(), "{rows:?}");
+    }
+
+    #[test]
+    fn a_session_row_of_another_workspace_is_never_taken_for_a_sections_child() {
+        let (projects, mut listed) = with_temporary(true);
+        listed.get_mut(&Some(PathBuf::from("/a/wt1"))).unwrap().push(WorkspaceEntry::Session(9));
+        let rows = visible_rows(&projects, &listed);
+        assert_eq!(
+            left_target(&rows, &listed, &SidebarRow::Session(9)),
+            Some(SidebarRow::Worktree(PathBuf::from("/a/wt1")))
+        );
+        assert_eq!(left_target(&rows, &listed, &scratch_row()), Some(section_row()));
     }
 
     #[test]
@@ -851,10 +1029,11 @@ pub(crate) mod tests {
         let projects = vec![project("/a", true, &["/a/wt1"])];
         let sessions =
             HashMap::from([(None, vec![1, 2]), (Some(PathBuf::from("/a/wt1")), vec![3, 4])]);
-        let rows = visible_rows(&projects, &sessions_only(sessions));
-        assert_eq!(left_target(&rows, &SidebarRow::Session(2)), Some(SidebarRow::Home));
+        let listed = sessions_only(sessions);
+        let rows = visible_rows(&projects, &listed);
+        assert_eq!(left_target(&rows, &listed, &SidebarRow::Session(2)), Some(SidebarRow::Home));
         assert_eq!(
-            left_target(&rows, &SidebarRow::Session(4)),
+            left_target(&rows, &listed, &SidebarRow::Session(4)),
             Some(SidebarRow::Worktree(PathBuf::from("/a/wt1")))
         );
     }

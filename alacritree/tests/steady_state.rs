@@ -78,6 +78,7 @@ fn ui(query: &str, toggles: u32) -> UiInputs<'_> {
         active_workspace: None,
         active_branch: None,
         panes_generation: 0,
+        temporary_generation: 0,
     }
 }
 
