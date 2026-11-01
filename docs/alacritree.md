@@ -155,6 +155,8 @@ codex, in `hooks.json` next to its `config.toml`:
 }
 ```
 
+Add `Stop` too and an agent that finishes with [temporary worktrees](#temporary-worktrees) still open is asked about them before its turn ends. It is asked once for each set of them, so one it means to keep is not nagged about at every stop. The command is `alacritree hook stop --harness <claude|codex>`, in the same shape as the two above. Update alacritree before adding it: an older binary rejects `stop` with exit status 2, which Claude Code reads as a request to keep going.
+
 Each terminal session has its own background read/write thread, a unique
 `window_id` (so OSC 7 / signal events route correctly), and forwards terminal
 events through an `EventProxy` that requests an egui repaint on every PTY
@@ -226,6 +228,28 @@ Confirmation runs `git worktree remove` (with `--force` if requested) and then
 `git branch -D <branch>`. The branch deletion is best-effort, so a detached
 HEAD doesn't block worktree cleanup. The [checkout hooks](#checkout-hooks)
 run after that, from the main checkout.
+
+### Temporary worktrees
+
+A temporary worktree is for throwaway work, such as a build, a test run or a look at other code. It is made like any other, with the fetch, the copied configs and the checkout hooks, but it stays out of your project's list of worktrees and is removed by whoever made it.
+
+```sh
+alacritree worktree create --temporary . scratch
+alacritree worktree remove <path>
+```
+
+Over MCP these are `create_worktree` with `temporary: true`, and `remove_worktree`. `create` takes any path in the checkout to make it from, and prints the new path on standard output with a reminder on standard error. `remove` also deletes the branch, as the sidebar's delete does, and refuses a tree with modified or untracked files unless given `--force`. It refuses any worktree that is not temporary, so an agent cannot remove a checkout you rely on. It leaves a session open in the worktree running, and that session's row stays until the session ends, as it does for a worktree removed outside alacritree.
+
+**In the sidebar.** Temporary worktrees sit in a collapsed `Temporary (n)` section rather than among the project's worktrees:
+
+- Under the session that made one, when that session has a row. The CLI and the MCP server read `ALACRITREE_SESSION_ID` to know which that is.
+- Otherwise under the checkout it was made from, which is where it goes when its session closes or the app restarts, and where it starts when a checkout's only session is folded into the checkout's row. A checkout that has gone hands it to the main checkout.
+
+Click the header, or press Enter or the arrow keys on it, to open and close it. Sections start closed after a restart. One opens by itself while the workspace on screen is inside it, and a search or filter reaches inside closed sections and shows what matches. Sections are skipped by `SelectNextWorkspace` unless a session is running inside, and their worktrees poll no PR status. The mark that says a session wants attention shows on a closed section's header.
+
+**What an agent is told.** With [agent hooks](#agent-hooks) set up, `alacritree hook` explains all this to an agent in any repository whether or not a task store is configured, and lists the temporary worktrees that agent has made and not yet removed. Each agent sees only its own. With the `Stop` hook, it is also asked about them when it finishes.
+
+A worktree counts as temporary because of where it lives, `<base>/<project>-<hash>/.temporary/<origin>/<branch>`, so the path alone decides how it is drawn, with or without a window. Moving one out of there makes it an ordinary worktree.
 
 ### Checkout hooks
 
@@ -785,7 +809,8 @@ Tools:
 | `read_scratchpad` | Read the auto-saved Markdown scratchpad for the current, Home, or a specified workspace |
 | `move_session` | Re-home a session under another worktree (`alacritree session move <session_id> <path>`); path may be anywhere inside it |
 | `git_status` | Staged/unstaged files and per-file +/- vs the default branch |
-| `create_worktree` | Create a worktree + branch, same flow as the sidebar's `+` button |
+| `create_worktree` | Create a worktree + branch, same flow as the sidebar's `+` button, or a [temporary one](#temporary-worktrees) |
+| `remove_worktree` | Remove a [temporary worktree](#temporary-worktrees) and its branch |
 | `refresh_project` | Re-scan a project's worktrees |
 
 `read_scratchpad` reads the backing file directly, so it remains useful when

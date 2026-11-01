@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 use alacritree_common::{jobs, wsl};
 use alacritree_vcs::{Checkout, Head, VcsError, VersionControl};
 
+use crate::temporary;
 use crate::vcs::Vcs;
 
 #[derive(Debug, Clone)]
@@ -124,6 +125,32 @@ impl Project {
         self.label.as_deref().unwrap_or(&self.name)
     }
 
+    /// Whether `wt` hangs in a section of temporary worktrees rather than
+    /// drawing a row directly under the project.
+    pub fn nests(&self, wt: &Checkout) -> bool {
+        !wt.is_main && temporary::is_temporary(&wt.path) && self.host_of(wt).is_some()
+    }
+
+    /// The checkouts with a row directly under the project header.
+    pub fn top_level(&self) -> impl Iterator<Item = &Checkout> {
+        self.checkouts.iter().filter(|wt| !self.nests(wt))
+    }
+
+    /// The checkout a temporary worktree hangs under when no session claims
+    /// it: the one it was made from, which may be gone by now, else the main
+    /// one. `None` only when the project has nothing else to hang it from,
+    /// such as a bare repository holding nothing but temporary worktrees.
+    pub fn host_of(&self, wt: &Checkout) -> Option<&Checkout> {
+        let origin = temporary::origin_name(&wt.path);
+        let mut regular =
+            self.checkouts.iter().filter(|c| c.is_main || !temporary::is_temporary(&c.path));
+        regular
+            .clone()
+            .find(|c| c.path.file_name() == origin)
+            .or_else(|| regular.clone().find(|c| c.is_main))
+            .or_else(|| regular.next())
+    }
+
     /// Adopt a discovery result.  A non-authoritative result leaves the
     /// discovered fields alone: an unreachable backend must not read as
     /// deletion.  `expanded`, `shell_override`, and `label` are user state and
@@ -170,6 +197,7 @@ pub fn project_json(project: &Project) -> Value {
                 "path": wt.path,
                 "branch": wt.head.label(),
                 "is_main": wt.is_main,
+                "temporary": temporary::is_temporary(&wt.path),
             }))
             .collect::<Vec<_>>(),
     })

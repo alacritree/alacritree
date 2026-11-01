@@ -16,11 +16,23 @@ pub(crate) enum Route {
 }
 
 /// Requests that would stall a frame (a working-tree walk, a worktree create
-/// with its `git fetch`), so the connection thread serves them itself.
+/// with its `git fetch`, a removal with its hooks), so the connection thread
+/// serves them itself.
 #[derive(Debug, PartialEq, IntoStaticStr)]
 pub(crate) enum ConnectionRequest {
-    GitStatus { path: PathBuf },
-    CreateWorktree { project_root: PathBuf, branch: String },
+    GitStatus {
+        path: PathBuf,
+    },
+    CreateWorktree {
+        project_root: PathBuf,
+        branch: String,
+        temporary: bool,
+        session_id: Option<u64>,
+    },
+    RemoveWorktree {
+        path: PathBuf,
+        force: bool,
+    },
 }
 
 /// Requests that need app state, so they cross to the UI thread.
@@ -74,6 +86,9 @@ pub(crate) enum FrameRequest {
     RenameProject { root: PathBuf, label: Option<String> },
     ListMultiplexerPanes,
     RunAction { action: String },
+    /// No client sends this. The connection that created a temporary worktree
+    /// tells the app which session it belongs to, as it does its refresh.
+    ClaimTemporaryWorktree { path: PathBuf, session_id: u64 },
 }
 
 impl From<DeferredRequest> for AppRequest {
@@ -97,8 +112,16 @@ impl From<IpcRequest> for Route {
 
         match request {
             Req::GitStatus { path } => Self::Connection(Conn::GitStatus { path }),
-            Req::CreateWorktree { project_root, branch } => {
-                Self::Connection(Conn::CreateWorktree { project_root, branch })
+            Req::CreateWorktree { project_root, branch, temporary, session_id } => {
+                Self::Connection(Conn::CreateWorktree {
+                    project_root,
+                    branch,
+                    temporary,
+                    session_id,
+                })
+            },
+            Req::RemoveWorktree { path, force } => {
+                Self::Connection(Conn::RemoveWorktree { path, force })
             },
 
             Req::RefreshProject { root } => Self::App(Deferred::RefreshProject { root }.into()),
@@ -176,9 +199,16 @@ mod tests {
         let status = IpcRequest::GitStatus { path: PathBuf::from("/repo") };
         assert!(matches!(Route::from(status), Route::Connection(_)));
 
-        let create =
-            IpcRequest::CreateWorktree { project_root: PathBuf::from("/repo"), branch: "b".into() };
+        let create = IpcRequest::CreateWorktree {
+            project_root: PathBuf::from("/repo"),
+            branch: "b".into(),
+            temporary: false,
+            session_id: None,
+        };
         assert!(matches!(Route::from(create), Route::Connection(_)));
+
+        let remove = IpcRequest::RemoveWorktree { path: PathBuf::from("/wt"), force: false };
+        assert!(matches!(Route::from(remove), Route::Connection(_)));
     }
 
     #[test]

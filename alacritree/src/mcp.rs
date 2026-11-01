@@ -96,9 +96,11 @@ fn tool_call_response(id: Value, params: Option<&Value>, transport: &impl Transp
         Ok(r) => r,
         Err(e) => return error_response(id, -32602, &format!("invalid tool call: {e}")),
     };
+    let request = for_own_session(request, |key| std::env::var(key).ok());
 
     match transport.send(&request, timeout_for(&request)) {
         Ok(value) => {
+            crate::temporary::note_created(&request, &value, crate::state::config_dir().as_deref());
             let text = serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string());
             result_response(id, json!({ "content": [{ "type": "text", "text": text }] }))
         },
@@ -111,12 +113,31 @@ fn tool_call_response(id: Value, params: Option<&Value>, transport: &impl Transp
     }
 }
 
+/// A temporary worktree files under the session that made it. This bridge
+/// inherits that session's environment when its client runs inside one, and
+/// the model should not have to look up what is already known.
+fn for_own_session(request: IpcRequest, get: impl Fn(&str) -> Option<String>) -> IpcRequest {
+    match request {
+        IpcRequest::CreateWorktree { project_root, branch, temporary: true, session_id: None } => {
+            IpcRequest::CreateWorktree {
+                project_root,
+                branch,
+                temporary: true,
+                session_id: crate::temporary::own_session(get),
+            }
+        },
+        request => request,
+    }
+}
+
 fn timeout_for(request: &IpcRequest) -> Duration {
     match request {
         // Runs `git fetch` against origin.
         IpcRequest::CreateWorktree { .. } => Duration::from_secs(300),
         // Walks the working tree; large repos take a while cold.
         IpcRequest::GitStatus { .. } => Duration::from_secs(60),
+        // Deletes a whole tree and runs the checkout hooks.
+        IpcRequest::RemoveWorktree { .. } => Duration::from_secs(60),
         _ => Duration::from_secs(15),
     }
 }
@@ -255,14 +276,28 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "create_worktree",
-            "description": "Create a new git worktree with a new branch in a project, like the sidebar's + button: fetches origin, branches from the project's default branch, and copies LLM config files into the new worktree. Slow — waits on git fetch.",
+            "description": "Create a new git worktree with a new branch in a project, like the sidebar's + button: fetches origin, branches from the project's default branch, and copies LLM config files into the new worktree. Slow — waits on git fetch. For throwaway work, such as a build, a test run or a look at other code, set temporary: the sidebar files it under your session in a collapsed section, and you must call remove_worktree when you are done with it.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "project_root": { "type": "string", "description": "Project root path from list_projects." },
+                    "project_root": { "type": "string", "description": "Project root path from list_projects. With temporary, any path in the checkout to make it from." },
                     "branch": { "type": "string", "description": "New branch name (also names the worktree directory)." },
+                    "temporary": { "type": "boolean", "description": "Make it a temporary worktree that you remove with remove_worktree when done. Defaults to false." },
+                    "session_id": { "type": "integer", "description": "Session to file a temporary worktree under. Defaults to the one in ALACRITREE_SESSION_ID." },
                 },
                 "required": ["project_root", "branch"],
+            },
+        },
+        {
+            "name": "remove_worktree",
+            "description": "Remove a temporary worktree made with create_worktree, and delete its branch. Push anything worth keeping first. Call this as soon as you are done with one. Any other worktree is refused, and so is one with modified or untracked files unless force is set.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "A path in the temporary worktree." },
+                    "force": { "type": "boolean", "description": "Discard modified and untracked files. Defaults to false." },
+                },
+                "required": ["path"],
             },
         },
         {
@@ -364,7 +399,13 @@ mod tests {
             IpcRequest::ReadScreen { session_id: 1, scrollback_lines: 0 },
             IpcRequest::ReadScratchpad { workspace: None },
             IpcRequest::GitStatus { path: repo() },
-            IpcRequest::CreateWorktree { project_root: repo(), branch: "topic".into() },
+            IpcRequest::CreateWorktree {
+                project_root: repo(),
+                branch: "topic".into(),
+                temporary: false,
+                session_id: None,
+            },
+            IpcRequest::RemoveWorktree { path: repo(), force: false },
             IpcRequest::RefreshProject { root: repo() },
             IpcRequest::AddProject { path: repo() },
             IpcRequest::RemoveProject { root: repo() },
@@ -389,6 +430,7 @@ mod tests {
             IpcRequest::ReadScratchpad { .. } => "read_scratchpad",
             IpcRequest::GitStatus { .. } => "git_status",
             IpcRequest::CreateWorktree { .. } => "create_worktree",
+            IpcRequest::RemoveWorktree { .. } => "remove_worktree",
             IpcRequest::RefreshProject { .. } => "refresh_project",
             IpcRequest::AddProject { .. } => "add_project",
             IpcRequest::RemoveProject { .. } => "remove_project",
@@ -434,6 +476,25 @@ mod tests {
             let encoded = serde_json::to_value(&request).expect("serialize");
             assert_eq!(encoded["type"], json!(tag_of(&request)));
         }
+    }
+
+    #[test]
+    fn a_temporary_create_files_under_the_session_the_bridge_runs_in() {
+        let create = |temporary, session_id| IpcRequest::CreateWorktree {
+            project_root: PathBuf::from("/repo"),
+            branch: "b".into(),
+            temporary,
+            session_id,
+        };
+        let session = |request| match for_own_session(request, |key| {
+            (key == "ALACRITREE_SESSION_ID").then(|| "7".to_string())
+        }) {
+            IpcRequest::CreateWorktree { session_id, .. } => session_id,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(session(create(true, None)), Some(7));
+        assert_eq!(session(create(true, Some(3))), Some(3), "an explicit id wins");
+        assert_eq!(session(create(false, None)), None, "a normal worktree has no owner");
     }
 
     /// Answer the one call a test sends with `reply`, and return what the tool

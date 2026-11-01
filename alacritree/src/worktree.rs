@@ -5,17 +5,19 @@
 //! `jobs::Job`. Both submit to the shared pool rather than spawning their
 //! own thread.
 
+use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
 
 use alacritree_checkout_hooks::{CheckoutEvent, CheckoutHook, CheckoutHooks};
 use alacritree_common::{jobs, wsl};
-use alacritree_vcs::{CreateCheckout, RemoveCheckout, VcsError, VersionControl};
+use alacritree_vcs::{ChangeKind, CreateCheckout, RemoveCheckout, VcsError, VersionControl};
 
 use crate::checkout_hooks::Hook;
 use crate::config::{Config, WorkspaceConfig};
 use crate::repaint::Repaint;
+use crate::temporary;
 use crate::vcs::Vcs;
 
 #[derive(Debug)]
@@ -33,6 +35,10 @@ pub(crate) enum WorktreeError {
     /// panic happened, so a create's step list stops wherever it got to.
     #[error("the background worker panicked")]
     WorkerPanicked,
+    /// Only a temporary worktree can be removed without the sidebar's dialog,
+    /// so an agent cannot delete a checkout someone is relying on.
+    #[error("{} is not a temporary worktree, so only the sidebar can remove it", .0.display())]
+    NotTemporary(PathBuf),
     #[error("failed to create {}: {source}", path.display())]
     CreateDir { path: PathBuf, source: io::Error },
     #[error("could not locate home directory")]
@@ -84,6 +90,9 @@ pub(crate) struct CreateRequest {
     /// `~/.alacritree/worktrees` default.
     base_dir: Option<PathBuf>,
     vcs: Vcs,
+    /// Set for a temporary worktree: the directory name of the checkout it is
+    /// made from.
+    temporary_origin: Option<OsString>,
 }
 
 impl CreateRequest {
@@ -98,7 +107,35 @@ impl CreateRequest {
         vcs: Vcs,
     ) -> Self {
         let base_dir = workspace.base_dir_for(&project_root);
-        Self { project_root, default_branch, branch, base_dir, vcs }
+        Self { project_root, default_branch, branch, base_dir, vcs, temporary_origin: None }
+    }
+
+    /// A temporary worktree made from the checkout `inside` sits in. Unlike
+    /// [`Self::new`] any path in the repository will do, since an agent knows
+    /// where it is working and not necessarily where the main checkout is. One
+    /// made from a temporary worktree takes that worktree's origin, because a
+    /// row cannot hang under a row that is itself in a section.
+    pub(crate) fn temporary(
+        inside: &Path,
+        branch: String,
+        workspace: &WorkspaceConfig,
+        vcs: Vcs,
+        blocking: &jobs::Blocking,
+    ) -> Result<Self, WorktreeError> {
+        let not_a_repository = || VcsError::NotARepository(inside.to_path_buf());
+        let located = vcs.locate(inside, blocking).ok_or_else(not_a_repository)?;
+        let from = located.checkout.as_deref().unwrap_or(&located.main);
+        let origin = temporary::origin_name(from).or_else(|| from.file_name());
+        let temporary_origin = Some(origin.ok_or_else(not_a_repository)?.to_os_string());
+        let mut request = Self::new(located.main, None, branch, workspace, vcs);
+        request.temporary_origin = temporary_origin;
+        Ok(request)
+    }
+
+    /// The repository this create runs against, which a temporary create
+    /// worked out for itself.
+    pub(crate) fn project_root(&self) -> &Path {
+        &self.project_root
     }
 }
 
@@ -155,8 +192,7 @@ pub(crate) fn create<H: CheckoutHooks + ?Sized>(
         .vcs
         .prepare_checkout(&req.project_root, req.default_branch.as_deref(), &mut *send, blocking)
         .map_err(create_error)?;
-    let target =
-        pick_worktree_path(&req.project_root, &req.branch, req.base_dir.as_deref(), blocking)?;
+    let target = pick_worktree_path(req, blocking)?;
     let checkout = CreateCheckout {
         main: req.project_root.clone(),
         target: target.clone(),
@@ -192,18 +228,20 @@ fn create_error(error: VcsError) -> WorktreeError {
 /// to `~/.alacritree/worktrees` so worktrees don't clutter the repo's parent
 /// directory and stay grouped per app; a configured `workspace.worktree_dir`
 /// relocates them.  The path hash disambiguates same-named repos in different
-/// locations.
+/// locations.  A temporary worktree goes under `.temporary/<origin>` there,
+/// which is the whole of what makes it one: see [`temporary`].
 fn pick_worktree_path(
-    repo: &Path,
-    branch: &str,
-    base: Option<&Path>,
+    req: &CreateRequest,
     blocking: &jobs::Blocking,
 ) -> Result<PathBuf, WorktreeError> {
-    let parent = project_worktree_dir(repo, base, blocking)?;
+    let mut parent = project_worktree_dir(&req.project_root, req.base_dir.as_deref(), blocking)?;
+    if let Some(origin) = &req.temporary_origin {
+        parent = parent.join(temporary::DIR).join(origin);
+    }
     std::fs::create_dir_all(&parent)
         .map_err(|source| WorktreeError::CreateDir { path: parent.clone(), source })?;
     let safe_branch: String =
-        branch.chars().map(|c| if c == '/' || c.is_whitespace() { '-' } else { c }).collect();
+        req.branch.chars().map(|c| if c == '/' || c.is_whitespace() { '-' } else { c }).collect();
     let mut candidate = parent.join(&safe_branch);
     let mut suffix = 2;
     while candidate.exists() {
@@ -330,6 +368,53 @@ pub(crate) fn delete_worktree<H: CheckoutHooks + ?Sized>(
         log::log!(level, "{line} (removed {})", scope_root.display())
     });
     Ok(())
+}
+
+/// Remove the temporary worktree `path` sits in, with its branch, and answer
+/// with the repository it belonged to. A tree with unsaved work is refused
+/// unless `force` says otherwise, the same refusal the sidebar's dialog reads.
+/// What the create itself added does not count: a refusal over those files
+/// would meet every agent on its first removal and teach it to always force,
+/// which would throw away the protection for the work that matters.
+pub(crate) fn remove_temporary<H: CheckoutHooks + ?Sized>(
+    vcs: &Vcs,
+    path: &Path,
+    force: bool,
+    hooks: &H,
+    blocking: &jobs::Blocking,
+) -> Result<PathBuf, WorktreeError> {
+    let not_temporary = || WorktreeError::NotTemporary(path.to_path_buf());
+    let located =
+        vcs.locate(path, blocking).ok_or_else(|| VcsError::NotARepository(path.to_path_buf()))?;
+    let target = located.checkout.as_deref().ok_or_else(not_temporary)?;
+    let repository = vcs.discover(&located.main, &[], false, blocking)?;
+    let checkout = repository
+        .checkouts
+        .into_iter()
+        .find(|c| c.path == target && !c.is_main && temporary::is_temporary(&c.path))
+        .ok_or_else(not_temporary)?;
+    let mut req = RemoveCheckout { main: located.main.clone(), checkout, force, delete_name: true };
+    match delete_worktree(vcs, &req, hooks, blocking) {
+        Err(WorktreeError::Vcs(VcsError::Unsaved { .. }))
+            if holds_only_what_create_added(vcs, target, blocking) =>
+        {
+            req.force = true;
+            delete_worktree(vcs, &req, hooks, blocking)?;
+        },
+        result => result?,
+    }
+    Ok(located.main)
+}
+
+/// Whether the only changes in `path` are untracked files under the names
+/// [`copy_llm_configs`] copies, which is also where the Claude Code hook writes.
+fn holds_only_what_create_added(vcs: &Vcs, path: &Path, blocking: &jobs::Blocking) -> bool {
+    let Ok(status) = vcs.status(path, None, blocking) else { return false };
+    status.staged.as_deref().unwrap_or_default().is_empty()
+        && status.working.iter().all(|change| {
+            change.kind == ChangeKind::Untracked
+                && LLM_CONFIG_NAMES.iter().any(|name| Path::new(&change.path).starts_with(name))
+        })
 }
 
 /// Canonicalize `path` through its nearest ancestor that still exists. A
@@ -515,6 +600,7 @@ mod tests {
             branch: "topic".into(),
             base_dir: None,
             vcs: git(),
+            temporary_origin: None,
         };
         let (tx, rx) = mpsc::channel();
         let (started_tx, started_rx) = mpsc::channel();
@@ -554,6 +640,7 @@ mod tests {
             branch: "abandoned".into(),
             base_dir: Some(tmp.path().join("worktrees")),
             vcs: git(),
+            temporary_origin: None,
         };
         let hook = FakeHook::reporting("Linked 1 fake scope");
         let job_hook = hook.clone();
@@ -578,6 +665,118 @@ mod tests {
         assert_eq!(hook.events(), []);
     }
 
+    /// Everything that treats a checkout as temporary reads this path, so the
+    /// create has to land exactly there, from whichever checkout it was asked.
+    #[test]
+    fn a_temporary_create_lands_under_the_checkout_it_was_made_from() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = clone_with_origin(tmp.path());
+        let workspace = crate::test_util::workspace_under(&tmp.path().join("worktrees"));
+        let linked = add_worktree(&project, "linked");
+        let inside = linked.join("nested");
+        std::fs::create_dir(&inside).unwrap();
+
+        let make = |from: &Path, branch: &str| {
+            jobs::on_this_thread(|b| {
+                let req =
+                    CreateRequest::temporary(from, branch.into(), &workspace, git(), b).unwrap();
+                assert_eq!(req.project_root(), project.canonicalize().unwrap());
+                create(&req, &[] as &[FakeHook], |_| {}, b)
+            })
+            .expect("create succeeds")
+        };
+
+        let first = make(&inside, "scratch");
+        assert_eq!(temporary::origin_name(&first).unwrap(), linked.file_name().unwrap());
+        assert_eq!(first.file_name().unwrap(), "scratch");
+
+        // Made from a temporary worktree, it files under that one's origin.
+        let second = make(&first, "scratch-two");
+        assert_eq!(temporary::origin_name(&second).unwrap(), linked.file_name().unwrap());
+    }
+
+    #[test]
+    fn removing_a_temporary_worktree_takes_its_branch_and_refuses_unsaved_work() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = clone_with_origin(tmp.path());
+        let workspace = crate::test_util::workspace_under(&tmp.path().join("worktrees"));
+        let path = jobs::on_this_thread(|b| {
+            let req =
+                CreateRequest::temporary(&project, "scratch".into(), &workspace, git(), b).unwrap();
+            create(&req, &[] as &[FakeHook], |_| {}, b)
+        })
+        .expect("create succeeds");
+        std::fs::write(path.join("unsaved"), "x").unwrap();
+        let hook = FakeHook::silent();
+        let remove = |force: bool| {
+            jobs::on_this_thread(|b| remove_temporary(&git(), &path, force, &[hook.clone()][..], b))
+        };
+
+        let refused = remove(false);
+        assert!(
+            matches!(&refused, Err(WorktreeError::Vcs(VcsError::Unsaved { .. }))),
+            "{refused:?}"
+        );
+        assert!(path.is_dir());
+
+        let main = remove(true).expect("forced removal succeeds");
+        assert_eq!(main, project.canonicalize().unwrap());
+        assert!(!path.exists());
+        assert!(!branch_exists(&project, "scratch"));
+        assert_eq!(hook.events().len(), 1, "the removal hooks run as for any removal");
+    }
+
+    /// The create leaves these behind, so a refusal over them would meet every
+    /// agent on its first removal.
+    #[test]
+    fn what_the_create_added_does_not_count_as_unsaved_work() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = clone_with_origin(tmp.path());
+        std::fs::write(project.join("CLAUDE.local.md"), "notes").unwrap();
+        let workspace = crate::test_util::workspace_under(&tmp.path().join("worktrees"));
+        let make = |branch: &str| {
+            jobs::on_this_thread(|b| {
+                let req = CreateRequest::temporary(&project, branch.into(), &workspace, git(), b)?;
+                create(&req, &[] as &[FakeHook], |_| {}, b)
+            })
+            .expect("create succeeds")
+        };
+        let remove = |path: &Path| {
+            jobs::on_this_thread(|b| remove_temporary(&git(), path, false, &[] as &[FakeHook], b))
+        };
+
+        let path = make("copied-only");
+        assert!(path.join("CLAUDE.local.md").is_file(), "the create copied it");
+        remove(&path).expect("nothing here is the agent's work");
+        assert!(!path.exists());
+
+        // Anything beside those files is still the agent's to decide about.
+        let path = make("with-work");
+        std::fs::write(path.join("unsaved"), "x").unwrap();
+        let refused = remove(&path);
+        assert!(
+            matches!(&refused, Err(WorktreeError::Vcs(VcsError::Unsaved { .. }))),
+            "{refused:?}"
+        );
+        assert!(path.is_dir());
+    }
+
+    /// An agent holding this tool must not be able to delete a worktree the
+    /// user relies on, the main checkout above all.
+    #[test]
+    fn only_a_temporary_worktree_can_be_removed_this_way() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = init_repo(&tmp.path().join("repo"));
+        let linked = add_worktree(&repo, "keep");
+        for path in [&repo, &linked] {
+            let result = jobs::on_this_thread(|b| {
+                remove_temporary(&git(), path, true, &[] as &[FakeHook], b)
+            });
+            assert!(matches!(result, Err(WorktreeError::NotTemporary(_))), "{result:?}");
+            assert!(path.is_dir());
+        }
+    }
+
     #[test]
     fn create_hands_the_new_checkout_to_every_hook() {
         let tmp = tempfile::tempdir().unwrap();
@@ -588,6 +787,7 @@ mod tests {
             branch: "hooked".into(),
             base_dir: Some(tmp.path().join("worktrees")),
             vcs: git(),
+            temporary_origin: None,
         };
         let hook = FakeHook::reporting("Linked 1 fake scope");
         let mut steps = Vec::new();
@@ -609,6 +809,7 @@ mod tests {
             branch: "hook-fails".into(),
             base_dir: Some(tmp.path().join("worktrees")),
             vcs: git(),
+            temporary_origin: None,
         };
         let mut steps = Vec::new();
         let result = jobs::on_this_thread(|b| {
@@ -634,6 +835,7 @@ mod tests {
             branch: "topic".into(),
             base_dir: Some(base_dir.clone()),
             vcs: crate::vcs::Vcs::Fake(fake.clone()),
+            temporary_origin: None,
         };
         let result = jobs::on_this_thread(|b| create(&req, &[] as &[FakeHook], |_| {}, b));
         assert!(matches!(result, Err(WorktreeError::Vcs(VcsError::NoRemote { .. }))), "{result:?}");
@@ -652,6 +854,7 @@ mod tests {
             branch: "topic".into(),
             base_dir: Some(tmp.path().to_path_buf()),
             vcs: crate::vcs::Vcs::Fake(fake.clone()),
+            temporary_origin: None,
         };
         let target = jobs::on_this_thread(|b| create(&req, &[hook.clone()][..], |_| {}, b))
             .expect("create succeeds");

@@ -11,10 +11,10 @@ use std::path::Path;
 use crate::projects::Project;
 use crate::session::SessionId;
 use crate::sidebar_focus::{
-    self, FollowTarget, ObservedInputs, Parent, SessionInput, SnapshotBuilder, TreeSnapshot,
-    UiInputs,
+    self, FollowTarget, NodeId, ObservedInputs, Parent, SessionInput, SnapshotBuilder,
+    TreeSnapshot, UiInputs,
 };
-use crate::sidebar_nav::{self, ListedRows, SidebarRow, WorkspaceEntry};
+use crate::sidebar_nav::{self, ListedRows, SidebarRow, TemporaryOwner, WorkspaceEntry};
 use crate::workspace::WorkspaceKey;
 
 /// Everything outside the row list that decides it, borrowed for one check.
@@ -174,9 +174,9 @@ impl SidebarModel {
                     sidebar_nav::previous_project(&self.rows, &c)
                 }
             }),
-            Step::Left => {
-                self.cursor_within().and_then(|c| sidebar_nav::left_target(&self.rows, &c))
-            },
+            Step::Left => self
+                .cursor_within()
+                .and_then(|c| sidebar_nav::left_target(&self.rows, &self.listed, &c)),
         };
         if let Some(row) = target {
             self.set_cursor(row);
@@ -269,63 +269,23 @@ pub(crate) fn build_snapshot(
     skip_worktree: Option<&Path>,
     inputs: ObservedInputs,
 ) -> TreeSnapshot {
-    let mut b = SnapshotBuilder::default();
-    let mut next_row = 0usize;
-    let mut placed = vec![false; live.len()];
-
-    // Consume `rows` in lockstep: a node is projected exactly when it is the
-    // row the projection expects next.
-    let push = |b: &mut SnapshotBuilder, next_row: &mut usize, row: SidebarRow, parent: Parent| {
-        let projected = rows.get(*next_row) == Some(&row);
-        if projected {
-            *next_row += 1;
-        }
-        b.push(row, parent, projected)
-    };
-    let push_workspace = |b: &mut SnapshotBuilder,
-                          next_row: &mut usize,
-                          placed: &mut [bool],
-                          ws: &WorkspaceKey,
-                          parent: Parent| {
-        let entries = listed.get(ws).map_or(&[][..], Vec::as_slice);
-        for entry in entries {
-            push(b, next_row, entry.row(), parent);
-        }
-        // A workspace lists every shell session it has or none of them, and a
-        // session attached to a herdr pane is always listed, so a session
-        // reaching the second arm here belongs to a workspace that listed
-        // nothing at all.  It is running, so the model keeps it; it is drawn
-        // nowhere, so the projection does not.
-        for (i, (w, id)) in live.iter().enumerate() {
-            if w != ws {
-                continue;
-            }
-            placed[i] = true;
-            if !entries.contains(&WorkspaceEntry::Session(*id)) {
-                b.push(SidebarRow::Session(*id), parent, false);
-            }
-        }
+    let mut walk = Walk {
+        b: SnapshotBuilder::default(),
+        next_row: 0,
+        placed: vec![false; live.len()],
+        rows,
+        listed,
+        live,
+        skip_worktree,
     };
 
-    let home_id = push(&mut b, &mut next_row, SidebarRow::Home, Parent::Root);
-    push_workspace(&mut b, &mut next_row, &mut placed, &None, Parent::Node(home_id));
+    let home_id = walk.push(SidebarRow::Home, Parent::Root);
+    walk.workspace(&None, Parent::Node(home_id));
 
     for p in projects {
-        let project_id =
-            push(&mut b, &mut next_row, SidebarRow::Project(p.root.clone()), Parent::Root);
-        for wt in &p.checkouts {
-            if skip_worktree == Some(wt.path.as_path()) {
-                skip_projected_rows(rows, &mut next_row, listed, &wt.path);
-                continue;
-            }
-            let wt_id = push(
-                &mut b,
-                &mut next_row,
-                SidebarRow::Worktree(wt.path.clone()),
-                Parent::Node(project_id),
-            );
-            let ws = Some(wt.path.clone());
-            push_workspace(&mut b, &mut next_row, &mut placed, &ws, Parent::Node(wt_id));
+        let project_id = walk.push(SidebarRow::Project(p.root.clone()), Parent::Root);
+        for wt in p.top_level() {
+            walk.worktree(&wt.path, Parent::Node(project_id));
         }
     }
 
@@ -333,13 +293,83 @@ pub(crate) fn build_snapshot(
     // worktree already treated as gone.  They are running, so they belong in
     // the model; they have no place in the tree, so they are nobody's sibling.
     for (i, (_, id)) in live.iter().enumerate() {
-        if !placed[i] {
-            b.push(SidebarRow::Session(*id), Parent::Detached, false);
+        if !walk.placed[i] {
+            walk.b.push(SidebarRow::Session(*id), Parent::Detached, false);
         }
     }
 
-    debug_assert_eq!(next_row, rows.len(), "every projected row must be in the arena");
-    b.finish(inputs)
+    debug_assert_eq!(walk.next_row, rows.len(), "every projected row must be in the arena");
+    walk.b.finish(inputs)
+}
+
+/// One pass over the tree in projection order.
+struct Walk<'a> {
+    b: SnapshotBuilder,
+    next_row: usize,
+    placed: Vec<bool>,
+    rows: &'a [SidebarRow],
+    listed: &'a ListedRows,
+    live: &'a [(WorkspaceKey, SessionId)],
+    skip_worktree: Option<&'a Path>,
+}
+
+impl Walk<'_> {
+    /// A node is projected exactly when it is the row the projection expects
+    /// next, which is what consuming `rows` in lockstep means.
+    fn push(&mut self, row: SidebarRow, parent: Parent) -> NodeId {
+        let projected = self.rows.get(self.next_row) == Some(&row);
+        if projected {
+            self.next_row += 1;
+        }
+        self.b.push(row, parent, projected)
+    }
+
+    fn worktree(&mut self, path: &Path, parent: Parent) {
+        if self.skip_worktree == Some(path) {
+            skip_projected_rows(self.rows, &mut self.next_row, self.listed, path);
+            return;
+        }
+        let id = self.push(SidebarRow::Worktree(path.to_path_buf()), parent);
+        self.workspace(&Some(path.to_path_buf()), Parent::Node(id));
+    }
+
+    fn workspace(&mut self, ws: &WorkspaceKey, parent: Parent) {
+        let listed = self.listed;
+        let entries = listed.get(ws).map_or(&[][..], Vec::as_slice);
+        // A section follows the session that owns it in the listing.
+        let mut last_session = None;
+        for entry in entries {
+            let WorkspaceEntry::Temporary(section) = entry else {
+                let id = self.push(entry.row(), parent);
+                if entry.session().is_some() {
+                    last_session = Some(id);
+                }
+                continue;
+            };
+            let owner = match section.owner {
+                TemporaryOwner::Session(_) => last_session.map_or(parent, Parent::Node),
+                TemporaryOwner::Checkout(_) => parent,
+            };
+            let section_id = self.push(entry.row(), owner);
+            for path in &section.worktrees {
+                self.worktree(path, Parent::Node(section_id));
+            }
+        }
+        // A workspace lists every shell session it has or none of them, and a
+        // session attached to a herdr pane is always listed, so a session
+        // reaching the second arm here belongs to a workspace that listed
+        // nothing but perhaps a section.  It is running, so the model keeps it;
+        // it is drawn nowhere, so the projection does not.
+        for (i, (w, id)) in self.live.iter().enumerate() {
+            if w != ws {
+                continue;
+            }
+            self.placed[i] = true;
+            if !entries.contains(&WorkspaceEntry::Session(*id)) {
+                self.b.push(SidebarRow::Session(*id), parent, false);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -360,6 +390,7 @@ mod tests {
             active_workspace: None,
             active_branch: None,
             panes_generation: 0,
+            temporary_generation: 0,
         }
     }
 
@@ -447,6 +478,110 @@ mod tests {
         model.pin_cursor(worktree("/gone"));
         model.move_cursor(Step::Last);
         assert_eq!(model.cursor(), Some(&worktree("/a/wt2")));
+    }
+
+    /// One expanded project whose linked checkout holds a session and a shut
+    /// section under it.
+    fn with_section(open: bool) -> (Vec<Project>, ListedRows) {
+        use crate::sidebar_nav::TemporarySection;
+        let mut project = project("/a", true, &["/a/wt1"]);
+        let temporary = PathBuf::from("/x/.temporary/wt1/scratch");
+        let mut wt = project.checkouts[0].clone();
+        wt.path = temporary.clone();
+        project.checkouts.push(wt);
+        let section = TemporarySection {
+            owner: TemporaryOwner::Session(1),
+            open,
+            worktrees: vec![temporary],
+        };
+        let listed = ListedRows::from([(Some(PathBuf::from("/a/wt1")), vec![
+            WorkspaceEntry::Session(1),
+            WorkspaceEntry::Temporary(section),
+            WorkspaceEntry::Session(2),
+        ])]);
+        (vec![project], listed)
+    }
+
+    fn scratch() -> SidebarRow {
+        worktree("/x/.temporary/wt1/scratch")
+    }
+
+    fn filled(projects: &[Project], listed: ListedRows) -> SidebarModel {
+        let mut model = SidebarModel::default();
+        let stale = model.stale_rows(&inputs(projects, ui("", 0))).expect("never built");
+        let rows = sidebar_nav::visible_rows(projects, &listed);
+        model.fill_rows(stale, rows, listed);
+        model
+    }
+
+    #[test]
+    fn a_shut_sections_worktree_is_in_the_model_but_not_the_rows() {
+        let (projects, listed) = with_section(false);
+        let live = [(Some(PathBuf::from("/a/wt1")), 1), (Some(PathBuf::from("/a/wt1")), 2)];
+        let rows = sidebar_nav::visible_rows(&projects, &listed);
+        assert!(!rows.contains(&scratch()));
+
+        let tree = build_snapshot(&projects, &live, &listed, &rows, None, Default::default());
+
+        let id = tree.find(&scratch()).expect("still in the model");
+        assert!(!tree.is_projected(id));
+        // The section hangs off its session, and the worktree off the section.
+        let section = tree.find(&SidebarRow::TemporarySection(TemporaryOwner::Session(1))).unwrap();
+        assert_eq!(tree.parent(id), Parent::Node(section));
+        assert_eq!(tree.parent(section), Parent::Node(tree.find(&SidebarRow::Session(1)).unwrap()));
+    }
+
+    /// Closing the section under the cursor must not read as deleting the row.
+    #[test]
+    fn closing_a_section_climbs_the_cursor_onto_its_header() {
+        let (projects, open) = with_section(true);
+        let mut model = filled(&projects, open);
+        let live = [(Some(PathBuf::from("/a/wt1")), 1), (Some(PathBuf::from("/a/wt1")), 2)];
+        model.set_cursor(scratch());
+        model.reconcile(&projects, &live, None);
+
+        let (_, shut) = with_section(false);
+        let stale =
+            model.stale_rows(&inputs(&projects, UiInputs { temporary_generation: 1, ..ui("", 0) }));
+        let rows = sidebar_nav::visible_rows(&projects, &shut);
+        model.fill_rows(stale.expect("the generation moved"), rows, shut);
+        model.reconcile(&projects, &live, None);
+
+        assert_eq!(model.cursor(), Some(&SidebarRow::TemporarySection(TemporaryOwner::Session(1))));
+    }
+
+    /// The nearest worktree above the second session is the temporary one, and
+    /// the session has nothing to do with it.
+    #[test]
+    fn left_climbs_the_tree_rather_than_the_nearest_row_above() {
+        let (projects, listed) = with_section(true);
+        let mut model = filled(&projects, listed);
+        let section = SidebarRow::TemporarySection(TemporaryOwner::Session(1));
+
+        model.set_cursor(SidebarRow::Session(2));
+        model.move_cursor(Step::Left);
+        assert_eq!(model.cursor(), Some(&worktree("/a/wt1")));
+
+        for (from, to) in [(scratch(), section.clone()), (section, SidebarRow::Session(1))] {
+            model.set_cursor(from);
+            model.move_cursor(Step::Left);
+            assert_eq!(model.cursor(), Some(&to));
+        }
+    }
+
+    #[test]
+    fn a_worktree_being_deleted_in_a_section_keeps_the_rows_below_in_step() {
+        let (projects, listed) = with_section(true);
+        let live = [(Some(PathBuf::from("/a/wt1")), 1), (Some(PathBuf::from("/a/wt1")), 2)];
+        let rows = sidebar_nav::visible_rows(&projects, &listed);
+        let doomed = PathBuf::from("/x/.temporary/wt1/scratch");
+
+        let tree =
+            build_snapshot(&projects, &live, &listed, &rows, Some(&doomed), Default::default());
+
+        assert!(tree.find(&scratch()).is_none());
+        let after = tree.find(&SidebarRow::Session(2)).unwrap();
+        assert!(tree.is_projected(after));
     }
 
     #[test]
