@@ -23,8 +23,9 @@ use serde_json::json;
 #[cfg(unix)]
 use super::protocol::connect;
 use super::protocol::{IpcRequest, IpcResult, SOCKET_ENV, socket_dir, status_json, unlink_socket};
-use super::route::{AppRequest, ConnectionRequest, DeferredRequest, Route};
+use super::route::{AppRequest, ConnectionRequest, DeferredRequest, FrameRequest, Route};
 use crate::repaint::Repaint;
+use crate::temporary;
 use crate::worktree::{self as wt, CreateConfig, CreateRequest, Progress};
 
 /// Absolute path to the running binary. A shell can exec the CLI through it
@@ -224,8 +225,17 @@ fn dispatch(
                 None => Ok(status_json(&Status::default(), Some("version control is disabled"))),
             }
         },
-        Route::Connection(ConnectionRequest::CreateWorktree { project_root, branch }) => {
-            create_worktree(project_root, branch, app_tx, repaint, config)
+        Route::Connection(ConnectionRequest::CreateWorktree {
+            project_root,
+            branch,
+            temporary,
+            session_id,
+        }) => {
+            let owner = session_id.filter(|_| temporary);
+            create_worktree(project_root, branch, temporary, owner, app_tx, repaint, config)
+        },
+        Route::Connection(ConnectionRequest::RemoveWorktree { path, force }) => {
+            remove_worktree(path, force, app_tx, repaint, config)
         },
         Route::App(request) => call_app(request, app_tx, repaint),
     }
@@ -248,6 +258,8 @@ fn call_app(request: AppRequest, app_tx: &Sender<AppCall>, repaint: &impl Repain
 fn create_worktree(
     project_root: PathBuf,
     branch: String,
+    temporary: bool,
+    owner: Option<u64>,
     app_tx: &Sender<AppCall>,
     repaint: &impl Repaint,
     config: &CreateConfig,
@@ -255,7 +267,15 @@ fn create_worktree(
     let vcs = crate::vcs::for_path(&config.vcs, &project_root)
         .ok_or_else(|| VcsError::NotARepository(project_root.clone()).to_string())?;
     vcs.validate_name(&branch).map_err(|e| e.to_string())?;
-    let req = CreateRequest::new(project_root.clone(), None, branch, &config.workspace, vcs);
+    let req = if temporary {
+        jobs::on_this_thread(|blocking| {
+            CreateRequest::temporary(&project_root, branch, &config.workspace, vcs, blocking)
+        })
+        .map_err(|e| e.to_string())?
+    } else {
+        CreateRequest::new(project_root, None, branch, &config.workspace, vcs)
+    };
+    let project_root = req.project_root().to_path_buf();
     let (rx, job) = wt::spawn_create(req, config.hooks.clone(), repaint.clone());
     let outcome = drain_create(&rx, IPC_CREATE_BUDGET);
     // Dropping on every path, including the deadline, is what ends the fetch
@@ -264,14 +284,43 @@ fn create_worktree(
     drop(job);
     match outcome {
         Ok((path, steps)) => {
+            // Ahead of the refresh, so the first listing to hold the worktree
+            // already knows whose it is.  Canonical because discovery reports
+            // the path git resolved, whatever a configured directory spells.
+            if let Some(session_id) = owner {
+                let path = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+                let claim = FrameRequest::ClaimTemporaryWorktree { path, session_id };
+                let _ = call_app(claim.into(), app_tx, repaint);
+            }
             // Best-effort: if the project is in the sidebar, show the new
             // worktree without waiting for a manual refresh.
             let refresh = DeferredRequest::RefreshProject { root: project_root };
             let _ = call_app(refresh.into(), app_tx, repaint);
-            Ok(json!({ "path": path, "steps": steps }))
+            Ok(temporary::created_reply(&path, steps))
         },
         Err(e) => Err(e.to_string()),
     }
+}
+
+/// Removes on this thread rather than through the app, so a session still in
+/// the worktree keeps running, the agent asking included.  Its row stays until
+/// the session ends, the way a checkout removed from outside does.
+fn remove_worktree(
+    path: PathBuf,
+    force: bool,
+    app_tx: &Sender<AppCall>,
+    repaint: &impl Repaint,
+    config: &CreateConfig,
+) -> IpcResult {
+    let vcs = crate::vcs::for_path(&config.vcs, &path)
+        .ok_or_else(|| VcsError::NotARepository(path.clone()).to_string())?;
+    let root = jobs::on_this_thread(|blocking| {
+        wt::remove_temporary(&vcs, &path, force, config.hooks.as_slice(), blocking)
+    })
+    .map_err(|e| e.to_string())?;
+    let refresh = DeferredRequest::RefreshProject { root };
+    let _ = call_app(refresh.into(), app_tx, repaint);
+    Ok(json!({ "removed": path }))
 }
 
 /// Why a create gave the connection no worktree.
@@ -455,7 +504,12 @@ mod tests {
         .expect("listener");
         drop(rx);
 
-        let request = IpcRequest::CreateWorktree { project_root: project, branch: "topic".into() };
+        let request = IpcRequest::CreateWorktree {
+            project_root: project,
+            branch: "topic".into(),
+            temporary: false,
+            session_id: None,
+        };
         let reply = send_request(Some(handle.path()), &request, Duration::from_secs(120))
             .expect("create succeeds");
 

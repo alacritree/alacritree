@@ -73,9 +73,24 @@ pub(crate) enum IpcRequest {
     GitStatus {
         path: PathBuf,
     },
+    /// `temporary` files the worktree in a collapsed sidebar section for its
+    /// maker to remove when done, and `project_root` may then be any path in
+    /// the checkout it is made from. `session_id` is the session making it,
+    /// which the section hangs under.
     CreateWorktree {
         project_root: PathBuf,
         branch: String,
+        #[serde(default)]
+        temporary: bool,
+        #[serde(default)]
+        session_id: Option<u64>,
+    },
+    /// Remove a temporary worktree and its branch. Refuses any other checkout,
+    /// and a tree with unsaved work unless `force` is set.
+    RemoveWorktree {
+        path: PathBuf,
+        #[serde(default)]
+        force: bool,
     },
     /// Every pane the multiplexer integration has detected, whether or not a
     /// session is attached to one.  A caller reaches an unattached pane no

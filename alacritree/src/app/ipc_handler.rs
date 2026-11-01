@@ -296,6 +296,10 @@ impl AlacritreeApp {
                     Ok(json!({ "action": action }))
                 },
             },
+            Req::ClaimTemporaryWorktree { path, session_id } => {
+                self.sidebar.temporary.claim(path, session_id);
+                Ok(Value::Null)
+            },
         }
     }
 

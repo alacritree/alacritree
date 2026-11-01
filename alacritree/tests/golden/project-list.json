@@ -11,19 +11,22 @@
           "branch": "main",
           "is_main": true,
           "name": "main",
-          "path": "<home>/code/project/"
+          "path": "<home>/code/project/",
+          "temporary": false
         },
         {
           "branch": "8e86e75",
           "is_main": false,
           "name": "wt-detached",
-          "path": "<home>/code/wt-detached"
+          "path": "<home>/code/wt-detached",
+          "temporary": false
         },
         {
           "branch": "feature",
           "is_main": false,
           "name": "wt-feature",
-          "path": "<home>/code/wt-feature"
+          "path": "<home>/code/wt-feature",
+          "temporary": false
         }
       ]
     },
@@ -37,7 +40,8 @@
           "branch": null,
           "is_main": true,
           "name": "plain",
-          "path": "<home>/code/plain"
+          "path": "<home>/code/plain",
+          "temporary": false
         }
       ]
     }

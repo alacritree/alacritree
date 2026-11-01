@@ -71,6 +71,7 @@ pub mod startup_log;
 pub mod state;
 pub(crate) mod status_cache;
 pub(crate) mod tasks;
+pub(crate) mod temporary;
 pub(crate) mod terminal_view;
 #[cfg(test)]
 mod test_util;

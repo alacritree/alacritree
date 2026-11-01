@@ -17,11 +17,18 @@ pub(super) struct Sidebar {
     /// The rows and the cursor over them.  Read rows through
     /// `fresh_sidebar_model`, which rebuilds them first when they are stale.
     pub(super) model: SidebarModel,
+    /// Who made each temporary worktree, and which sections are open.
+    pub(super) temporary: temporary::Sections,
 }
 
 impl Sidebar {
     pub(super) fn new(filter: PanelFilter) -> Self {
-        Self { reorder_mode: false, filter, model: SidebarModel::default() }
+        Self {
+            reorder_mode: false,
+            filter,
+            model: SidebarModel::default(),
+            temporary: temporary::Sections::default(),
+        }
     }
 }
 
@@ -91,10 +98,12 @@ impl AlacritreeApp {
             attached_only = listed
                 .iter()
                 .map(|(ws, entries)| {
-                    (
-                        ws.clone(),
-                        entries.iter().filter(|e| e.session().is_some()).cloned().collect(),
-                    )
+                    let kept = entries
+                        .iter()
+                        .filter(|e| !matches!(e, sidebar_nav::WorkspaceEntry::Pane(_)))
+                        .cloned()
+                        .collect();
+                    (ws.clone(), kept)
                 })
                 .collect();
             &attached_only
@@ -113,12 +122,19 @@ impl AlacritreeApp {
                 .map(|p| (p.root.clone(), filter.matches(p.display_name())))
                 .collect()
         };
+        // Opening search with nothing typed yet matches every name, and that
+        // is no reason to spill out the sections that keep these rows shut.
+        let narrowing = !self.sidebar.filter.query().is_empty() || any_toggle;
         let worktree_matches: HashMap<PathBuf, bool> = {
             let filter = &mut self.sidebar.filter;
             self.projects
                 .iter()
                 .flat_map(|p| p.checkouts.iter())
-                .map(|wt| (wt.path.clone(), filter.matches(&wt.name)))
+                .map(|wt| {
+                    let matched = (narrowing || !temporary::is_temporary(&wt.path))
+                        && filter.matches(&wt.name);
+                    (wt.path.clone(), matched)
+                })
                 .collect()
         };
         let live_head = self
@@ -161,6 +177,8 @@ impl AlacritreeApp {
                     .flatten()
                     .map(|entry| {
                         let name = match entry {
+                            // Filtered through its worktrees' names instead.
+                            sidebar_nav::WorkspaceEntry::Temporary(_) => String::new(),
                             sidebar_nav::WorkspaceEntry::Session(id) => self
                                 .sessions
                                 .iter()
@@ -494,16 +512,15 @@ impl AlacritreeApp {
                 // Aggregates apply only while the session list is hidden, as
                 // on the home row.
                 let lists_sessions = WorkspaceRowData::any_session(&rows);
-                let pr = resolve_pr_info(
-                    &mut polled,
-                    &wt.path,
-                    should_poll_pr(pr_enabled, project.expanded, any_pr_toggle),
-                    || {
-                        let branch = pr_status::effective_branch(wt, current_workspace, live_head);
-                        let vcs = project.vcs.as_ref()?;
-                        self.pr_cache.poll(&wt.path, branch, vcs, ctx)
-                    },
-                );
+                // A throwaway branch has no PR to look up, and a `gh` process
+                // per temporary worktree is what these rows should not cost.
+                let polls = !project.nests(wt)
+                    && should_poll_pr(pr_enabled, project.expanded, any_pr_toggle);
+                let pr = resolve_pr_info(&mut polled, &wt.path, polls, || {
+                    let branch = pr_status::effective_branch(wt, current_workspace, live_head);
+                    let vcs = project.vcs.as_ref()?;
+                    self.pr_cache.poll(&wt.path, branch, vcs, ctx)
+                });
                 // Rendered up front: the panel closure borrows `projects` mutably, and
                 // substitution over short strings is microseconds, so no cache is kept.
                 // After `pr` so `$pr` sees this frame's PR number.
@@ -559,6 +576,10 @@ impl AlacritreeApp {
         }
         if let Some((id, workspace, position)) = requests.session_drop.take() {
             self.apply_session_drop(id, workspace, position);
+        }
+        if let Some(owner) = requests.toggle_temporary.take() {
+            let open = self.sidebar.temporary.is_open(&owner);
+            self.sidebar.temporary.set_open(&owner, !open);
         }
         if let Some((root, expanded)) = requests.expand_toggled.take() {
             state::mutate(|s| {
@@ -784,7 +805,9 @@ impl FilterMembership {
                     SidebarRow::Worktree(path) => {
                         membership.worktrees.insert(path.clone());
                     },
-                    SidebarRow::Session(_) | SidebarRow::Pane(_) => {
+                    SidebarRow::Session(_)
+                    | SidebarRow::Pane(_)
+                    | SidebarRow::TemporarySection(_) => {
                         membership.children.insert(row.clone());
                     },
                 }
@@ -822,6 +845,7 @@ struct SidebarRequests {
     refresh: Option<usize>,
     remove: Option<ProjectRemoveState>,
     expand_toggled: Option<(PathBuf, bool)>,
+    toggle_temporary: Option<sidebar_nav::TemporaryOwner>,
     shell_override_changed: Option<PathBuf>,
     label_cleared: Option<PathBuf>,
     rename: Option<RenameState>,
@@ -962,13 +986,23 @@ fn paint_home_group(ui: &mut egui::Ui, paint: SidebarPaint<'_>, requests: &mut S
         requests.spawn_shell = Some(None);
     }
     session_drop_target(ui, paint, action.rect, &None, None, requests);
-    paint_workspace_children(ui, paint, &paint.view.home_rows, &None, requests);
+    paint_workspace_children(ui, paint, None, &paint.view.home_rows, &None, requests);
 }
 
-/// The session and pane rows listed under the workspace `ws`.
+/// A project and its worktrees' views, which a section of temporary worktrees
+/// paints its rows from.  Home has neither, and no section either.
+#[derive(Clone, Copy)]
+struct ProjectPaint<'a> {
+    project: &'a Project,
+    states: &'a [WorktreeView],
+}
+
+/// The session and pane rows listed under the workspace `ws`, with any section
+/// of temporary worktrees among them.
 fn paint_workspace_children(
     ui: &mut egui::Ui,
     paint: SidebarPaint<'_>,
+    project: Option<ProjectPaint<'_>>,
     rows: &[WorkspaceRowData],
     ws: &WorkspaceKey,
     requests: &mut SidebarRequests,
@@ -1015,8 +1049,124 @@ fn paint_workspace_children(
                     requests.attach_pane = Some((ws.clone(), row.key.clone(), row.pane_id.clone()));
                 }
             },
+            WorkspaceRowData::Temporary(row) => {
+                if let Some(project) = project {
+                    paint_temporary_section(ui, paint, project, row, requests);
+                }
+            },
         }
     }
+}
+
+/// A section's header and, while it is open or a filter reached into it, its
+/// worktrees.  The frame's margin is what nests them: every row inside draws
+/// from its own fixed indent, which this shifts along with it.
+fn paint_temporary_section(
+    ui: &mut egui::Ui,
+    paint: SidebarPaint<'_>,
+    project: ProjectPaint<'_>,
+    row: &TemporaryRowData,
+    requests: &mut SidebarRequests,
+) {
+    let view = paint.view;
+    let owner = &row.section.owner;
+    // Past a session row's own indent, or level with one when on a checkout.
+    let left = match owner {
+        sidebar_nav::TemporaryOwner::Session(_) => 40,
+        sidebar_nav::TemporaryOwner::Checkout(_) => 28,
+    };
+    let is_cursor = matches!(
+        &view.cursor_row,
+        Some(SidebarRow::TemporarySection(cursor)) if cursor == owner
+    );
+    let margin = Margin { left, right: 0, top: 0, bottom: 0 };
+    Frame::default().inner_margin(margin).show(ui, |ui| {
+        let scroll = view.scrolls(is_cursor);
+        if temporary_section_row(
+            ui,
+            row,
+            is_cursor,
+            scroll,
+            view.filtering,
+            paint.icons,
+            &view.theme,
+        ) {
+            requests.toggle_temporary = Some(owner.clone());
+        }
+        if !row.section.open && !view.filtering {
+            return;
+        }
+        for path in &row.section.worktrees {
+            if view.filtering && !view.membership.worktrees.contains(path) {
+                continue;
+            }
+            let mut found = project.project.checkouts.iter().zip(project.states);
+            if let Some((wt, state)) = found.find(|(wt, _)| wt.path == *path) {
+                paint_worktree(ui, paint, project, wt, state, requests);
+            }
+        }
+    });
+}
+
+/// The header row: its arrow, its name and how many worktrees it holds, with
+/// the attention mark while it hides one that wants looking at.  Reports a click.
+fn temporary_section_row(
+    ui: &mut egui::Ui,
+    row: &TemporaryRowData,
+    is_cursor: bool,
+    scroll_into_view: bool,
+    filtering: bool,
+    icons: &PaintedIcons,
+    theme: &Theme,
+) -> bool {
+    // Reserve a slot *before* the labels so the hover bg paints beneath them.
+    let bg_idx = ui.painter().add(egui::Shape::Noop);
+    let panel_x = ui.max_rect().x_range();
+    let open = row.section.open || filtering;
+    let (arrow, fallback) = if open {
+        (&icons.project_expanded, DEFAULT_PROJECT_EXPANDED_ICON)
+    } else {
+        (&icons.project_collapsed, DEFAULT_PROJECT_COLLAPSED_ICON)
+    };
+    let mut arrow_clicked = false;
+    let frame = Frame::default().inner_margin(Margin { left: 0, right: 0, top: 3, bottom: 3 });
+    let resp = frame
+        .show(ui, |ui| {
+            row_with_trailing(
+                ui,
+                |ui| {
+                    ui.spacing_mut().item_spacing.x = ICON_CLUSTER_SPACING;
+                    arrow_clicked =
+                        styled_icon_button(ui, arrow, fallback, theme.text_muted, theme).clicked();
+                    let count = row.section.worktrees.len();
+                    let name = format!("Temporary ({count})");
+                    ui.label(RichText::new(name).small().color(theme.text_muted));
+                },
+                |ui| {
+                    if row.attention && !open {
+                        icon_tooltip(
+                            attention_mark(ui, icons, theme),
+                            ATTENTION_HINT,
+                            theme.icon_tooltips,
+                        );
+                    }
+                },
+            );
+        })
+        .response
+        .interact(egui::Sense::click());
+    let resp = icon_tooltip(resp, "temporary worktrees", theme.icon_tooltips);
+    let full_rect = egui::Rect::from_x_y_ranges(panel_x, resp.rect.y_range());
+    if resp.hovered() {
+        ui.painter().set(bg_idx, egui::Shape::rect_filled(full_rect, 0.0, theme.row_hover_bg));
+    }
+    if is_cursor {
+        paint_cursor_outline(ui, full_rect, theme);
+    }
+    if scroll_into_view {
+        ui.scroll_to_rect(full_rect, theme.scroll_align);
+    }
+    arrow_clicked || resp.clicked()
 }
 
 /// The project's own row: its controls, cursor, reorder drop and context menu.
@@ -1305,11 +1455,15 @@ fn paint_worktrees(
     requests: &mut SidebarRequests,
 ) {
     let states = paint.view.projects.get(idx).map_or(&[][..], |p| p.worktrees.as_slice());
+    let owner = ProjectPaint { project, states };
     for (wt, state) in project.checkouts.iter().zip(states) {
+        if project.nests(wt) {
+            continue;
+        }
         if paint.view.filtering && !paint.view.membership.worktrees.contains(&wt.path) {
             continue;
         }
-        paint_worktree(ui, paint, wt, state, requests);
+        paint_worktree(ui, paint, owner, wt, state, requests);
     }
     for (_, branch) in paint.view.creating.iter().filter(|(pi, _)| *pi == idx) {
         creating_row(ui, branch, paint.icons, &paint.view.theme);
@@ -1319,6 +1473,7 @@ fn paint_worktrees(
 fn paint_worktree(
     ui: &mut egui::Ui,
     paint: SidebarPaint<'_>,
+    project: ProjectPaint<'_>,
     wt: &Checkout,
     state: &WorktreeView,
     requests: &mut SidebarRequests,
@@ -1366,7 +1521,7 @@ fn paint_worktree(
     }
     let ws = Some(wt.path.clone());
     session_drop_target(ui, paint, action.rect, &ws, None, requests);
-    paint_workspace_children(ui, paint, &state.rows, &ws, requests);
+    paint_workspace_children(ui, paint, Some(project), &state.rows, &ws, requests);
 }
 
 pub(super) struct HomeAction {
@@ -2187,7 +2342,10 @@ impl Action for action::DeleteSelected {
                         Some(ProjectRemoveState { name: p.display_name().to_string(), root });
                 }
             },
-            Some(SidebarRow::Home) | Some(SidebarRow::Pane(_)) | None => {},
+            Some(SidebarRow::Home)
+            | Some(SidebarRow::Pane(_))
+            | Some(SidebarRow::TemporarySection(_))
+            | None => {},
         }
     }
 }
@@ -2475,6 +2633,13 @@ pub(super) struct SessionRowData {
 pub(super) enum WorkspaceRowData {
     Session(SessionRowData),
     Pane(PaneRowData),
+    Temporary(TemporaryRowData),
+}
+
+/// A section of temporary worktrees, with whether one of them wants attention.
+pub(super) struct TemporaryRowData {
+    pub(super) section: sidebar_nav::TemporarySection,
+    pub(super) attention: bool,
 }
 
 impl WorkspaceRowData {

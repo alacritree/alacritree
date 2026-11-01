@@ -44,6 +44,13 @@ pub(super) fn human(request: &IpcRequest, value: &Value) {
         IpcRequest::GitStatus { .. } => git_status(value),
         IpcRequest::CreateWorktree { .. } => {
             println!("{}", text(&value["path"]));
+            // Stderr, so `path=$(alacritree worktree create ...)` keeps working.
+            if let Some(note) = value["cleanup"].as_str() {
+                eprintln!("{note}");
+            }
+        },
+        IpcRequest::RemoveWorktree { .. } => {
+            println!("removed {}", text(&value["removed"]));
         },
         IpcRequest::RunAction { .. } => {
             println!("ran {}", text(&value["action"]));
@@ -67,7 +74,9 @@ fn project(value: &Value) {
     println!("{} ({})  {}", text(&value["name"]), default_branch, text(&value["root"]));
     for wt in array(&value["worktrees"]) {
         let branch = wt["branch"].as_str().unwrap_or("detached");
-        println!("  {}  {}  {}", text(&wt["name"]), branch, text(&wt["path"]));
+        let temporary =
+            if wt["temporary"].as_bool().unwrap_or(false) { "  (temporary)" } else { "" };
+        println!("  {}  {}  {}{temporary}", text(&wt["name"]), branch, text(&wt["path"]));
     }
 }
 

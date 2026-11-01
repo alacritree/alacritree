@@ -56,6 +56,7 @@ use crate::sidebar_model::{SidebarInputs, SidebarModel, Step};
 use crate::sidebar_nav::{self, SidebarRow, StepTarget};
 use crate::state::{self, PersistedProject};
 use crate::status_cache::StatusCache;
+use crate::temporary;
 use crate::workspace::WorkspaceKey;
 use crate::worktree::{self as wt, CreateRequest, Progress};
 use crate::{
@@ -85,8 +86,8 @@ use modals::{BaseBranchPicker, CreateState, DeleteRequest, ProjectRemoveState, R
 use panes::managed_tooltip;
 use session_list::SessionList;
 use sidebar::{
-    PaintedIcons, PaneRowData, SessionRowData, WorkspaceRowData, any_pr_toggle_active,
-    project_filter_toggles, session_row_name,
+    PaintedIcons, PaneRowData, SessionRowData, TemporaryRowData, WorkspaceRowData,
+    any_pr_toggle_active, project_filter_toggles, session_row_name,
 };
 use widgets::{
     ATTENTION_HINT, ICON_CLUSTER_SPACING, IconHints, ROW_STATUS_ICON_W, RowStatus,
@@ -2115,7 +2116,12 @@ impl AlacritreeApp {
         for project in &self.projects {
             for wt in &project.checkouts {
                 let has_sessions = self.workspace_has_sessions_only(&Some(wt.path.clone()));
-                if worktree_is_switchable(wt, self.liveness.missing(&wt.path), has_sessions) {
+                // A temporary worktree is not somewhere to cycle through
+                // unless something is running in it.
+                let idle_temporary = temporary::is_temporary(&wt.path) && !has_sessions;
+                if !idle_temporary
+                    && worktree_is_switchable(wt, self.liveness.missing(&wt.path), has_sessions)
+                {
                     order.push(Some(wt.path.clone()));
                 }
             }
@@ -2488,6 +2494,10 @@ impl AlacritreeApp {
                 let expanded =
                     self.projects.iter().find(|p| p.root == root).is_some_and(|p| p.expanded);
                 self.set_project_expanded(&root, !expanded);
+            },
+            SidebarRow::TemporarySection(owner) => {
+                let open = self.sidebar.temporary.is_open(owner);
+                self.sidebar.temporary.set_open(owner, !open);
             },
             SidebarRow::Pane(key) => {
                 let key = key.clone();
@@ -3171,6 +3181,12 @@ impl AlacritreeApp {
                 listed.insert(ws, entries);
             }
         }
+        self.sidebar.temporary.list_into(
+            &self.projects,
+            |id| self.sessions.iter().find(|s| s.id == id).map(|s| s.working_directory.clone()),
+            self.current_workspace.as_deref(),
+            &mut listed,
+        );
         listed
     }
 
@@ -3209,6 +3225,15 @@ impl AlacritreeApp {
                     let pane = self.find_pane(key)?;
                     let managed = self.pane_managed(key, pane);
                     Some(WorkspaceRowData::Pane(PaneRowData::new(key.clone(), pane, managed)))
+                },
+                sidebar_nav::WorkspaceEntry::Temporary(section) => {
+                    Some(WorkspaceRowData::Temporary(TemporaryRowData {
+                        attention: section
+                            .worktrees
+                            .iter()
+                            .any(|path| self.workspace_needs_attention(&Some(path.clone()))),
+                        section: section.clone(),
+                    }))
                 },
             })
             .collect()
@@ -4281,6 +4306,10 @@ fn row_project_root(
         SidebarRow::Project(root) => return Some(root.clone()),
         SidebarRow::Worktree(path) => path.clone(),
         SidebarRow::Session(id) => session_workspace(*id).flatten()?,
+        SidebarRow::TemporarySection(sidebar_nav::TemporaryOwner::Checkout(path)) => path.clone(),
+        SidebarRow::TemporarySection(sidebar_nav::TemporaryOwner::Session(id)) => {
+            session_workspace(*id).flatten()?
+        },
         SidebarRow::Home => return None,
         // Carries a (Side, terminal id) pair, not a workspace or a SessionId,
         // so unlike a session row there is nothing here to resolve against.
@@ -10036,7 +10065,7 @@ mod tests {
             };
             assert_eq!(
                 arena_parent,
-                sidebar_nav::left_target(&rows, row),
+                sidebar_nav::left_target(&rows, &listed, row),
                 "arena parent must agree with the row model for {row:?}"
             );
         }
