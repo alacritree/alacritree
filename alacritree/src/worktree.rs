@@ -680,7 +680,8 @@ mod tests {
             jobs::on_this_thread(|b| {
                 let req =
                     CreateRequest::temporary(from, branch.into(), &workspace, git(), b).unwrap();
-                assert_eq!(req.project_root(), project.canonicalize().unwrap());
+                // Git and canonicalize spell a Windows path differently.
+                assert_eq!(req.project_root().canonicalize().unwrap(), project.canonicalize().unwrap());
                 create(&req, &[] as &[FakeHook], |_| {}, b)
             })
             .expect("create succeeds")
@@ -720,7 +721,7 @@ mod tests {
         assert!(path.is_dir());
 
         let main = remove(true).expect("forced removal succeeds");
-        assert_eq!(main, project.canonicalize().unwrap());
+        assert_eq!(main.canonicalize().unwrap(), project.canonicalize().unwrap());
         assert!(!path.exists());
         assert!(!branch_exists(&project, "scratch"));
         assert_eq!(hook.events().len(), 1, "the removal hooks run as for any removal");
