@@ -338,6 +338,11 @@ fn copy_path(src: &Path, dst: &Path) -> std::io::Result<()> {
         std::fs::create_dir_all(dst)?;
         for entry in std::fs::read_dir(src)? {
             let entry = entry?;
+            // A checkout under a config directory, as `.claude/worktrees/` holds,
+            // is not config, and every new worktree would pay for a whole tree.
+            if entry.path().join(".git").exists() {
+                continue;
+            }
             let child_dst = dst.join(entry.file_name());
             copy_path(&entry.path(), &child_dst)?;
         }
@@ -779,6 +784,22 @@ mod tests {
             assert!(matches!(result, Err(WorktreeError::NotTemporary(_))), "{result:?}");
             assert!(path.is_dir());
         }
+    }
+
+    #[test]
+    fn copying_configs_leaves_a_nested_checkout_behind() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (src, dst) = (tmp.path().join("src"), tmp.path().join("dst"));
+        let nested = src.join(".claude/worktrees/native");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::create_dir_all(&dst).unwrap();
+        std::fs::write(src.join(".claude/settings.json"), "{}").unwrap();
+        std::fs::write(nested.join(".git"), "gitdir: elsewhere").unwrap();
+
+        assert_eq!(copy_llm_configs(&src, &dst), 1);
+
+        assert!(dst.join(".claude/settings.json").is_file());
+        assert!(!dst.join(".claude/worktrees/native").exists());
     }
 
     #[test]
