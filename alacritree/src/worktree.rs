@@ -681,7 +681,10 @@ mod tests {
                 let req =
                     CreateRequest::temporary(from, branch.into(), &workspace, git(), b).unwrap();
                 // Git and canonicalize spell a Windows path differently.
-                assert_eq!(req.project_root().canonicalize().unwrap(), project.canonicalize().unwrap());
+                assert_eq!(
+                    req.project_root().canonicalize().unwrap(),
+                    project.canonicalize().unwrap()
+                );
                 create(&req, &[] as &[FakeHook], |_| {}, b)
             })
             .expect("create succeeds")
