@@ -9,7 +9,9 @@
 //! the reason on stderr and exit 1, since Claude Code then gives the
 //! operation up rather than falling back to its own git.
 
+use std::iter::Peekable;
 use std::path::{Path, PathBuf};
+use std::str::Chars;
 
 use alacritree_common::{jobs, wsl};
 use alacritree_tasks::scope::Harness;
@@ -47,6 +49,8 @@ enum HookError {
     Send(#[from] SendError),
     #[error("alacritree created the worktree but did not say where")]
     NoPath,
+    #[error("alacritree created {}, which a harness inside WSL cannot reach", .0.display())]
+    OutsideDistro(PathBuf),
     #[error("alacritree keeps {}; delete it from the sidebar when it is done", .0.display())]
     Kept(PathBuf),
 }
@@ -105,12 +109,13 @@ fn refuse(error: &HookError) -> i32 {
 }
 
 fn tasks(payload: &AnyPayload, harness: Harness, config: ConfigSource<'_>) -> Option<String> {
-    let cwd = harness_cwd(payload)?;
+    let cwd = harness_cwd(payload);
     let integrations = super::task::configure_tools(config.dir, config.overrides);
     let state_dir = config.dir.map(Path::to_path_buf).or_else(crate::state::config_dir);
     let backend = crate::tasks::backend::Backend::from_config(&integrations);
     let backends = crate::vcs::backends(&integrations);
-    crate::tasks::hook::run(&backend, payload, harness, &cwd, state_dir.as_deref(), &backends)
+    let cwd = cwd.as_deref();
+    crate::tasks::hook::run(&backend, payload, harness, cwd, state_dir.as_deref(), &backends)
 }
 
 /// The deny for a shell command that adds a worktree, or `None` to leave the
@@ -124,9 +129,11 @@ fn guard(payload: &AnyPayload) -> Option<String> {
 /// Create the worktree through a running alacritree, or the offline path
 /// when none is listening, exactly as `alacritree worktree create` would.
 /// The branch is the name Claude Code chose, and the project is the one the
-/// session's cwd belongs to, whichever of its checkouts that is. It is an
-/// ordinary worktree: `claude --worktree` can be work someone comes back to,
-/// and nothing here can tell that from an isolated subagent's.
+/// session's cwd belongs to, whichever of its checkouts that is. A name a linked
+/// checkout already has its branch out under comes back to that checkout, since
+/// `worktree-remove` keeps every worktree and `claude --worktree` can re-enter
+/// one. It is an ordinary worktree: filing a subagent's as temporary, which its
+/// `agent-a<hex>` name would allow, also needs `worktree-remove` to remove it.
 fn create(
     payload: &AnyPayload,
     socket: Option<&Path>,
@@ -141,21 +148,37 @@ fn create(
     let cwd = harness_cwd(payload).ok_or(HookError::Missing(event, "cwd"))?;
     let integrations = super::task::configure_tools(config.dir, config.overrides);
     let backends = crate::vcs::backends(&integrations);
-    let located = jobs::on_this_thread(|b| backends.iter().find_map(|vcs| vcs.locate(&cwd, b)));
-    let main = located.ok_or_else(|| VcsError::NotARepository(cwd.clone()))?.main;
-    let request = IpcRequest::CreateWorktree {
-        project_root: main,
-        branch: name.to_string(),
-        temporary: false,
-        session_id: None,
+    let located =
+        jobs::on_this_thread(|b| backends.iter().find_map(|vcs| Some((vcs, vcs.locate(&cwd, b)?))));
+    let (vcs, located) = located.ok_or_else(|| VcsError::NotARepository(cwd.clone()))?;
+    let main = located.main;
+    let kept = jobs::on_this_thread(|b| vcs.discover(&main, &[], false, b))?
+        .checkouts
+        .into_iter()
+        .find(|c| !c.is_main && !c.gone && c.head.name.as_deref() == Some(name));
+    let path = match kept {
+        Some(checkout) => checkout.path,
+        None => {
+            let request = IpcRequest::CreateWorktree {
+                project_root: main,
+                branch: name.to_string(),
+                temporary: false,
+                session_id: None,
+            };
+            let reply = super::dispatch(&request, &LocalSocket(socket), config)?;
+            // Stdout is the path alone, and a failed checkout hook shows up here.
+            let steps = reply["steps"].as_array().into_iter().flatten();
+            for step in steps.filter_map(serde_json::Value::as_str) {
+                eprintln!("{step}");
+            }
+            PathBuf::from(reply["path"].as_str().ok_or(HookError::NoPath)?)
+        },
     };
-    let reply = super::dispatch(&request, &LocalSocket(socket), config)?;
-    let path = reply["path"].as_str().ok_or(HookError::NoPath)?;
     // A harness inside WSL reads the path in its own form.
-    if linux_cwd(payload) {
-        wsl::windows_to_linux(Path::new(path)).ok_or(HookError::NoPath)
+    if payload.cwd().is_some_and(wsl::is_linux_path_on_windows) {
+        wsl::windows_to_linux(&path).ok_or(HookError::OutsideDistro(path))
     } else {
-        Ok(path.to_string())
+        Ok(path.display().to_string())
     }
 }
 
@@ -177,44 +200,45 @@ fn kept(payload: &AnyPayload) -> HookError {
 fn harness_cwd(payload: &AnyPayload) -> Option<PathBuf> {
     let here = std::env::current_dir().ok();
     match payload.cwd() {
-        Some(cwd) => on_this_host(cwd.to_path_buf(), here),
+        Some(cwd) => wsl::on_this_host(cwd.to_path_buf(), here),
         None => here,
-    }
-}
-
-fn linux_cwd(payload: &AnyPayload) -> bool {
-    cfg!(windows) && payload.cwd().and_then(Path::to_str).is_some_and(|s| s.starts_with('/'))
-}
-
-/// A harness inside WSL reports a Linux cwd, while this Windows process
-/// starts in the same directory's `\\wsl.localhost` form. The distro comes
-/// from there, since WSL passes no variable naming it to Windows processes.
-fn on_this_host(cwd: PathBuf, here: Option<PathBuf>) -> Option<PathBuf> {
-    let linux = cfg!(windows) && cwd.to_str().is_some_and(|s| s.starts_with('/'));
-    if !linux {
-        return Some(cwd);
-    }
-    match here.as_deref().map(wsl::classify) {
-        Some(wsl::Location::Wsl { distro, .. }) => {
-            Some(wsl::linux_to_windows(cwd.to_str()?, &distro))
-        },
-        _ => here,
     }
 }
 
 /// Whether a shell command runs `git worktree add` anywhere in its lists and
 /// pipelines, including behind `sudo`, `env` or a variable assignment. Words
-/// split as a shell splits them, so the phrase inside a quoted argument is
-/// not a call. A script, an alias or a `sh -c` string still gets through:
-/// this catches the call an agent types, not every way to reach git.
+/// split as a shell splits them, so the phrase in a quoted argument, a comment
+/// or a heredoc is not a call. A script, an alias or a `sh -c` string still gets
+/// through: this catches the call an agent types, not every way to reach git.
 fn adds_worktree(command: &str) -> bool {
-    commands(command).iter().any(|words| {
-        words.iter().enumerate().any(|(i, word)| is_git(word) && worktree_add(&words[i + 1..]))
+    commands(command).iter().any(|words| runs_worktree_add(words))
+}
+
+/// Commands that run the command named after them.
+const WRAPPERS: [&str; 8] = ["sudo", "env", "command", "exec", "nohup", "nice", "time", "xargs"];
+
+/// Whether `words` run `git worktree add`, as opposed to mentioning it: git has
+/// to be the command, the first word past any assignments and wrappers.
+fn runs_worktree_add(words: &[String]) -> bool {
+    let is_prefix = |word: &String| {
+        is_assignment(word) || word.starts_with('-') || WRAPPERS.contains(&file_name(word))
+    };
+    let Some(at) = words.iter().position(|word| !is_prefix(word)) else { return false };
+    is_git(&words[at]) && worktree_add(&words[at + 1..])
+}
+
+fn is_assignment(word: &str) -> bool {
+    word.split_once('=').is_some_and(|(name, _)| {
+        !name.is_empty() && name.chars().all(|c| c == '_' || c.is_ascii_alphanumeric())
     })
 }
 
+fn file_name(word: &str) -> &str {
+    word.rsplit(['/', '\\']).next().unwrap_or(word)
+}
+
 fn is_git(word: &str) -> bool {
-    let name = word.rsplit(['/', '\\']).next().unwrap_or(word);
+    let name = file_name(word);
     name == "git" || name.eq_ignore_ascii_case("git.exe")
 }
 
@@ -240,26 +264,76 @@ fn worktree_add(args: &[String]) -> bool {
 /// The words of each simple command in `line`. Quotes and backslashes group
 /// as in a POSIX shell. Every unquoted `;`, `&`, `|`, parenthesis, backtick
 /// or newline ends a command, so `$(git worktree add x)` is a command of its
-/// own.
+/// own, inside double quotes too. A comment and a heredoc's body hold none.
 fn commands(line: &str) -> Vec<Vec<String>> {
     let mut commands = vec![Vec::new()];
     let mut word: Option<String> = None;
     let mut quote = None;
-    let mut chars = line.chars();
+    // What closes each nested command, and the quote to go back to after it.
+    let mut open: Vec<(char, Option<char>)> = Vec::new();
+    let mut heredocs = Vec::new();
+    let mut chars = line.chars().peekable();
+    let end_command = |commands: &mut Vec<Vec<String>>, word: &mut Option<String>| {
+        commands.last_mut().unwrap().extend(word.take());
+        commands.push(Vec::new());
+    };
     while let Some(c) = chars.next() {
         match (quote, c) {
+            (Some('"'), '$') if chars.peek() == Some(&'(') => {
+                chars.next();
+                end_command(&mut commands, &mut word);
+                open.push((')', quote.take()));
+            },
+            (Some('"'), '`') => {
+                end_command(&mut commands, &mut word);
+                open.push(('`', quote.take()));
+            },
             (Some(q), c) if c == q => quote = None,
-            (Some('"'), '\\') => word.get_or_insert_default().extend(chars.next()),
+            (Some('"'), '\\') => match chars.next() {
+                Some('\n') | None => {},
+                Some(next) => {
+                    let word = word.get_or_insert_default();
+                    if !matches!(next, '$' | '`' | '"' | '\\') {
+                        word.push('\\');
+                    }
+                    word.push(next);
+                },
+            },
             (Some(_), c) => word.get_or_insert_default().push(c),
             (None, '\'' | '"') => {
                 quote = Some(c);
                 word.get_or_insert_default();
             },
-            (None, '\\') => word.get_or_insert_default().extend(chars.next()),
-            (None, ';' | '&' | '|' | '(' | ')' | '`' | '\n') => {
-                commands.last_mut().unwrap().extend(word.take());
-                commands.push(Vec::new());
+            (None, '\\') => match chars.next() {
+                Some('\n') | None => {},
+                // No shell user writes `\g`, and it is how a PowerShell path reads.
+                Some(next) if next.is_alphanumeric() => {
+                    word.get_or_insert_default().extend(['\\', next]);
+                },
+                Some(next) => word.get_or_insert_default().push(next),
             },
+            (None, '#') if word.is_none() => while chars.next_if(|c| *c != '\n').is_some() {},
+            (None, '<') if chars.peek() == Some(&'<') => {
+                chars.next();
+                // `<<<` is a here-string, whose word is ordinary data.
+                if chars.next_if_eq(&'<').is_none() {
+                    heredocs.push(heredoc_delimiter(&mut chars));
+                }
+            },
+            (None, '\n') => {
+                end_command(&mut commands, &mut word);
+                skip_heredocs(&mut chars, &mut heredocs);
+            },
+            (None, ';' | '&' | '|') => end_command(&mut commands, &mut word),
+            (None, ')' | '`') if open.last().is_some_and(|(closer, _)| *closer == c) => {
+                end_command(&mut commands, &mut word);
+                quote = open.pop().and_then(|(_, quote)| quote);
+            },
+            (None, '(' | '`') => {
+                end_command(&mut commands, &mut word);
+                open.push((if c == '(' { ')' } else { '`' }, None));
+            },
+            (None, ')') => end_command(&mut commands, &mut word),
             (None, c) if c.is_whitespace() => commands.last_mut().unwrap().extend(word.take()),
             (None, c) => word.get_or_insert_default().push(c),
         }
@@ -267,6 +341,36 @@ fn commands(line: &str) -> Vec<Vec<String>> {
     commands.last_mut().unwrap().extend(word);
     commands.retain(|words| !words.is_empty());
     commands
+}
+
+/// What follows a `<<`: the delimiter with any quoting gone, and whether `<<-`
+/// lets the closing line be indented with tabs.
+fn heredoc_delimiter(chars: &mut Peekable<Chars<'_>>) -> (String, bool) {
+    let strip_tabs = chars.next_if_eq(&'-').is_some();
+    while chars.next_if(|c| *c == ' ' || *c == '\t').is_some() {}
+    let mut delimiter = String::new();
+    while let Some(c) =
+        chars.next_if(|c| !c.is_whitespace() && !matches!(c, ';' | '&' | '|' | '(' | ')'))
+    {
+        if !matches!(c, '\'' | '"' | '\\') {
+            delimiter.push(c);
+        }
+    }
+    (delimiter, strip_tabs)
+}
+
+/// Pass the bodies of the heredocs a line just opened.
+fn skip_heredocs(chars: &mut Peekable<Chars<'_>>, heredocs: &mut Vec<(String, bool)>) {
+    for (delimiter, strip_tabs) in heredocs.drain(..) {
+        while chars.peek().is_some() {
+            let line: String = std::iter::from_fn(|| chars.next_if(|c| *c != '\n')).collect();
+            chars.next();
+            let line = if strip_tabs { line.trim_start_matches('\t') } else { &line };
+            if line == delimiter {
+                break;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -308,6 +412,21 @@ mod tests {
             "GIT_DIR=/repo/.git git worktree add x",
             "git -C 'my repo' worktree add x",
             "git worktree add x\n",
+            "env FOO=1 git worktree add x",
+            // A substitution runs inside double quotes too.
+            "dir=\"$(git worktree add x)\"",
+            "echo \"$(git worktree add x)\"",
+            "echo \"`git worktree add y`\"",
+            // An apostrophe in a comment or heredoc opens no quote.
+            "# don't touch this\ngit worktree add x",
+            "cat <<EOF\nit's\nEOF\ngit worktree add x",
+            // A backslash-newline joins lines.
+            "git \\\n  worktree add x",
+            "git -C /repo \\\n  worktree add x",
+            "git worktree \\\n  add x",
+            // A Windows path keeps its separators.
+            "\"C:\\Program Files\\Git\\cmd\\git.exe\" worktree add x",
+            "C:\\Git\\cmd\\git.exe worktree add x",
         ] {
             assert!(adds_worktree(command), "{command:?}");
         }
@@ -324,6 +443,16 @@ mod tests {
             "alacritree worktree create . topic",
             "rg 'worktree add' src",
             "git log -- worktree add",
+            // An argument that only mentions it is not a call.
+            "echo Run git worktree add first",
+            "man git worktree add",
+            "git grep git worktree add",
+            // Nor is a comment, or a heredoc's body.
+            "git status # not git worktree add",
+            "# we avoid git worktree add here\ngit status",
+            "cat > notes.md <<'EOF'\ngit worktree add ../x\nEOF",
+            "cat <<-EOF\n\tgit worktree add x\n\tEOF\ngit status",
+            "git commit -m \"$(cat <<'EOF'\nit's not git worktree add\nEOF\n)\"",
         ] {
             assert!(!adds_worktree(command), "{command:?}");
         }

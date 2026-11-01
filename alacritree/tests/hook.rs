@@ -352,6 +352,38 @@ fn worktree_create_prints_the_path_it_made() {
     assert!(path.join(".git").exists(), "{path:?} is a checkout");
 }
 
+/// `worktree-remove` keeps every worktree, so a `claude --worktree` session
+/// started again under its old name has to get back in.
+#[test]
+fn worktree_create_comes_back_to_a_worktree_it_kept() {
+    let state = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let repo = alacritree_git::test_support::clone_with_origin(work.path());
+    let sandbox = Sandbox { state, _work: work, repo, env: Vec::new() };
+    let socket = sandbox.state.path().join("no-window.sock");
+    let worktree_dir =
+        format!("workspace.worktree_dir='{}'", sandbox.state.path().join("worktrees").display());
+    let args = [
+        "--socket",
+        socket.to_str().unwrap(),
+        "-o",
+        &worktree_dir,
+        "hook",
+        "worktree-create",
+        "--harness",
+        "claude",
+    ];
+    let payload = fixture("claude-worktree-create.json", &sandbox.repo);
+    let first = hook(&sandbox, &args, &payload);
+    assert!(first.status.success(), "{}", String::from_utf8_lossy(&first.stderr));
+    let second = hook(&sandbox, &args, &payload);
+    assert!(second.status.success(), "{}", String::from_utf8_lossy(&second.stderr));
+    assert_eq!(
+        Path::new(String::from_utf8(first.stdout).unwrap().trim_end()).canonicalize().unwrap(),
+        Path::new(String::from_utf8(second.stdout).unwrap().trim_end()).canonicalize().unwrap()
+    );
+}
+
 #[test]
 fn worktree_create_outside_a_repository_fails_with_the_reason() {
     let sandbox = without_task();

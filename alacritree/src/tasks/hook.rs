@@ -85,12 +85,12 @@ fn stop_response(state_dir: &Path, session: &SessionRef) -> Option<String> {
 }
 
 /// `None` means print nothing, which is where every failure lands. `cwd` is
-/// the payload's, already on this host.
+/// the payload's, already on this host, and only the context events read it.
 pub(crate) fn run(
     backend: &impl TaskBackend,
     payload: &AnyPayload,
     harness: Harness,
-    cwd: &Path,
+    cwd: Option<&Path>,
     state_dir: Option<&Path>,
     backends: &[crate::vcs::Vcs],
 ) -> Option<String> {
@@ -105,6 +105,7 @@ pub(crate) fn run(
     if !matches!(view, AnyView::SessionStart(_) | AnyView::UserPromptSubmit(_)) {
         return None;
     }
+    let cwd = cwd?;
     let (place, tasks) = jobs::on_this_thread(|b| {
         let (side, place) = facts::place_for(cwd, backends, b);
         let nodes = visible_nodes(&place, session.as_ref()).into_iter().map(NodeMatch::Exact);
@@ -181,11 +182,11 @@ mod tests {
     }
 
     fn stop_payload(state: &Path) -> Option<String> {
-        let stdin = r#"{"session_id":"k1","cwd":"/nowhere","hook_event_name":"Stop"}"#;
+        let stdin = r#"{"session_id":"k1","hook_event_name":"Stop"}"#;
         let payload =
             AnyPayload::parse_named(pabal::AnyHarness::ClaudeCode, "Stop", stdin).unwrap();
         let backend = FakeBackend::default();
-        run(&backend, &payload, Harness::Claude, Path::new("/nowhere"), Some(state), &[])
+        run(&backend, &payload, Harness::Claude, None, Some(state), &[])
     }
 
     fn agent() -> SessionRef {
