@@ -2495,8 +2495,13 @@ mod tests {
         view.stale = false;
         view.stamp_retry = Instant::now() - RELOAD_EVERY;
         view.last_reload = Some(Instant::now() - RELOAD_EVERY);
+        // Held, or a fast pool lands the read inside the tick and empties
+        // the slot this checks.
+        store.hold_next_stamp();
         view.tick();
-        assert!(view.stamp_job.is_some(), "the next tick reads the stamp");
+        let reading = view.stamp_job.is_some();
+        store.release_stamp();
+        assert!(reading, "the next tick reads the stamp");
     }
 
     /// A listing that returns an error is listed again on the next due tick.
