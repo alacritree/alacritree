@@ -25,16 +25,17 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
+          # Push with the bot PAT so the sync PR runs CI, as in
+          # homebrew-update.yml. The repository does not let GITHUB_TOKEN
+          # create pull requests.
+          token: ${{ secrets.ALACRITREE_BOT_TOKEN }}
           # We rev-parse upstream/master to compare commit ranges, which
           # needs the full history rather than the shallow default.
           fetch-depth: 0
 
       - name: Check for upstream updates
         env:
-          # Keep the credential short-lived and scoped to this repository.
-          # PR writes use REST below because GitHub rejects gh's GraphQL
-          # createPullRequest mutation for this integration token.
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.ALACRITREE_BOT_TOKEN }}
         run: |
           set -euo pipefail
           marker=.github/upstream-sync.toml
@@ -113,7 +114,7 @@ jobs:
           title="chore: sync upstream alacritty marker to ${short}"
 
           # Stay on the REST API: gh pr create uses a GraphQL mutation that
-          # GitHub rejects for the otherwise correctly scoped Actions token.
+          # GitHub has rejected for this workflow's tokens before.
           pr_number=$(gh api --method GET "repos/${GITHUB_REPOSITORY}/pulls" \
             -f state=open \
             -f head="${GITHUB_REPOSITORY_OWNER}:${branch}" \

@@ -73,7 +73,7 @@ jobs:
   # Compile the platform-specific process and notification integrations before
   # a release tag reaches cargo-dist.
   alacritree-macos:
-    runs-on: macos-14
+    runs-on: macos-15
 
     steps:
       - uses: actions/checkout@v6
