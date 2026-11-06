@@ -1,38 +1,19 @@
-//! `alacritree hook <event>`: the one command a harness's hook config calls.
-//! It never fails a turn. A failure leaves out what it would have added and
-//! exits 0, and the only thing it prints is one JSON object for the harness:
-//! context for the model, or at `stop`, one request to keep going when the
-//! agent still holds temporary worktrees.
+//! The context events of `alacritree hook`. `session-start` and
+//! `user-prompt-submit` add to the model's context, and `stop` asks an agent
+//! to keep going when it still holds temporary worktrees. They never fail a
+//! turn: a failure leaves out what it would have added and exits 0, and the
+//! only thing they print is one JSON object for the harness.
 
 use std::path::{Path, PathBuf};
 
-use alacritree_common::{jobs, wsl};
+use alacritree_common::jobs;
 use alacritree_tasks::scope::{GLOBAL, Harness, Place, SessionRef, node, sanitize};
 use alacritree_tasks::{Filter, NodeMatch, Status, Task, TaskBackend, tree};
-use pabal::{AddContext, AnyHarness, AnyPayload, AnyView, Fields};
+use pabal::{AddContext, AnyPayload, AnyView, Fields};
 
 use crate::digest::stable_digest;
 use crate::tasks::facts;
 use crate::temporary;
-
-/// The event a hook config names. It fills in a payload that leaves out
-/// `hook_event_name`, and a payload that sends one wins.
-#[derive(Clone, Copy, Debug, clap::ValueEnum)]
-pub(crate) enum Event {
-    SessionStart,
-    UserPromptSubmit,
-    Stop,
-}
-
-impl Event {
-    fn wire_name(self) -> &'static str {
-        match self {
-            Self::SessionStart => "SessionStart",
-            Self::UserPromptSubmit => "UserPromptSubmit",
-            Self::Stop => "Stop",
-        }
-    }
-}
 
 /// The agent's own session and every scope above it. Other agents' lists
 /// stay out so none picks up another's work.
@@ -103,36 +84,16 @@ fn stop_response(state_dir: &Path, session: &SessionRef) -> Option<String> {
     Some(serde_json::json!({ "decision": "block", "reason": reason }).to_string())
 }
 
-/// A harness inside WSL reports a Linux cwd, while this Windows process
-/// starts in the same directory's `\\wsl.localhost` form. The distro comes
-/// from there, since WSL passes no variable naming it to Windows processes.
-fn on_this_host(cwd: PathBuf, here: Option<PathBuf>) -> Option<PathBuf> {
-    let linux = cfg!(windows) && cwd.to_str().is_some_and(|s| s.starts_with('/'));
-    if !linux {
-        return Some(cwd);
-    }
-    match here.as_deref().map(wsl::classify) {
-        Some(wsl::Location::Wsl { distro, .. }) => {
-            Some(wsl::linux_to_windows(cwd.to_str()?, &distro))
-        },
-        _ => here,
-    }
-}
-
-/// `None` means print nothing, which is where every failure lands.
+/// `None` means print nothing, which is where every failure lands. `cwd` is
+/// the payload's, already on this host, and only the context events read it.
 pub(crate) fn run(
     backend: &impl TaskBackend,
-    event: Event,
+    payload: &AnyPayload,
     harness: Harness,
-    stdin: &str,
+    cwd: Option<&Path>,
     state_dir: Option<&Path>,
     backends: &[crate::vcs::Vcs],
 ) -> Option<String> {
-    let kind = match harness {
-        Harness::Claude => AnyHarness::ClaudeCode,
-        Harness::Codex => AnyHarness::Codex,
-    };
-    let payload = AnyPayload::parse_named(kind, event.wire_name(), stdin).ok()?;
     let view = payload.view();
     let session = payload
         .session_id()
@@ -144,13 +105,9 @@ pub(crate) fn run(
     if !matches!(view, AnyView::SessionStart(_) | AnyView::UserPromptSubmit(_)) {
         return None;
     }
-    let here = std::env::current_dir().ok();
-    let cwd = match payload.cwd() {
-        Some(cwd) => on_this_host(cwd.to_path_buf(), here)?,
-        None => here?,
-    };
+    let cwd = cwd?;
     let (place, tasks) = jobs::on_this_thread(|b| {
-        let (side, place) = facts::place_for(&cwd, backends, b);
+        let (side, place) = facts::place_for(cwd, backends, b);
         let nodes = visible_nodes(&place, session.as_ref()).into_iter().map(NodeMatch::Exact);
         (place, backend.list(&side, &Filter { nodes: nodes.collect() }, b))
     });
@@ -225,9 +182,11 @@ mod tests {
     }
 
     fn stop_payload(state: &Path) -> Option<String> {
-        let stdin = r#"{"session_id":"k1","cwd":"/nowhere","hook_event_name":"Stop"}"#;
+        let stdin = r#"{"session_id":"k1","hook_event_name":"Stop"}"#;
+        let payload =
+            AnyPayload::parse_named(pabal::AnyHarness::ClaudeCode, "Stop", stdin).unwrap();
         let backend = FakeBackend::default();
-        run(&backend, Event::Stop, Harness::Claude, stdin, Some(state), &[])
+        run(&backend, &payload, Harness::Claude, None, Some(state), &[])
     }
 
     fn agent() -> SessionRef {

@@ -120,11 +120,12 @@ impl AlacritreeApp {
         root: PathBuf,
         reply_tx: mpsc::Sender<ipc::protocol::IpcResult>,
     ) {
-        let Some(idx) = self.projects.iter().position(|p| p.root == root) else {
+        let Some(idx) = crate::projects::project_at(&self.projects, &root) else {
             let _ = reply_tx.send(Err(NotAProject(root).to_string()));
             return;
         };
         self.refresh_project(ctx, idx);
+        let root = self.projects[idx].root.clone();
         if let Some(reply_tx) = self.project_refreshes.watch(&root, reply_tx) {
             let _ = reply_tx.send(Ok(project_json(&self.projects[idx])));
         }

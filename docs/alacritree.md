@@ -131,7 +131,7 @@ With the command enabled, the tab turns on without `[integrations.taskwarrior]`,
 
 #### Agent hooks
 
-`alacritree hook <event> --harness <claude|codex>` gives an agent its lists when a session starts, and again before a prompt whenever they changed. It prints one JSON object for the harness to add to the model's context, or nothing, and always exits 0, so a missing `task` never blocks a turn. The agent sees its own session's list and every scope above it, never another agent's.
+`alacritree hook <event> --harness <claude|codex>` is the command an agent's hook config runs. Its `session-start` and `user-prompt-submit` events give an agent its lists when a session starts, and again before a prompt whenever they changed. Each prints one JSON object for the harness to add to the model's context, or nothing, and always exits 0, so a missing `task` never blocks a turn. The agent sees its own session's list and every scope above it, never another agent's.
 
 Claude Code, in `settings.json`:
 
@@ -156,6 +156,38 @@ codex, in `hooks.json` next to its `config.toml`:
 ```
 
 Add `Stop` too and an agent that finishes with [temporary worktrees](#temporary-worktrees) still open is asked about them before its turn ends. It is asked once for each set of them, so one it means to keep is not nagged about at every stop. The command is `alacritree hook stop --harness <claude|codex>`, in the same shape as the two above. Update alacritree before adding it: an older binary rejects `stop` with exit status 2, which Claude Code reads as a request to keep going.
+
+#### Agents' worktrees
+
+Three more events keep the worktrees agents make inside alacritree, so each one gets the [create flow](#creating-a-worktree), shows in the sidebar and runs the [checkout hooks](#checkout-hooks):
+
+- `worktree-create` makes the worktree Claude Code asks for, from `claude --worktree`, the `EnterWorktree` tool or an isolated subagent, the way `alacritree worktree create` does. It goes through the running window, or straight to git when none is listening. The branch is the name Claude Code picked, cut from the project's default branch after a fetch, and stdout is the new worktree's path. On failure it exits 1 with the reason on stderr, and Claude Code gives up instead of running its own `git worktree add`. Every isolated subagent waits on that fetch and leaves a branch and a sidebar row behind. A name whose branch a linked worktree already has comes back to that worktree, so a `--worktree` session can be started again. It makes an ordinary worktree, not a [temporary one](#temporary-worktrees), since a `--worktree` session can be work someone comes back to.
+- `worktree-remove` keeps the worktree. It exits 1 naming the worktree, so Claude Code reports it kept instead of removing it with its own `git worktree remove`. Delete it from the sidebar when it is done.
+- `pre-tool-use` denies a shell command that runs `git worktree add` and tells the agent to run `alacritree worktree create` instead, with `--temporary` for throwaway work. It splits the command the way a shell does, so the phrase in a quoted argument, a comment or a heredoc passes, and so does a command that only mentions it. It catches the call an agent types, not a script or alias that wraps it. Every other call, and any payload it cannot read, goes on to the harness's own permission flow.
+
+The worktree events are Claude Code's own; codex sends none, so it gets the shell check only.
+
+Claude Code, in `settings.json`:
+
+```json
+{
+  "hooks": {
+    "WorktreeCreate": [{ "hooks": [{ "type": "command", "command": "alacritree hook worktree-create --harness claude" }] }],
+    "WorktreeRemove": [{ "hooks": [{ "type": "command", "command": "alacritree hook worktree-remove --harness claude" }] }],
+    "PreToolUse": [{ "matcher": "Bash|PowerShell", "hooks": [{ "type": "command", "command": "alacritree hook pre-tool-use --harness claude" }] }]
+  }
+}
+```
+
+codex, in `hooks.json`:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [{ "hooks": [{ "type": "command", "command": "alacritree hook pre-tool-use --harness codex" }] }]
+  }
+}
+```
 
 Each terminal session has its own background read/write thread, a unique
 `window_id` (so OSC 7 / signal events route correctly), and forwards terminal

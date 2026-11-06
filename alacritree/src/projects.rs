@@ -203,6 +203,15 @@ pub fn project_json(project: &Project) -> Value {
     })
 }
 
+/// The project `root` names: the one rooted there, or failing that the one whose
+/// main checkout is there. A create works from the path git resolved, which can
+/// spell the same directory differently from the root the sidebar stored.
+pub(crate) fn project_at(projects: &[Project], root: &std::path::Path) -> Option<usize> {
+    projects.iter().position(|p| p.root == root).or_else(|| {
+        projects.iter().position(|p| p.checkouts.iter().any(|c| c.is_main && c.path == root))
+    })
+}
+
 /// A root the sidebar holds no project at.
 #[derive(Debug, thiserror::Error)]
 #[error("{} is not a project in the sidebar", .0.display())]
@@ -224,6 +233,20 @@ fn display_name(root: &std::path::Path) -> String {
 mod tests {
     use super::*;
     use alacritree_git::test_support::{add_worktree, init_repo};
+
+    #[test]
+    fn a_project_is_found_by_the_path_git_reports_for_it() {
+        let mut linked = Project::placeholder(PathBuf::from("/link/repo"));
+        linked.checkouts[0].is_main = true;
+        linked.checkouts[0].path = PathBuf::from("/real/repo/");
+        let exact = Project::placeholder(PathBuf::from("/real/other"));
+        let projects = [linked, exact];
+
+        assert_eq!(project_at(&projects, std::path::Path::new("/link/repo")), Some(0));
+        assert_eq!(project_at(&projects, std::path::Path::new("/real/repo")), Some(0));
+        assert_eq!(project_at(&projects, std::path::Path::new("/real/other")), Some(1));
+        assert_eq!(project_at(&projects, std::path::Path::new("/nowhere")), None);
+    }
 
     #[test]
     fn refresh_keeps_worktrees_when_discovery_is_not_authoritative() {

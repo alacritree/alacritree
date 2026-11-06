@@ -89,6 +89,25 @@ pub fn classify(path: &Path) -> Location {
     Location::Wsl { distro: share.to_string_lossy().into_owned(), linux_path }
 }
 
+/// Whether `path` is a Linux path reaching this Windows process, which is how a
+/// harness inside WSL reports its directory through interop.
+pub fn is_linux_path_on_windows(path: &Path) -> bool {
+    cfg!(windows) && path.to_str().is_some_and(|s| s.starts_with('/'))
+}
+
+/// `path` as this process reaches it. A process started from a harness inside
+/// WSL begins in the same directory's `\\wsl.localhost` form, `here`. The distro
+/// comes from there, since WSL passes no variable naming it to Windows processes.
+pub fn on_this_host(path: PathBuf, here: Option<PathBuf>) -> Option<PathBuf> {
+    if !is_linux_path_on_windows(&path) {
+        return Some(path);
+    }
+    match here.as_deref().map(classify) {
+        Some(Location::Wsl { distro, .. }) => Some(linux_to_windows(path.to_str()?, &distro)),
+        _ => here,
+    }
+}
+
 /// Translate a Linux path reported by git inside `distro` to the Windows
 /// path the rest of the app uses: `<automount_root>/<drive>/…` becomes a
 /// drive path, anything else a `\\wsl.localhost\<distro>\…` UNC path.
