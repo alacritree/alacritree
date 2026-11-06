@@ -44,7 +44,7 @@ include = [
 # cross-compiling from a different-arch host doesn't work.
 [dist.github-custom-runners]
 aarch64-unknown-linux-gnu = "ubuntu-24.04-arm"
-aarch64-apple-darwin = "macos-14"
+aarch64-apple-darwin = "macos-15"
 x86_64-apple-darwin = "macos-15-intel"
 
 # eframe (winit + glow), arboard (X11/Wayland clipboard), and the unix
