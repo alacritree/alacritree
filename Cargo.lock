@@ -63,7 +63,6 @@ version = "0.15.0"
 dependencies = [
  "ab_glyph",
  "alacritree_checkout_hooks",
- "alacritree_claude",
  "alacritree_common",
  "alacritree_diff_viewer",
  "alacritree_doppler",
@@ -138,19 +137,6 @@ dependencies = [
  "serde",
  "tempfile",
  "thiserror 2.0.17",
- "toml",
-]
-
-[[package]]
-name = "alacritree_claude"
-version = "0.0.0"
-dependencies = [
- "alacritree_checkout_hooks",
- "alacritree_common",
- "schemars",
- "serde",
- "serde_json",
- "tempfile",
  "toml",
 ]
 
