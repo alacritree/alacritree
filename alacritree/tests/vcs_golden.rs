@@ -114,12 +114,14 @@ fn fixture() -> Fixture {
 /// Temp paths differ per run and per OS, so they become `<home>` and forward
 /// slashes before comparing. Windows may hand out the temp dir as an 8.3
 /// short path while the CLI prints the canonical long one, so both forms are
-/// replaced.
+/// replaced. The canonical form goes first: on macOS it is the temp path
+/// behind `/private`, so replacing the shorter form first would leave
+/// `/private<home>`.
 fn normalize(text: &str, home: &Path) -> String {
     let canonical = home.canonicalize().unwrap();
     let canonical = canonical.display().to_string();
     let mut out = text.to_string();
-    for form in [home.display().to_string(), canonical.trim_start_matches(r"\\?\").to_string()] {
+    for form in [canonical.trim_start_matches(r"\\?\").to_string(), home.display().to_string()] {
         for v in [form.replace('\\', "/"), form.replace('\\', "\\\\"), form] {
             out = out.replace(v.as_str(), "<home>");
         }
