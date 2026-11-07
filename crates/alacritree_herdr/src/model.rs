@@ -86,18 +86,18 @@ impl PollError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alacritree_multiplexer::PaneStatus;
+    use alacritree_multiplexer::AgentStatus;
 
     #[test]
     fn status_label_names_each_variant() {
-        assert_eq!(PaneStatus::Idle.label(), "idle");
-        assert_eq!(PaneStatus::Working.label(), "working");
-        assert_eq!(PaneStatus::Blocked.label(), "blocked");
-        assert_eq!(PaneStatus::Done.label(), "done");
-        assert_eq!(PaneStatus::Unknown.label(), "unknown");
+        assert_eq!(AgentStatus::Idle.label(), "idle");
+        assert_eq!(AgentStatus::Working.label(), "working");
+        assert_eq!(AgentStatus::Blocked.label(), "blocked");
+        assert_eq!(AgentStatus::Done.label(), "done");
+        assert_eq!(AgentStatus::Unknown.label(), "unknown");
     }
 
-    fn agent(id: &str, status: PaneStatus) -> Pane {
+    fn agent(id: &str, status: AgentStatus) -> Pane {
         Pane {
             terminal_id: id.into(),
             pane_id: "w1:p1".into(),
@@ -113,7 +113,7 @@ mod tests {
 
     #[test]
     fn an_attached_agent_yields_no_row() {
-        let agents = vec![agent("t1", PaneStatus::Idle), agent("t2", PaneStatus::Working)];
+        let agents = vec![agent("t1", AgentStatus::Idle), agent("t2", AgentStatus::Working)];
         let claimed = [pane_key(Side::Native, "t1".into())];
         let rows = unattached(&agents, &Side::Native, &claimed);
         assert_eq!(rows.len(), 1);
@@ -122,7 +122,7 @@ mod tests {
 
     #[test]
     fn detaching_brings_the_row_back() {
-        let agents = vec![agent("t1", PaneStatus::Idle)];
+        let agents = vec![agent("t1", AgentStatus::Idle)];
         assert_eq!(unattached(&agents, &Side::Native, &[]).len(), 1);
     }
 
@@ -130,7 +130,7 @@ mod tests {
     /// must not hide the same id on another.
     #[test]
     fn a_claim_on_one_side_does_not_hide_the_other_side() {
-        let agents = vec![agent("t1", PaneStatus::Idle)];
+        let agents = vec![agent("t1", AgentStatus::Idle)];
         let claimed = [pane_key(Side::Wsl("d".into()), "t1".into())];
         assert_eq!(unattached(&agents, &Side::Native, &claimed).len(), 1);
     }

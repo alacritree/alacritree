@@ -19,7 +19,18 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Mutex, OnceLock};
 
 use crate::repaint::Repaint;
-use crate::session::{Session, SessionId};
+use crate::session::SessionId;
+
+/// What one desktop notification says.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Toast {
+    /// Who wants attention, and the name of the session's row.
+    pub title: String,
+    /// What it wants.
+    pub body: String,
+    /// The workspace the session lives in.
+    pub place: String,
+}
 
 /// Channel from notification-worker threads back to the app.  Set once by
 /// `channel`; each worker reads it to deliver the session the user clicked
@@ -50,49 +61,29 @@ pub(crate) fn latest_click(rx: &Receiver<SessionId>) -> Option<SessionId> {
     latest
 }
 
-// Toast bodies `attention` would have posted, for tests that assert what
-// the user would see without a desktop to show it on.
+// Toasts `attention` would have posted, for tests that assert what the user
+// would see without a desktop to show it on.
 #[cfg(test)]
 thread_local! {
-    pub(crate) static TOASTS: std::cell::RefCell<Vec<String>> =
+    pub(crate) static TOASTS: std::cell::RefCell<Vec<Toast>> =
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// Spawn a throwaway thread so the platform notifier's synchronous calls
 /// don't stall the paint loop.  The thread posts the session's id back
-/// through `NOTIFY_TX` when the user clicks the notification.  `body` is an
-/// application's own notification text; without one the toast says where
-/// the session is waiting.
-pub(crate) fn attention(
-    session: &Session<impl Repaint>,
-    repaint: &impl Repaint,
-    body: Option<String>,
-) {
-    let body = body.unwrap_or_else(|| {
-        let where_label = session
-            .working_directory
-            .as_ref()
-            .and_then(|p| p.file_name())
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| session.title.clone());
-        if where_label.is_empty() {
-            "Session is waiting for input".to_string()
-        } else {
-            format!("{where_label} is waiting for input")
-        }
-    });
+/// through `NOTIFY_TX` when the user clicks the notification.
+pub(crate) fn attention(id: SessionId, repaint: &impl Repaint, toast: Toast) {
     #[cfg(test)]
     {
-        let _ = repaint;
-        TOASTS.with_borrow_mut(|bodies| bodies.push(body));
+        let _ = (id, repaint);
+        TOASTS.with_borrow_mut(|toasts| toasts.push(toast));
     }
     #[cfg(not(test))]
     {
-        let id = session.id;
         let repaint = repaint.clone();
         std::thread::Builder::new()
             .name("alacritree-notify".into())
-            .spawn(move || worker(body, id, repaint))
+            .spawn(move || worker(toast, id, repaint))
             .ok();
     }
 }
@@ -110,11 +101,15 @@ pub(crate) fn click(id: SessionId, repaint: &impl Repaint) {
 
 #[cfg(all(unix, not(target_os = "macos")))]
 #[cfg_attr(test, allow(dead_code))]
-fn worker(body: String, id: SessionId, repaint: impl Repaint) {
+fn worker(toast: Toast, id: SessionId, repaint: impl Repaint) {
     // `default` is the action id freedesktop notifiers fire on body-click.
+    // The icon and the desktop entry are the names the packages install them
+    // under, and GNOME takes the app's name and icon from the entry.
     let result = notify_rust::Notification::new()
-        .summary("alacritree")
-        .body(&body)
+        .icon("alacritree")
+        .hint(notify_rust::Hint::DesktopEntry("alacritree".into()))
+        .summary(&toast.title)
+        .body(&format!("{}\n{}", toast.body, toast.place))
         .action("default", "Open")
         .show();
     let handle = match result {
@@ -134,14 +129,14 @@ fn worker(body: String, id: SessionId, repaint: impl Repaint) {
 
 #[cfg(windows)]
 #[cfg_attr(test, allow(dead_code))]
-fn worker(body: String, id: SessionId, repaint: impl Repaint) {
-    use tauri_winrt_notification::Toast;
+fn worker(toast: Toast, id: SessionId, repaint: impl Repaint) {
     // notify-rust doesn't surface WinRT activation, so drive its own backend
     // crate directly.  `show` returns immediately; the WinRT runtime holds
     // the activation handler, so this worker thread can exit right away.
-    let result = Toast::new(Toast::POWERSHELL_APP_ID)
-        .title("alacritree")
-        .text1(&body)
+    let result = tauri_winrt_notification::Toast::new(windows_identity::app_id())
+        .title(&toast.title)
+        .text1(&toast.body)
+        .text2(&toast.place)
         .on_activated(move |_action| {
             click(id, &repaint);
             Ok(())
@@ -154,10 +149,57 @@ fn worker(body: String, id: SessionId, repaint: impl Repaint) {
 
 #[cfg(target_os = "macos")]
 #[cfg_attr(test, allow(dead_code))]
-fn worker(body: String, id: SessionId, _repaint: impl Repaint) {
+fn worker(toast: Toast, id: SessionId, _repaint: impl Repaint) {
     // Clicks come back through the UNUserNotificationCenter delegate that
     // `macos::init` installed, not through this worker.
-    macos::notify(&body, id);
+    macos::notify(&toast.title, &toast.place, &toast.body, id);
+}
+
+/// Windows takes a toast's name and icon from the registry entry of the
+/// AppUserModelID it is posted under. An unpackaged app has no entry until it
+/// writes one, so alacritree writes its own once per run, at startup.
+#[cfg(windows)]
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) mod windows_identity {
+    use std::path::PathBuf;
+    use std::sync::OnceLock;
+
+    use tauri_winrt_notification::Toast;
+    use winreg::RegKey;
+    use winreg::enums::HKEY_CURRENT_USER;
+
+    const APP_ID: &str = "alacritree";
+    const ICON: &[u8] = include_bytes!("../../assets/icon-64.png");
+
+    /// The ID toasts go out under, registered by the first call. Startup makes
+    /// that call, and a later one only reads the result. An unregistered ID
+    /// shows no toast at all, so a failed registration falls back to
+    /// PowerShell's.
+    pub(crate) fn app_id() -> &'static str {
+        static ID: OnceLock<&'static str> = OnceLock::new();
+        ID.get_or_init(|| match register() {
+            Ok(()) => APP_ID,
+            Err(e) => {
+                log::debug!("toast identity registration failed: {e}");
+                Toast::POWERSHELL_APP_ID
+            },
+        })
+    }
+
+    fn register() -> std::io::Result<()> {
+        let local = std::env::var_os("LOCALAPPDATA").ok_or(std::io::ErrorKind::NotFound)?;
+        let dir = PathBuf::from(local).join("alacritree");
+        std::fs::create_dir_all(&dir)?;
+        let icon = dir.join("toast-icon.png");
+        if std::fs::read(&icon).ok().as_deref() != Some(ICON) {
+            std::fs::write(&icon, ICON)?;
+        }
+        let path = format!(r"Software\Classes\AppUserModelId\{APP_ID}");
+        let (key, _) = RegKey::predef(HKEY_CURRENT_USER).create_subkey(path)?;
+        key.set_value("DisplayName", &"alacritree")?;
+        key.set_value("IconUri", &icon.to_string_lossy().into_owned())?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

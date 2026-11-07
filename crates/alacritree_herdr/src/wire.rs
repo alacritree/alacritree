@@ -6,7 +6,7 @@
 
 use serde::Deserialize;
 
-use alacritree_multiplexer::{Pane, PaneStatus};
+use alacritree_multiplexer::{AgentStatus, Pane};
 
 use super::Listing;
 
@@ -38,14 +38,8 @@ pub(super) fn parse_pane_info(value: serde_json::Value) -> Option<Pane> {
 /// herdr's word for an agent's state.  An unrecognised string is `Unknown`, so
 /// a value herdr adds later renders as a plain row instead of dropping the
 /// agent.
-pub(super) fn parse_status(raw: &str) -> PaneStatus {
-    match raw {
-        "idle" => PaneStatus::Idle,
-        "working" => PaneStatus::Working,
-        "blocked" => PaneStatus::Blocked,
-        "done" => PaneStatus::Done,
-        _ => PaneStatus::Unknown,
-    }
+pub(super) fn parse_status(raw: &str) -> AgentStatus {
+    raw.parse().unwrap_or(AgentStatus::Unknown)
 }
 
 /// The `code` from an error envelope on stderr, for deciding whether a
@@ -239,7 +233,7 @@ mod tests {
         assert_eq!(agents[0].terminal_id, "term_65abfc8e300361");
         assert_eq!(agents[0].pane_id, "w5:p1");
         assert_eq!(agents[0].kind.as_deref(), Some("claude"));
-        assert_eq!(agents[0].status, Some(PaneStatus::Idle));
+        assert_eq!(agents[0].status, Some(AgentStatus::Idle));
         assert_eq!(agents[0].foreground_cwd, None);
     }
 
@@ -270,7 +264,7 @@ mod tests {
              "future_field":true}],"type":"agent_list"}}"#;
         let agents = Listing::Agents.parse(reply);
         assert_eq!(agents.len(), 1);
-        assert_eq!(agents[0].status, Some(PaneStatus::Unknown));
+        assert_eq!(agents[0].status, Some(AgentStatus::Unknown));
     }
 
     #[test]
@@ -295,7 +289,7 @@ mod tests {
     fn a_pane_listing_keeps_the_shell_beside_the_agent() {
         let panes = Listing::Panes.parse(PANES);
         assert_eq!(panes.len(), 2);
-        assert_eq!(panes[0].status, Some(PaneStatus::Idle));
+        assert_eq!(panes[0].status, Some(AgentStatus::Idle));
         assert_eq!(panes[0].kind.as_deref(), Some("claude"));
         assert_eq!(panes[1].status, None);
         assert_eq!(panes[1].kind, None);

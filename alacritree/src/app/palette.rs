@@ -171,8 +171,7 @@ impl AlacritreeApp {
         }
         for session in &self.sessions {
             let agent = self.session_pane(session);
-            let activity =
-                pane_backed_activity(session.activity(), self.session_pane_status(session));
+            let activity = self.session_activity(session);
             let name = session_row_name(&session.title, activity, agent);
             if let Some(key) = session.pane_key.as_ref() {
                 let multiplexer = self.multiplexers.get(key.multiplexer);
@@ -365,6 +364,7 @@ impl AlacritreeApp {
                         done: session.done,
                         activity: self.session_activity(session),
                         managed: managed.as_ref(),
+                        program: session.program_status(),
                     })
                 },
                 PaletteAction::AttachPane(attach) => {
@@ -1047,7 +1047,7 @@ mod tests {
     #[test]
     fn specific_herdr_titles_keep_workspace_and_status_separate() {
         let agent = Pane {
-            status: Some(PaneStatus::Working),
+            status: Some(AgentStatus::Working),
             ..titled(Some("claude"), Some("fix the wrap bug"))
         };
         let content = pane_palette_content(
@@ -1144,8 +1144,10 @@ mod tests {
             cwd: Some("~/.local/share/chezmoi".into()),
             ..titled(Some("codex"), Some("~/.local/share/chezmoi"))
         };
-        let panes =
-            [chezmoi("t1", "w7:p1", PaneStatus::Working), chezmoi("t2", "w7:p3", PaneStatus::Idle)];
+        let panes = [
+            chezmoi("t1", "w7:p1", AgentStatus::Working),
+            chezmoi("t2", "w7:p3", AgentStatus::Idle),
+        ];
         let side = Side::Wsl("kali-linux".into());
         let mut items = Vec::new();
         for agent in &panes {

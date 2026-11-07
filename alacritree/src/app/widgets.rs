@@ -242,6 +242,9 @@ fn default_mark(
         ShownState::Blocked => (Some(DEFAULT_BLOCKED_SYMBOL.as_str()), colors.blocked, false),
         ShownState::Done if dots => (Some(DEFAULT_FILLED_MARK.as_str()), colors.done, false),
         ShownState::Done => (Some(DEFAULT_DONE_SYMBOL.as_str()), colors.done, false),
+        ShownState::Error if dots => (Some(DEFAULT_FILLED_MARK.as_str()), colors.error, false),
+        // ASCII and bold for the same reasons as unknown's `?` below.
+        ShownState::Error => (Some("!"), colors.error, true),
         ShownState::Unknown if dots => (Some(DEFAULT_HOLLOW_MARK.as_str()), colors.unknown, false),
         // ASCII, so every UI font draws it and the baked face need not.
         // Bold, since a thin `?` reads as a speck even at the circle's size.
@@ -256,6 +259,7 @@ fn state_icon(state: ShownState, icons: &Icons<Color32>) -> &IconStyle<Color32> 
         ShownState::Working => &icons.agent_working,
         ShownState::Pinged => &icons.attention,
         ShownState::Done => &icons.agent_done,
+        ShownState::Error => &icons.agent_error,
         ShownState::Blocked => &icons.agent_blocked,
     }
 }
@@ -293,7 +297,10 @@ fn resolve_mark<'a>(
 fn sized_to_the_circle(state: ShownState, icons: &Icons<Color32>, theme: &Theme) -> bool {
     let style = state_icon(state, icons);
     theme.status_indicators == StatusIndicators::Symbols
-        && matches!(state, ShownState::Blocked | ShownState::Done | ShownState::Unknown)
+        && matches!(
+            state,
+            ShownState::Blocked | ShownState::Done | ShownState::Error | ShownState::Unknown
+        )
         && style.glyph.as_deref().is_none_or(|g| g.trim().is_empty())
         && style.size.is_none()
 }
@@ -577,12 +584,13 @@ pub(super) fn agent_hint(state: ShownState, name: Option<&str>) -> String {
         ShownState::Idle => format!("{name} is running"),
         ShownState::Working => format!("{name} is working"),
         ShownState::Done => format!("{name} is done"),
+        ShownState::Error => format!("{name} failed"),
         ShownState::Blocked => format!("{name} is waiting for you"),
     }
 }
 
 /// What a row knows about its own state.  Grouped rather than passed loose
-/// because the four answer one question between them, and the slot draws
+/// because the fields answer one question between them, and the slot draws
 /// whichever ranks highest.
 #[derive(Clone, Copy)]
 pub(super) struct RowStatus<'a> {
@@ -593,12 +601,14 @@ pub(super) struct RowStatus<'a> {
     /// The live reading, with a multiplexer's status already folded in.
     pub(super) activity: SessionActivity,
     pub(super) managed: Option<&'a Managed>,
+    /// The program's own OSC 7501 report, which outranks the rest.
+    pub(super) program: Option<AgentStatus>,
 }
 
 impl RowStatus<'_> {
     /// A row with nothing to report beyond its live reading.
     pub(super) fn live(activity: SessionActivity) -> Self {
-        Self { pinged: false, done: false, activity, managed: None }
+        Self { pinged: false, done: false, activity, managed: None, program: None }
     }
 }
 
@@ -611,8 +621,12 @@ impl RowStatus<'_> {
 /// multiplexer when the mark is the state it reported.  `None` covers a
 /// plain shell with nothing latched.
 pub(super) fn session_status_mark(status: &RowStatus<'_>) -> Option<(ShownState, String)> {
+    if let Some(program) = status.program {
+        let state = ShownState::reported(program, status.pinged);
+        return Some((state, agent_hint(state, status.activity.name())));
+    }
     let pane_status = status.managed.and_then(|managed| managed.status);
-    let pane_done = pane_status == Some(PaneStatus::Done);
+    let pane_done = pane_status == Some(AgentStatus::Done);
     let state = ShownState::of(status.activity.live(), status.done || pane_done, status.pinged)?;
     let hint = match (status.managed, pane_status) {
         (Some(managed), Some(reported)) if ShownState::from(reported) == state => {
@@ -628,14 +642,15 @@ mod tests {
     use super::*;
     use crate::test_util::{listed_agent, managed};
     use alacritree_common::side::Side;
-    use alacritree_multiplexer::{Pane, PaneStatus};
+    use alacritree_multiplexer::{AgentStatus, Pane};
 
-    const EVERY_STATE: [ShownState; 6] = [
+    const EVERY_STATE: [ShownState; 7] = [
         ShownState::Unknown,
         ShownState::Idle,
         ShownState::Working,
         ShownState::Pinged,
         ShownState::Done,
+        ShownState::Error,
         ShownState::Blocked,
     ];
 
@@ -680,6 +695,7 @@ mod tests {
         assert_eq!(glyph(ShownState::Pinged), filled);
         assert_eq!(glyph(ShownState::Blocked), filled);
         assert_eq!(glyph(ShownState::Done), filled);
+        assert_eq!(glyph(ShownState::Error), filled);
         assert_eq!(glyph(ShownState::Working), None);
 
         let theme = theme_with(StatusIndicators::Dots);
@@ -702,6 +718,7 @@ mod tests {
         let color = |state| resolve_mark(state, &icons, &theme).2;
         assert_eq!(color(ShownState::Blocked), theme.state_colors.blocked);
         assert_eq!(color(ShownState::Done), theme.state_colors.done);
+        assert_eq!(color(ShownState::Error), theme.state_colors.error);
         assert_eq!(color(ShownState::Idle), theme.state_colors.idle);
         assert_eq!(color(ShownState::Unknown), theme.state_colors.unknown);
         assert_eq!(color(ShownState::Working), theme.accent);
@@ -755,7 +772,7 @@ mod tests {
     /// disagree about what a pane is doing.
     #[test]
     fn session_status_mark_matches_the_sidebar_for_a_pane_backed_session() {
-        let agent = Pane { status: Some(PaneStatus::Working), ..listed_agent(Some("claude")) };
+        let agent = Pane { status: Some(AgentStatus::Working), ..listed_agent(Some("claude")) };
         let managed = managed(&agent, &Side::Native, false);
         let activity = SessionActivity::agent(Some("claude"), LiveState::Working);
         let status = RowStatus { managed: Some(&managed), ..RowStatus::live(activity) };
@@ -769,13 +786,36 @@ mod tests {
     /// shows done with no latch of alacritree's own.
     #[test]
     fn a_pane_reporting_done_shows_done() {
-        let agent = Pane { status: Some(PaneStatus::Done), ..listed_agent(Some("claude")) };
+        let agent = Pane { status: Some(AgentStatus::Done), ..listed_agent(Some("claude")) };
         let managed = managed(&agent, &Side::Native, false);
         let activity = SessionActivity::agent(Some("claude"), LiveState::Idle);
         let status = RowStatus { managed: Some(&managed), ..RowStatus::live(activity) };
         let (mark, hint) = session_status_mark(&status).unwrap();
         assert_eq!(mark, ShownState::Done);
         assert_eq!(hint, format!("{} says done", managed.multiplexer));
+    }
+
+    /// The program's own report outranks what the multiplexer says and the
+    /// `done` latch, and a ping still shows over a quiet report.
+    #[test]
+    fn a_program_report_outranks_the_pane_and_the_done_latch() {
+        let agent = Pane { status: Some(AgentStatus::Blocked), ..listed_agent(Some("claude")) };
+        let managed = managed(&agent, &Side::Native, false);
+        let activity = SessionActivity::agent(Some("claude"), LiveState::Idle);
+        let reported = |program, pinged| RowStatus {
+            pinged,
+            done: true,
+            managed: Some(&managed),
+            program: Some(program),
+            ..RowStatus::live(activity)
+        };
+        let mark = |status: RowStatus<'_>| session_status_mark(&status).unwrap();
+        assert_eq!(mark(reported(AgentStatus::Working, false)).0, ShownState::Working);
+        assert_eq!(mark(reported(AgentStatus::Idle, true)).0, ShownState::Pinged);
+        assert_eq!(
+            mark(reported(AgentStatus::Error, true)),
+            (ShownState::Error, "claude failed".to_owned())
+        );
     }
 
     #[test]

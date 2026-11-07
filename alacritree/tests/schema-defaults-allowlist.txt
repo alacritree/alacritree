@@ -34,6 +34,7 @@ RawIconStyle.glyph
 RawIconStyle.size
 RawIcons.agent_blocked
 RawIcons.agent_done
+RawIcons.agent_error
 RawIcons.agent_idle
 RawIcons.agent_unknown
 RawIcons.agent_working

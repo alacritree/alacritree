@@ -131,12 +131,13 @@ pub(crate) fn init(ctx: egui::Context) {
 
 /// Post one attention toast.  Thread-safe; a no-op until `init` ran with a
 /// bundle identifier present.
-pub(super) fn notify(body: &str, id: SessionId) {
+pub(super) fn notify(title: &str, subtitle: &str, body: &str, id: SessionId) {
     if !matches!(STATE.get(), Some(Some(_))) {
         return;
     }
     let content = UNMutableNotificationContent::new();
-    content.setTitle(&NSString::from_str("alacritree"));
+    content.setTitle(&NSString::from_str(title));
+    content.setSubtitle(&NSString::from_str(subtitle));
     content.setBody(&NSString::from_str(body));
     content.setSound(Some(&UNNotificationSound::defaultSound()));
     let key = NSString::from_str(SESSION_ID_KEY);

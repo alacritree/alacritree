@@ -6,7 +6,7 @@ use std::sync::OnceLock;
 
 use alacritree_common::side::Side;
 use alacritree_multiplexer::{
-    Managed, MultiplexerKind, MultiplexerSession, Pane, PaneKey, PaneStatus, Scripted,
+    AgentStatus, Managed, MultiplexerKind, MultiplexerSession, Pane, PaneKey, Scripted,
 };
 
 use crate::config::IntegrationsConfig;
@@ -40,7 +40,7 @@ pub(crate) fn listed_agent(kind: Option<&str>) -> Pane {
         tab_id: Some("w5:t1".into()),
         kind: kind.map(String::from),
         title: None,
-        status: Some(PaneStatus::Idle),
+        status: Some(AgentStatus::Idle),
         focused: false,
         cwd: None,
         foreground_cwd: None,

@@ -68,6 +68,17 @@ impl ProbeHandle {
         });
     }
 
+    /// Pretend the probe just recognized `agent` in the foreground.
+    #[cfg(test)]
+    pub(crate) fn force_agent_for_test(&self, agent: &'static str) {
+        self.cache.set(AgentCache {
+            polled_at: Some(Instant::now()),
+            agent_name: Some(agent),
+            answered: true,
+            ..AgentCache::default()
+        });
+    }
+
     pub(crate) fn signals(&self) -> Signals {
         let cached = self.cache.get();
         if cached.polled_at.is_some_and(|at| at.elapsed() < AGENT_CACHE_TTL) {

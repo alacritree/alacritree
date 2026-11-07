@@ -112,6 +112,7 @@ pub struct Graphics {
     payload: Vec<u8>,
     cell: CellSize,
     waker: Option<Waker>,
+    reset_hook: Option<Waker>,
     /// Decodes finished, shared with the jobs that finish them.
     ready: Arc<AtomicU64>,
     /// Moves when the active screen or the cell size changes.
@@ -132,6 +133,7 @@ impl Default for Graphics {
             payload: Vec::new(),
             cell: CellSize::new(1, 1),
             waker: None,
+            reset_hook: None,
             ready: Arc::default(),
             epoch: 0,
             visible: Vec::new(),
@@ -162,6 +164,12 @@ impl Graphics {
     /// the pane should draw it.
     pub fn set_waker(&mut self, waker: impl Fn() + Send + Sync + 'static) {
         self.waker = Some(Arc::new(waker));
+    }
+
+    /// Set what runs, inside the parse, when the terminal does a full reset
+    /// (RIS). The terminal tells nothing else about one.
+    pub fn set_reset_hook(&mut self, hook: impl Fn() + Send + Sync + 'static) {
+        self.reset_hook = Some(Arc::new(hook));
     }
 
     /// Set where the files a client names are, for a client that sees
@@ -389,6 +397,9 @@ impl Graphics {
         self.main.clear(false);
         self.alt.clear(true);
         self.epoch += 1;
+        if let Some(hook) = &self.reset_hook {
+            hook();
+        }
     }
 
     /// The grid was resized. When the column count held, each screen's

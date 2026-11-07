@@ -20,8 +20,8 @@ use crate::model::{
     ViewStep,
 };
 use crate::{
-    CreatedPane, Launch, MultiplexerKind, MultiplexerSession, Pane, PaneError, PaneKey, PaneStatus,
-    PaneTarget, SessionId, Side,
+    AgentStatus, CreatedPane, Launch, MultiplexerKind, MultiplexerSession, Pane, PaneError,
+    PaneKey, PaneTarget, SessionId, Side,
 };
 
 /// An attach this adapter was asked for and has not answered yet.
@@ -175,7 +175,7 @@ impl Scripted {
 /// Spelling a pane for a test.  Every field a multiplexer reports is public,
 /// so these only exist to keep a pane one expression at the call site.
 impl Pane {
-    pub fn with_agent(mut self, kind: &str, status: PaneStatus) -> Self {
+    pub fn with_agent(mut self, kind: &str, status: AgentStatus) -> Self {
         self.kind = Some(kind.to_string());
         self.status = Some(status);
         self

@@ -290,13 +290,8 @@ process opens a shell in one, and after it removes one. Opening covers
 worktrees made outside alacritree, such as a plain `git worktree add`. An
 opening hook runs again after a restart, so it must be safe to repeat.
 
-The built-in hooks run first, in this order, then your own:
+The built-in hooks run first, then your own:
 
-- **Claude Code.** A new worktree gets `preferredNotifChannel: terminal_bell`
-  in `.claude/settings.local.json`, so Claude Code rings the terminal bell
-  when it waits on input and the sidebar flags the session. Every other key in
-  the file is kept. Opening a worktree made elsewhere leaves its settings
-  alone. Turn it off with `[integrations.claude] terminal_bell = false`.
 - **Doppler.** When the main checkout has `doppler setup` scopes, a new or
   opened worktree gets the same scopes, and a removed one gives them back.
   Without this, `doppler run` in a worktree fails with "You must specify a
@@ -800,9 +795,10 @@ Persistent files written by Alacritree:
   sidebar visibility.
 - `$XDG_CONFIG_HOME/alacritree/scratchpads/*.md` holds one persistent Markdown
   scratchpad per workspace. Worktree deletion does not remove these notes.
-- `<worktree>/.claude/settings.local.json` is touched only during worktree
-  creation, and only to set `preferredNotifChannel = "terminal_bell"`, unless
-  `[integrations.claude] terminal_bell` is off.
+- On Windows, with `[ui] notifications` on, startup writes the
+  `HKCU\Software\Classes\AppUserModelId\alacritree` key and
+  `%LOCALAPPDATA%\alacritree\toast-icon.png`, so toasts carry alacritree's
+  name and icon.
 
 No telemetry, no analytics, no background network traffic.
 

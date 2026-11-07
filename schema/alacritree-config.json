@@ -254,17 +254,6 @@
       },
       "type": "object"
     },
-    "RawClaude": {
-      "description": "`[integrations.claude]`.",
-      "properties": {
-        "terminal_bell": {
-          "default": true,
-          "description": "Set `preferredNotifChannel` to `terminal_bell` in each new worktree's\n`.claude/settings.local.json`, so Claude Code rings the bell when it\nwaits on input. Other keys in the file are kept.",
-          "type": "boolean"
-        }
-      },
-      "type": "object"
-    },
     "RawColors": {
       "properties": {
         "bright": {
@@ -946,6 +935,14 @@
           ],
           "description": "An agent that finished a turn while nobody was looking.  Unset follows\n`[ui] status_indicators`: `⬤` for dots, `✓` for symbols."
         },
+        "agent_error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawIconStyle"
+            }
+          ],
+          "description": "A program that reported over OSC 7501 that it failed. Unset follows\n`[ui] status_indicators`: `⬤` for dots, `!` for symbols."
+        },
         "agent_idle": {
           "anyOf": [
             {
@@ -1129,10 +1126,6 @@
         "checkout_hooks": {
           "$ref": "#/$defs/RawCheckoutHooks",
           "description": "Programs to run when a worktree is created, first opened, or removed."
-        },
-        "claude": {
-          "$ref": "#/$defs/RawClaude",
-          "description": "Claude Code settings written into each new worktree."
         },
         "delta": {
           "$ref": "#/$defs/RawDelta",
@@ -2023,7 +2016,7 @@
         },
         "notifications": {
           "default": true,
-          "description": "Post a desktop notification when a hidden session rings the bell;\nclicking it focuses that session.",
+          "description": "Post a desktop notification when a hidden session wants attention,\nsuch as a bell or a program that reports it waits on you; clicking\nit focuses that session.",
           "type": "boolean"
         },
         "paste": {

@@ -191,12 +191,6 @@ One hook: the program to run, and its arguments for each worktree event.
 - `path` (string): The program to run on Windows or natively. A bare name is looked up on PATH.
 - `wsl_path` (string, default `""`): The program to run inside a WSL distro for a worktree there, as written. Empty looks up the file name of `path`, without directory or extension, through the distro's login shell, and a distro where that finds nothing skips the hook. A Windows `path` is never run there.
 
-### `[integrations.claude]`
-
-Claude Code settings written into each new worktree.
-
-- `terminal_bell` (boolean, default `true`): Set `preferredNotifChannel` to `terminal_bell` in each new worktree's `.claude/settings.local.json`, so Claude Code rings the bell when it waits on input. Other keys in the file are kept.
-
 ### `[integrations.delta]`
 
 The pager the delta diff viewer runs.
@@ -385,7 +379,7 @@ alacritree's own presentation: sidebar colors, icons, tooltips, shell profiles, 
 - `hold_exited_sessions` ("never" | "on_error" | "always", default `"never"`): Whether a session whose child has exited stays on screen instead of closing with it: "never" | "on_error" | "always". A held session writes one line into its own grid naming the key that closes it. A herdr attach that was refused is held whatever this says, since its refusal message is the only report of what happened.
 - `icon_tooltips` (boolean, default `true`): Whether a sidebar icon explains itself on hover.
 - `last_session_close` ("respawn" | "navigate" | "ring_global" | "ring_project", default `"respawn"`): What happens when the on-screen workspace stops having sessions, whether a close or a worktree deletion took the last one: "respawn" | "navigate" | "ring_global" | "ring_project".
-- `notifications` (boolean, default `true`): Post a desktop notification when a hidden session rings the bell; clicking it focuses that session.
+- `notifications` (boolean, default `true`): Post a desktop notification when a hidden session wants attention, such as a bell or a program that reports it waits on you; clicking it focuses that session.
 - `pr_status` (boolean): Deprecated. This value applies only while `[integrations.gh] pr_status` is omitted. Remove it after migration.
 - `pr_status_concurrency` (integer): Deprecated. This value applies only while `[integrations.gh]` `pr_status_concurrency` is omitted. Remove it after migration.
 - `project_name` (string): Template for a project row's label, taking `$name` and `$path`. A manual rename always wins over it.
@@ -469,6 +463,8 @@ Sidebar glyph overrides.
 - `agent_blocked` (string or table): An agent held at a dialog it needs a human to answer. Unset follows `[ui] status_indicators`: `⬤` for dots, `×` for symbols.
   - The table form takes the same keys as `integrations.herdr.icon`.
 - `agent_done` (string or table): An agent that finished a turn while nobody was looking. Unset follows `[ui] status_indicators`: `⬤` for dots, `✓` for symbols.
+  - The table form takes the same keys as `integrations.herdr.icon`.
+- `agent_error` (string or table): A program that reported over OSC 7501 that it failed. Unset follows `[ui] status_indicators`: `⬤` for dots, `!` for symbols.
   - The table form takes the same keys as `integrations.herdr.icon`.
 - `agent_idle` (string or table): An agent waiting with nothing in flight. Unset follows `[ui] status_indicators`: `◯` in both sets.
   - The table form takes the same keys as `integrations.herdr.icon`.

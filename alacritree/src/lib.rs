@@ -54,6 +54,7 @@ pub(crate) mod paste;
 pub(crate) mod path_style;
 pub(crate) mod pr_status;
 pub(crate) mod process_probe;
+pub(crate) mod program_status;
 pub mod projects;
 #[cfg(windows)]
 pub(crate) mod pty_rearm;

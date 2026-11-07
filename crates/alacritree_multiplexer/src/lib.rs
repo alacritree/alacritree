@@ -20,13 +20,14 @@ mod scripted;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
+pub use alacritree_common::agent_status::AgentStatus;
 pub use alacritree_common::side::Side;
 use alacritree_common::wsl;
 use strum::{Display, EnumIter, EnumString, IntoEnumIterator};
 
 pub use self::model::{
     AttachAnswer, AttachFocus, AttachRequest, CreateAnswer, CreateRequest, ListedPane, Managed,
-    Pane, PaneKey, PaneStatus, ViewState, ViewStep,
+    Pane, PaneKey, ViewState, ViewStep,
 };
 #[cfg(any(test, feature = "test-support"))]
 pub use self::scripted::{QueuedAttach, QueuedCreate, Scripted};

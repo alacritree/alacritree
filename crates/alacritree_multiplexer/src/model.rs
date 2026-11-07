@@ -7,8 +7,8 @@ use std::sync::mpsc::Sender;
 use alacritree_common::wsl;
 
 use crate::{
-    CreatedPane, Launch, MultiplexerKind, PaneError, PaneTarget, Reply, SessionId, Side,
-    WorkspaceKey,
+    AgentStatus, CreatedPane, Launch, MultiplexerKind, PaneError, PaneTarget, Reply, SessionId,
+    Side, WorkspaceKey,
 };
 
 /// Identifies one pane across polls.  `terminal_id` is unique only within one
@@ -18,32 +18,6 @@ pub struct PaneKey {
     pub multiplexer: MultiplexerKind,
     pub side: Side,
     pub terminal_id: String,
-}
-
-/// The state a multiplexer reports for the agent in a pane.  An unrecognised
-/// reading maps to `Unknown` so a state added later renders as a plain row
-/// instead of dropping the pane.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum PaneStatus {
-    Idle,
-    Working,
-    Blocked,
-    Done,
-    #[default]
-    Unknown,
-}
-
-impl PaneStatus {
-    /// Word the sidebar paints for this status.
-    pub fn label(&self) -> &'static str {
-        match self {
-            Self::Idle => "idle",
-            Self::Working => "working",
-            Self::Blocked => "blocked",
-            Self::Done => "done",
-            Self::Unknown => "unknown",
-        }
-    }
 }
 
 /// One pane as its multiplexer reports it.  `terminal_id` is the identity
@@ -65,7 +39,7 @@ pub struct Pane {
     /// The multiplexer's word on the agent in this pane, and `None` when it
     /// found no agent in it at all.  `Some(Unknown)` is the other half of that
     /// distinction: an agent is there and it cannot be classified.
-    pub status: Option<PaneStatus>,
+    pub status: Option<AgentStatus>,
     /// The pane the multiplexer's own window is showing.  A shared-view attach
     /// borrows that window rather than one pane, so this is what such a
     /// session has on screen.
@@ -163,7 +137,7 @@ pub struct Managed {
     /// The agent state the multiplexer reports.  `None` when it is not
     /// reporting one: a multiplexer with no agent detection, or a pane
     /// alacritree still holds open after its multiplexer stopped listing it.
-    pub status: Option<PaneStatus>,
+    pub status: Option<AgentStatus>,
 }
 
 impl Managed {
@@ -274,7 +248,7 @@ mod tests {
             tab_id: Some("w1:t1".into()),
             kind: None,
             title: None,
-            status: Some(PaneStatus::Idle),
+            status: Some(AgentStatus::Idle),
             focused: false,
             cwd: Some(cwd.into()),
             foreground_cwd: foreground.map(str::to_string),

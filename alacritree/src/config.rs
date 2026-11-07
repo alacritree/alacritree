@@ -187,8 +187,7 @@ pub struct VtConfig {
 }
 
 impl VtConfig {
-    /// Whether any sequence is wanted. A session with none keeps no OSC
-    /// filter.
+    /// Whether any sequence that a `[vt]` key gates is wanted.
     pub fn any_enabled(&self) -> bool {
         self.report_cwd || self.notify || self.progress || self.pointer_shape
     }
@@ -630,7 +629,6 @@ pub struct IntegrationsConfig {
     pub git: alacritree_git::GitConfig,
     pub gh: alacritree_gh::GhConfig,
     pub doppler: alacritree_doppler::DopplerConfig,
-    pub claude: alacritree_claude::ClaudeConfig,
     pub checkout_hooks: Vec<alacritree_checkout_hooks::CommandHook>,
     pub herdr: alacritree_herdr::HerdrConfig,
     pub zellij: alacritree_zellij::ZellijConfig,
@@ -1099,6 +1097,7 @@ pub struct Icons<C = Rgb> {
     pub agent_working: IconStyle<C>,
     pub agent_blocked: IconStyle<C>,
     pub agent_done: IconStyle<C>,
+    pub agent_error: IconStyle<C>,
     pub agent_unknown: IconStyle<C>,
     pub attention: IconStyle<C>,
 }
@@ -1134,6 +1133,7 @@ impl<C: Copy> Icons<C> {
             agent_working: self.agent_working.map_color(f),
             agent_blocked: self.agent_blocked.map_color(f),
             agent_done: self.agent_done.map_color(f),
+            agent_error: self.agent_error.map_color(f),
             agent_unknown: self.agent_unknown.map_color(f),
             attention: self.attention.map_color(f),
         }
@@ -2721,6 +2721,10 @@ struct RawIcons {
     /// `[ui] status_indicators`: `⬤` for dots, `✓` for symbols.
     #[serde(skip_serializing_if = "Option::is_none")]
     agent_done: Option<RawIconStyle>,
+    /// A program that reported over OSC 7501 that it failed. Unset follows
+    /// `[ui] status_indicators`: `⬤` for dots, `!` for symbols.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent_error: Option<RawIconStyle>,
     /// An agent nothing could read a state from.  Unset follows
     /// `[ui] status_indicators`: `◯` for dots, `?` for symbols.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2768,6 +2772,7 @@ impl Default for RawIcons {
             agent_working: None,
             agent_blocked: None,
             agent_done: None,
+            agent_error: None,
             agent_unknown: None,
             attention: None,
         }
@@ -2804,6 +2809,7 @@ fn build_icons(raw: RawIcons) -> Icons {
         agent_working: raw.agent_working.map(Into::into).unwrap_or_default(),
         agent_blocked: raw.agent_blocked.map(Into::into).unwrap_or_default(),
         agent_done: raw.agent_done.map(Into::into).unwrap_or_default(),
+        agent_error: raw.agent_error.map(Into::into).unwrap_or_default(),
         agent_unknown: raw.agent_unknown.map(Into::into).unwrap_or_default(),
         attention: raw.attention.map(Into::into).unwrap_or_default(),
     }
@@ -3140,8 +3146,6 @@ struct RawIntegrations {
     gh: alacritree_gh::RawGh,
     /// The Doppler CLI behind scope mirroring for new worktrees.
     doppler: alacritree_doppler::RawDoppler,
-    /// Claude Code settings written into each new worktree.
-    claude: alacritree_claude::RawClaude,
     /// Programs to run when a worktree is created, first opened, or removed.
     checkout_hooks: alacritree_checkout_hooks::RawCheckoutHooks,
     /// Agents running under a herdr server.
@@ -3166,7 +3170,6 @@ impl RawIntegrations {
             git: self.git.resolve(),
             gh: self.gh.resolve(moved.gh),
             doppler: self.doppler.resolve(),
-            claude: self.claude.resolve(),
             checkout_hooks: self.checkout_hooks.resolve(),
             herdr: self.herdr.resolve(moved.herdr_icon),
             zellij: self.zellij.resolve(),
@@ -3203,8 +3206,9 @@ struct RawUi {
     /// Badge color for a session asking to be looked at.  Unset uses the
     /// palette's `normal.yellow`.
     sidebar_attention: Option<RgbStr>,
-    /// Post a desktop notification when a hidden session rings the bell;
-    /// clicking it focuses that session.
+    /// Post a desktop notification when a hidden session wants attention,
+    /// such as a bell or a program that reports it waits on you; clicking
+    /// it focuses that session.
     notifications: bool,
     /// Grace window in milliseconds before an attention trigger pings; a
     /// session that resumes work inside it swallows the ping.

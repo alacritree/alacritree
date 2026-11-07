@@ -77,6 +77,7 @@ impl Catalog {
                 ShownState::Working,
                 ShownState::Pinged,
                 ShownState::Done,
+                ShownState::Error,
                 ShownState::Blocked,
             ] {
                 ui.horizontal(|ui| {
@@ -288,11 +289,11 @@ impl Catalog {
             "herdr agent states, plain shells, and Zellij shared views",
             |ui| {
                 for (index, state) in [
-                    PaneStatus::Idle,
-                    PaneStatus::Working,
-                    PaneStatus::Blocked,
-                    PaneStatus::Done,
-                    PaneStatus::Unknown,
+                    AgentStatus::Idle,
+                    AgentStatus::Working,
+                    AgentStatus::Blocked,
+                    AgentStatus::Done,
+                    AgentStatus::Unknown,
                 ]
                 .into_iter()
                 .enumerate()
@@ -330,7 +331,7 @@ impl Catalog {
                     let pane = fixtures::pane(
                         index,
                         kind,
-                        (kind == MultiplexerKind::Herdr).then_some(PaneStatus::Working),
+                        (kind == MultiplexerKind::Herdr).then_some(AgentStatus::Working),
                         shared,
                     );
                     let mut row = session(

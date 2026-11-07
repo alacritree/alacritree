@@ -497,7 +497,7 @@ impl AlacritreeApp {
         self.find_pane(session.pane_key.as_ref()?)
     }
 
-    pub(super) fn session_pane_status(&self, session: &AppSession) -> Option<PaneStatus> {
+    pub(super) fn session_pane_status(&self, session: &AppSession) -> Option<AgentStatus> {
         self.session_pane(session).and_then(|pane| pane.status)
     }
 

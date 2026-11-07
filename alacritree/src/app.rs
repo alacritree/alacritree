@@ -12,7 +12,7 @@ use alacritree_common::wsl::{self, ShellChoice};
 use alacritree_common::wsl_helper::{self, WslProbe};
 use alacritree_forge::{PrInfo, PrState};
 use alacritree_multiplexer::{
-    AttachFocus, Managed, MultiplexerSession, PaneKey, PaneStatus, PaneTarget,
+    AgentStatus, AttachFocus, Managed, MultiplexerSession, PaneKey, PaneTarget,
 };
 use eframe::CreationContext;
 use egui::{Color32, Context, Frame, Margin, RichText, ScrollArea, SidePanel, Stroke};
@@ -46,6 +46,7 @@ use crate::osc::Progress as OscProgress;
 use crate::panel_filter::{self, PanelFilter};
 use crate::path_style::PathStyle;
 use crate::pr_status::{self, PrCache};
+use crate::program_status::{self, Status};
 use crate::projects::{Discovered, NotAProject, Project, project_json};
 use crate::session::{
     self, Attachment, AttentionVerdict, LiveState, PendingAttention, Session, SessionActivity,
@@ -187,6 +188,7 @@ struct GitColors {
 struct StateColors {
     blocked: Color32,
     done: Color32,
+    error: Color32,
     idle: Color32,
     unknown: Color32,
 }
@@ -252,7 +254,10 @@ impl Theme {
             state_colors: StateColors {
                 blocked: rgb_to_color32(config.palette.normal[1]), // red
                 done: rgb_to_color32(config.palette.normal[6]),    // cyan, herdr's teal
-                idle: rgb_to_color32(config.palette.normal[2]),    // green
+                // Red is taken by blocked, and the dots set tells the two
+                // apart by colour alone.
+                error: rgb_to_color32(config.palette.normal[5]), // magenta
+                idle: rgb_to_color32(config.palette.normal[2]),  // green
                 unknown: text_muted,
             },
             status_indicators: config.ui.status_indicators,
@@ -781,6 +786,10 @@ impl AlacritreeApp {
         #[cfg(target_os = "macos")]
         if config.ui.notifications {
             notify::macos::init(cc.egui_ctx.clone());
+        }
+        #[cfg(windows)]
+        if config.ui.notifications {
+            notify::windows_identity::app_id();
         }
 
         let notify_rx = notify::channel();
@@ -3026,16 +3035,25 @@ impl AlacritreeApp {
                     let is_agent = live.is_some();
                     let session = &mut self.sessions[idx];
                     let was_latched = session.done || session.needs_attention;
-                    session.done |= pending.finished && is_agent;
+                    // A program that reports its own state says when it is
+                    // done, so a title settling is no evidence of it.
+                    let self_reporting = session.program_status().is_some();
+                    session.done |= pending.finished && is_agent && !self_reporting;
                     session.needs_attention |=
                         pending.rang || pending.notified || (pending.finished && !is_agent);
-                    // Only toast on the transition into a latch: BEL and the
-                    // title settling in the same idle cycle are one "Claude is
-                    // done" event, not two.  An explicit notification has its
-                    // own text, so it toasts every time.
-                    let body = session.last_notification.clone().filter(|_| pending.notified);
-                    if (!was_latched || body.is_some()) && self.config.ui.notifications {
-                        notify::attention(&self.sessions[idx], ctx, body);
+                    // BEL and the title settling in one idle cycle are one
+                    // event, so only the transition into a latch toasts. A
+                    // notification's own text and a program's report, which
+                    // latches nothing, toast every time.
+                    let notified = session.last_notification.clone().filter(|_| pending.notified);
+                    let reported =
+                        session.program_report().filter(|_| pending.reported).map(Status::summary);
+                    let fresh = !was_latched || notified.is_some() || reported.is_some();
+                    if fresh && self.config.ui.notifications {
+                        let body = notified.or(reported);
+                        let session = &self.sessions[idx];
+                        let toast = self.toast(session, body);
+                        notify::attention(session.id, ctx, toast);
                     }
                 },
             }
@@ -3048,18 +3066,46 @@ impl AlacritreeApp {
             if let Some(idx) = visible_idx {
                 self.sessions[idx].needs_attention = false;
                 self.sessions[idx].done = false;
+                self.sessions[idx].see_program_status();
             }
         }
     }
 
-    /// A session's live reading with its multiplexer's status folded in.
-    fn session_activity(&self, s: &AppSession) -> SessionActivity {
-        pane_backed_activity(s.activity(), self.session_pane_status(s))
+    /// A session's desktop notification. It is headed by the program or
+    /// agent that wants attention and the session's row name, and closes on
+    /// the workspace. `body` is the text a program sent.
+    fn toast(&self, s: &AppSession, body: Option<String>) -> notify::Toast {
+        let activity = self.session_activity(s);
+        let row = session_row_name(&s.title, activity, self.session_pane(s)).text;
+        let reporter = s.program_report().and_then(|status| status.app.as_deref());
+        let who = reporter.or(activity.name()).map(program_status::app_name);
+        let title = match who {
+            Some(who) if !who.eq_ignore_ascii_case(&row) => format!("{who}: {row}"),
+            _ => row,
+        };
+        notify::Toast {
+            title,
+            body: body.unwrap_or_else(|| "Waiting for input".to_owned()),
+            place: workspace_label_for(&self.projects, &s.working_directory),
+        }
     }
 
-    /// The mark a session's row draws, from its live reading and its latches.
+    /// A session's live reading, from its program's own report when it
+    /// made one, and otherwise with its multiplexer's status folded in.
+    fn session_activity(&self, s: &AppSession) -> SessionActivity {
+        match s.program_status() {
+            Some(state) => s.activity().with_live(LiveState::from(state)),
+            None => pane_backed_activity(s.activity(), self.session_pane_status(s)),
+        }
+    }
+
+    /// The mark a session's row draws, from its live reading and its latches,
+    /// or from its program's own report when it made one.
     fn session_shown_state(&self, s: &AppSession) -> Option<ShownState> {
-        let pane_done = self.session_pane_status(s) == Some(PaneStatus::Done);
+        if let Some(state) = s.program_status() {
+            return Some(ShownState::reported(state, s.needs_attention));
+        }
+        let pane_done = self.session_pane_status(s) == Some(AgentStatus::Done);
         ShownState::of(self.session_activity(s).live(), s.done || pane_done, s.needs_attention)
     }
 
@@ -3091,9 +3137,10 @@ impl AlacritreeApp {
         match loudest {
             Some((_, s)) => RowStatus {
                 pinged: s.needs_attention,
-                done: s.done || self.session_pane_status(s) == Some(PaneStatus::Done),
+                done: s.done || self.session_pane_status(s) == Some(AgentStatus::Done),
                 activity: self.session_activity(s),
                 managed: None,
+                program: s.program_status(),
             },
             None => RowStatus::live(self.workspace_activity(ws)),
         }
@@ -3110,7 +3157,7 @@ impl AlacritreeApp {
             if s.working_directory != *ws {
                 continue;
             }
-            let activity = pane_backed_activity(s.activity(), self.session_pane_status(s));
+            let activity = self.session_activity(s);
             let Some(live) = activity.live() else {
                 continue;
             };
@@ -3206,7 +3253,7 @@ impl AlacritreeApp {
             .filter_map(|entry| match entry {
                 sidebar_nav::WorkspaceEntry::Session(id) => {
                     let s = self.sessions.iter().find(|s| s.id == *id)?;
-                    let activity = pane_backed_activity(s.activity(), self.session_pane_status(s));
+                    let activity = self.session_activity(s);
                     Some(WorkspaceRowData::Session(SessionRowData {
                         id: s.id,
                         name: session_row_name(&s.title, activity, self.session_pane(s)),
@@ -3216,6 +3263,8 @@ impl AlacritreeApp {
                         needs_attention: s.needs_attention,
                         done: s.done,
                         activity,
+                        program_status: s.program_status(),
+                        program_msg: s.program_report().and_then(|r| r.msg.clone()),
                         is_active: active == Some(s.id),
                         is_displayed: is_current && active == Some(s.id),
                         managed: self.session_managed(s),
@@ -4378,9 +4427,12 @@ fn agent_ring_target(
 /// `unknown` is the multiplexer declining to say, so the session's own
 /// reading stands.  The gate closes either way: an attached pane holds an
 /// agent whether or not the process probe recognized one.
-fn pane_backed_activity(own: SessionActivity, status: Option<PaneStatus>) -> SessionActivity {
+fn pane_backed_activity(own: SessionActivity, status: Option<AgentStatus>) -> SessionActivity {
     let Some(status) = status else { return own };
-    let live = LiveState::from_pane(status).unwrap_or(own.live().unwrap_or_default());
+    let live = match status {
+        AgentStatus::Unknown => own.live().unwrap_or_default(),
+        status => status.into(),
+    };
     own.with_live(live)
 }
 
@@ -4443,7 +4495,7 @@ mod tests {
     use crate::sidebar_model::build_snapshot;
     use crate::test_util::herdr_pane_key;
     use alacritree_multiplexer::{
-        AttachRequest, MultiplexerKind, Pane, PaneError, PaneStatus, Scripted,
+        AgentStatus, AttachRequest, MultiplexerKind, Pane, PaneError, Scripted,
     };
 
     fn plain_worktree_row<'a>(
@@ -4845,6 +4897,91 @@ mod tests {
         assert_eq!(app.session_shown_state(&app.sessions[0]), Some(ShownState::Pinged));
     }
 
+    /// Bytes as the program wrote them, through the session's own parser.
+    fn feed_pty(app: &mut AlacritreeApp, bytes: &str) {
+        use alacritty_terminal::vte::ansi::{Processor, StdSyncHandler};
+        Processor::<StdSyncHandler>::new()
+            .advance(&mut *app.sessions[0].term.lock(), bytes.as_bytes());
+        app.process_session_events(&Context::default());
+    }
+
+    #[test]
+    fn a_program_status_report_shows_its_state_on_the_row() {
+        let mut app = app_with_a_background_session("shell");
+        for terminator in ["\x1b\\", "\x07"] {
+            for (state, shown) in [
+                ("working", ShownState::Working),
+                ("idle", ShownState::Idle),
+                ("blocked", ShownState::Blocked),
+                ("done", ShownState::Done),
+                ("error", ShownState::Error),
+            ] {
+                feed_pty(&mut app, &format!("\x1b]7501;state={state}{terminator}"));
+                assert_eq!(
+                    app.session_shown_state(&app.sessions[0]),
+                    Some(shown),
+                    "{state} ended by {terminator:?}"
+                );
+            }
+        }
+    }
+
+    /// The spinner says working and the program says idle. The program wins,
+    /// and the title settling later latches no `done` of its own.
+    #[test]
+    fn a_program_status_report_overrides_the_title_heuristics() {
+        use alacritty_terminal::event::Event;
+        let mut app = app_with_a_background_session("\u{280b} claude");
+        assert_eq!(app.session_shown_state(&app.sessions[0]), Some(ShownState::Working));
+        feed_pty(&mut app, "\x1b]7501;state=idle\x1b\\");
+        assert_eq!(app.session_shown_state(&app.sessions[0]), Some(ShownState::Idle));
+        drain(&mut app, Event::Title("\u{2733} claude".into()));
+        assert!(!app.sessions[0].done);
+        assert_eq!(app.session_shown_state(&app.sessions[0]), Some(ShownState::Idle));
+    }
+
+    #[test]
+    fn a_row_shows_the_record_that_most_wants_a_human() {
+        let mut app = app_with_a_background_session("shell");
+        feed_pty(&mut app, "\x1b]7501;state=blocked:id=tool\x1b\\");
+        feed_pty(&mut app, "\x1b]7501;state=working:id=turn\x1b\\");
+        assert_eq!(app.session_shown_state(&app.sessions[0]), Some(ShownState::Blocked));
+        assert!(app.workspace_needs_attention(&None));
+        feed_pty(&mut app, "\x1b]7501;state=clear:id=tool\x1b\\");
+        assert_eq!(app.session_shown_state(&app.sessions[0]), Some(ShownState::Working));
+    }
+
+    /// The probe sees an idle agent, and the program says it is blocked.
+    #[test]
+    fn a_program_status_report_overrides_the_process_probe() {
+        let mut app = app_with_a_background_session("shell");
+        app.sessions[0].force_agent_for_test("claude");
+        assert_eq!(app.session_shown_state(&app.sessions[0]), Some(ShownState::Idle));
+        feed_pty(&mut app, "\x1b]7501;state=blocked\x07");
+        assert_eq!(app.session_shown_state(&app.sessions[0]), Some(ShownState::Blocked));
+        assert_eq!(app.session_activity(&app.sessions[0]).name(), Some("claude"));
+    }
+
+    /// A reported result wants a human the way the `done` latch does, until
+    /// the user looks. The next result wants one again.
+    #[test]
+    fn a_reported_result_stops_wanting_attention_once_viewed() {
+        let mut app = app_with_a_background_session("shell");
+        feed_pty(&mut app, "\x1b]7501;state=error\x07");
+        assert!(app.workspace_needs_attention(&None));
+
+        app.current_workspace = None;
+        app.set_active_in_current_workspace(app.sessions[0].id);
+        app.process_session_events(&Context::default());
+        assert_eq!(app.session_shown_state(&app.sessions[0]), Some(ShownState::Idle));
+        assert!(!app.workspace_needs_attention(&None));
+
+        app.current_workspace = Some(PathBuf::from("elsewhere"));
+        feed_pty(&mut app, "\x1b]7501;state=working\x07");
+        feed_pty(&mut app, "\x1b]7501;state=done\x07");
+        assert_eq!(app.session_shown_state(&app.sessions[0]), Some(ShownState::Done));
+    }
+
     mod notifications {
         use alacritty_terminal::event::Event;
         use alacritty_terminal::term::ClipboardType;
@@ -4915,7 +5052,7 @@ mod tests {
         }
 
         fn toasts() -> Vec<String> {
-            TOASTS.with_borrow(Vec::clone)
+            TOASTS.with_borrow(|toasts| toasts.iter().map(|toast| toast.body.clone()).collect())
         }
 
         /// Upstream answers a clipboard read only for the window the user is
@@ -5028,7 +5165,7 @@ mod tests {
             app.notify("build failed", Visibility::Hidden);
             app.drain(Visibility::VisibleAndFocused);
             app.term(Event::Bell, Visibility::Hidden);
-            assert_eq!(toasts(), ["build failed", "shell is waiting for input"]);
+            assert_eq!(toasts(), ["build failed", "Waiting for input"]);
         }
 
         #[test]
@@ -5036,7 +5173,62 @@ mod tests {
             let mut app = notification_app();
             app.term(Event::Bell, Visibility::Hidden);
             app.term(Event::Bell, Visibility::Hidden);
-            assert_eq!(toasts(), ["shell is waiting for input"]);
+            assert_eq!(toasts(), ["Waiting for input"]);
+        }
+
+        /// A program that reports it wants a human toasts the way a bell does,
+        /// after the same grace window. Going back to work inside the window
+        /// cancels the toast, and an idle report is no trigger.
+        #[test]
+        fn a_reported_status_that_wants_a_human_toasts_like_a_bell() {
+            TOASTS.with_borrow_mut(Vec::clear);
+            let mut app = app_with_a_background_session("shell");
+            app.config.ui.notifications = true;
+            app.config.ui.attention_grace = Duration::from_secs(60);
+            feed_pty(&mut app, "\x1b]7501;state=idle\x07");
+            assert!(app.sessions[0].pending_attention.is_none());
+
+            feed_pty(&mut app, "\x1b]7501;state=blocked\x07");
+            assert!(app.sessions[0].pending_attention.is_some());
+            feed_pty(&mut app, "\x1b]7501;state=working\x07");
+            assert!(app.sessions[0].pending_attention.is_none());
+
+            feed_pty(&mut app, "\x1b]7501;state=done\x07");
+            assert!(toasts().is_empty());
+            let pending = app.sessions[0].pending_attention.as_mut().unwrap();
+            pending.since = Instant::now() - app.config.ui.attention_grace;
+            app.process_session_events(&Context::default());
+            assert_eq!(toasts(), ["The program finished"]);
+            assert_eq!(app.session_shown_state(&app.sessions[0]), Some(ShownState::Done));
+        }
+
+        /// A program's toast names the session and says what the program
+        /// reported, and a new question while it is still blocked toasts
+        /// again.
+        #[test]
+        fn a_reported_toast_names_the_session_and_carries_the_programs_line() {
+            use base64::Engine;
+            TOASTS.with_borrow_mut(Vec::clear);
+            let mut app = app_with_a_background_session("shell");
+            app.config.ui.notifications = true;
+            let ask = |question: &str| {
+                let msg = base64::engine::general_purpose::STANDARD.encode(question);
+                format!("\x1b]7501;state=blocked:kind=question:app=claude-code:msg={msg}\x07")
+            };
+            feed_pty(&mut app, &ask("Which parser?"));
+            feed_pty(&mut app, &ask("Which parser?"));
+            feed_pty(&mut app, &ask("Which lexer?"));
+            feed_pty(&mut app, "\x1b]7501;state=blocked:kind=permission:app=claude-code\x07");
+            let toast = |body: &str| crate::notify::Toast {
+                title: "Claude Code: shell".to_owned(),
+                body: body.to_owned(),
+                place: "Home".to_owned(),
+            };
+            assert_eq!(TOASTS.with_borrow(Vec::clone), [
+                toast("Which parser?"),
+                toast("Which lexer?"),
+                toast("Claude Code needs permission"),
+            ]);
         }
 
         #[test]
@@ -5313,7 +5505,7 @@ mod tests {
         app.multiplexers.scripted_mut().enable();
         adopt_panes(&mut app, &Side::Native, vec![
             Scripted::pane("term-loose")
-                .with_agent("claude", PaneStatus::Working)
+                .with_agent("claude", AgentStatus::Working)
                 .with_title("loose pane")
                 .in_dir("/repo"),
         ]);
@@ -5333,7 +5525,7 @@ mod tests {
         app.multiplexers.scripted_mut().enable();
         adopt_panes(&mut app, &side, vec![
             Scripted::pane("term-held")
-                .with_agent("claude", PaneStatus::Working)
+                .with_agent("claude", AgentStatus::Working)
                 .with_title("held pane")
                 .in_dir("/repo"),
         ]);
@@ -5502,7 +5694,7 @@ mod tests {
         app.multiplexers.scripted_mut().enable();
         let side = Side::Native;
         adopt_panes(&mut app, &side, vec![
-            Scripted::pane("term-held").with_agent("claude", PaneStatus::Working).in_dir("/repo"),
+            Scripted::pane("term-held").with_agent("claude", AgentStatus::Working).in_dir("/repo"),
         ]);
         let id = bind_pane_fixture(&mut app, &side, "term-held");
         let (reply_tx, reply_rx) = mpsc::channel();
@@ -5525,7 +5717,7 @@ mod tests {
         app.multiplexers.scripted_mut().enable();
         let side = Side::Native;
         adopt_panes(&mut app, &side, vec![
-            Scripted::pane("term-held").with_agent("claude", PaneStatus::Working).in_dir("/repo"),
+            Scripted::pane("term-held").with_agent("claude", AgentStatus::Working).in_dir("/repo"),
         ]);
         let asked_from = Some(PathBuf::from("elsewhere"));
         app.current_workspace = asked_from.clone();
@@ -5553,7 +5745,7 @@ mod tests {
     fn attaching_without_focus_queues_an_attach_that_stays_in_the_background() {
         let mut app = lifecycle_app();
         adopt_panes(&mut app, &Side::Native, vec![
-            Scripted::pane("term-loose").with_agent("claude", PaneStatus::Working).in_dir("/repo"),
+            Scripted::pane("term-loose").with_agent("claude", AgentStatus::Working).in_dir("/repo"),
         ]);
         let asked_from = app.current_workspace.clone();
         let (reply_tx, _reply_rx) = mpsc::channel();
@@ -5691,7 +5883,7 @@ mod tests {
         let mut app = test_app();
         app.multiplexers.scripted_mut().enable();
         adopt_panes(&mut app, &Side::Native, vec![
-            Scripted::pane("term-native").with_agent("claude", PaneStatus::Idle).in_dir("/repo"),
+            Scripted::pane("term-native").with_agent("claude", AgentStatus::Idle).in_dir("/repo"),
         ]);
         let side = Side::Wsl("ubuntu".into());
         let id = bind_pane_fixture(&mut app, &side, "term-focused");
@@ -6331,7 +6523,7 @@ mod tests {
         app.multiplexers.herdr_mut_for_test().caches_mut_for_test()[0]
             .fail_listing_for_test(herdr::PollError::Absent("spawn_failed"));
 
-        assert_eq!(app.session_pane_status(&app.sessions[0]), Some(PaneStatus::Working));
+        assert_eq!(app.session_pane_status(&app.sessions[0]), Some(AgentStatus::Working));
         let items = app.palette_items();
         let item =
             items.iter().find(|item| item.action == PaletteAction::ActivateSession(id)).unwrap();
@@ -6588,8 +6780,8 @@ mod tests {
         let mut app = lifecycle_app();
         let side = Side::Native;
         adopt_panes(&mut app, &side, vec![
-            Scripted::pane("term-held").with_agent("claude", PaneStatus::Working).in_dir("/repo"),
-            Scripted::pane("term-loose").with_agent("claude", PaneStatus::Working).in_dir("/repo"),
+            Scripted::pane("term-held").with_agent("claude", AgentStatus::Working).in_dir("/repo"),
+            Scripted::pane("term-loose").with_agent("claude", AgentStatus::Working).in_dir("/repo"),
         ]);
         let held = bind_pane_fixture(&mut app, &side, "term-held");
 
@@ -6617,7 +6809,7 @@ mod tests {
     fn attaching_every_pane_leaves_the_user_where_the_batch_was_asked_from() {
         let mut app = lifecycle_app();
         adopt_panes(&mut app, &Side::Native, vec![
-            Scripted::pane("term-loose").with_agent("claude", PaneStatus::Working).in_dir("/repo"),
+            Scripted::pane("term-loose").with_agent("claude", AgentStatus::Working).in_dir("/repo"),
         ]);
         let asked_from = app.current_workspace.clone();
 
@@ -6644,8 +6836,8 @@ mod tests {
     fn attaching_every_pane_leaves_the_multiplexer_focus_alone() {
         let mut app = lifecycle_app();
         adopt_panes(&mut app, &Side::Native, vec![
-            Scripted::pane("term-one").with_agent("claude", PaneStatus::Done).in_dir("/repo"),
-            Scripted::pane("term-two").with_agent("claude", PaneStatus::Blocked).in_dir("/repo"),
+            Scripted::pane("term-one").with_agent("claude", AgentStatus::Done).in_dir("/repo"),
+            Scripted::pane("term-two").with_agent("claude", AgentStatus::Blocked).in_dir("/repo"),
         ]);
 
         app.attach_every_multiplexer_pane(&Context::default());
@@ -8088,7 +8280,7 @@ mod tests {
 
     /// A listed pane with an agent in it, for the bucketing cases.
     fn bucketing_agent() -> Pane {
-        Scripted::pane("term-a").with_agent("claude", PaneStatus::Idle)
+        Scripted::pane("term-a").with_agent("claude", AgentStatus::Idle)
     }
 
     /// `show_unmatched` is the sidebar's setting, and the palette reads the same
@@ -8185,7 +8377,7 @@ mod tests {
         let side = Side::Native;
         adopt_panes(&mut app, &side, vec![
             Scripted::pane("configured-term")
-                .with_agent("claude", PaneStatus::Idle)
+                .with_agent("claude", AgentStatus::Idle)
                 .with_title("claude"),
         ]);
         let id = bind_pane_fixture(&mut app, &side, "configured-term");
@@ -8289,7 +8481,7 @@ mod tests {
     #[test]
     fn the_tooltip_spells_out_what_the_marks_cannot() {
         let agent = Pane {
-            status: Some(PaneStatus::Working),
+            status: Some(AgentStatus::Working),
             ..titled(Some("claude"), Some("Claude Code"))
         };
         let mut row = pane_row(&agent, Side::Wsl("d".into()), false);
@@ -9378,6 +9570,8 @@ mod tests {
                 needs_attention: false,
                 done: false,
                 activity: SessionActivity::Shell,
+                program_status: None,
+                program_msg: None,
                 is_active: true,
                 is_displayed: true,
                 managed: None,
@@ -9523,11 +9717,13 @@ mod tests {
                 needs_attention: false,
                 done: false,
                 activity: SessionActivity::Shell,
+                program_status: Some(AgentStatus::Blocked),
+                program_msg: Some("Which parser?".to_owned()),
                 is_active: true,
                 is_displayed: true,
                 managed: None,
             };
-            let tooltip = format!("{name}\n{}\nbuild failed", cwd.display());
+            let tooltip = format!("{name}\n{}\nWhich parser?\nbuild failed", cwd.display());
             let texts = texts_while_hovering(140.0, |ui| {
                 session_row(ui, &row, false, false, false, &icons, &theme);
             });
@@ -9723,6 +9919,8 @@ mod tests {
             needs_attention: attention,
             done: false,
             activity,
+            program_status: None,
+            program_msg: None,
             is_active: true,
             is_displayed: true,
             managed: None,
@@ -9959,6 +10157,8 @@ mod tests {
             needs_attention: false,
             done: false,
             activity: SessionActivity::Shell,
+            program_status: None,
+            program_msg: None,
             is_active: true,
             is_displayed: true,
             managed: None,
@@ -10624,21 +10824,21 @@ mod tests {
 
         // herdr sees the approval dialog no title heuristic can.
         assert_eq!(
-            pane_backed_activity(claude, Some(PaneStatus::Blocked)),
+            pane_backed_activity(claude, Some(AgentStatus::Blocked)),
             SessionActivity::agent(Some("claude"), LiveState::Blocked)
         );
 
         // An attached pane holds an agent even when the process probe missed
         // one, so the gate closes on herdr's word alone.
         assert_eq!(
-            pane_backed_activity(SessionActivity::Shell, Some(PaneStatus::Working)),
+            pane_backed_activity(SessionActivity::Shell, Some(AgentStatus::Working)),
             SessionActivity::agent(None, LiveState::Working)
         );
 
         // `unknown` is herdr declining to say, not a claim of idleness: the
         // session keeps whatever it already knew.
         let working = SessionActivity::agent(Some("claude"), LiveState::Working);
-        assert_eq!(pane_backed_activity(working, Some(PaneStatus::Unknown)), working);
+        assert_eq!(pane_backed_activity(working, Some(AgentStatus::Unknown)), working);
     }
 
     /// A herdr pane running a plain shell.  herdr names no agent in it, so

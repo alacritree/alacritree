@@ -145,7 +145,7 @@ pub(super) fn tasks() -> Preview {
 pub(super) fn pane(
     index: usize,
     multiplexer: MultiplexerKind,
-    status: Option<PaneStatus>,
+    status: Option<AgentStatus>,
     shared: bool,
 ) -> sidebar::PaneRowData {
     let title = if status.is_some() { "Review the sidebar" } else { "Development shell" };
