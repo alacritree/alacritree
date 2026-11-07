@@ -184,10 +184,7 @@ impl AlacritreeApp {
                                 .iter()
                                 .find(|s| s.id == *id)
                                 .map(|s| {
-                                    let activity = pane_backed_activity(
-                                        s.activity(),
-                                        self.session_pane_status(s),
-                                    );
+                                    let activity = self.session_activity(s);
                                     session_row_name(&s.title, activity, self.session_pane(s))
                                 })
                                 .map(RowName::search_text)
@@ -2091,6 +2088,7 @@ pub(super) fn session_row(
                             done: row.done,
                             activity: row.activity,
                             managed: row.managed.as_ref(),
+                            program: row.program_status,
                         },
                         &icons.session,
                         DEFAULT_SESSION_ICON,
@@ -2617,6 +2615,7 @@ pub(super) struct SessionRowData {
     pub(super) needs_attention: bool,
     pub(super) done: bool,
     pub(super) activity: SessionActivity,
+    pub(super) program_status: Option<ProgramState>,
     /// This workspace's remembered active session (accent icon).
     pub(super) is_active: bool,
     /// Active *and* the workspace is current — the session on screen

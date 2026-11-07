@@ -946,6 +946,14 @@
           ],
           "description": "An agent that finished a turn while nobody was looking.  Unset follows\n`[ui] status_indicators`: `⬤` for dots, `✓` for symbols."
         },
+        "agent_error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawIconStyle"
+            }
+          ],
+          "description": "A program that reported over OSC 7501 that it failed. Unset follows\n`[ui] status_indicators`: `⬤` for dots, `!` for symbols."
+        },
         "agent_idle": {
           "anyOf": [
             {

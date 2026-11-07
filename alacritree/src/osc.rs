@@ -1,8 +1,11 @@
 //! The OSC sequences `vte`'s `ansi` layer hands on uninterpreted, and the
 //! OSC 22 pointer shape it parses, turned into the events a session acts on.
+//! The filter also keeps the session's OSC 7501 records, which the child's
+//! exit and a full reset change as well.
 //!
 //! `EventProxy` runs the filter on the PTY thread inside the terminal's own
-//! parse, while the session that consumes its output lives elsewhere. Every
+//! parse, while the session that consumes its output lives elsewhere. A
+//! record therefore changes in the order the program wrote its bytes. Every
 //! rule is testable without a PTY.
 
 use std::sync::OnceLock;
@@ -10,6 +13,7 @@ use std::sync::OnceLock;
 use alacritty_terminal::vte::ansi::cursor_icon::CursorIcon;
 
 use crate::config::VtConfig;
+use crate::program_status::{self, ProgramState, Records};
 
 /// What the shell on the other end of the PTY spells a path like.  A WSL
 /// session on Windows is `Unix`: the payload is a Linux path, and the
@@ -38,6 +42,9 @@ pub(crate) enum OscEvent {
     Notify(String),
     Progress(Progress),
     PointerShape(egui::CursorIcon),
+    /// The OSC 7501 state the session's row shows, `None` once the program
+    /// holds no record.
+    ProgramStatus(Option<ProgramState>),
 }
 
 pub(crate) struct OscPolicy {
@@ -257,29 +264,68 @@ fn rooted(path: &str, shell: ShellPlatform) -> Option<String> {
 }
 
 /// Turns one session's OSC sequences into events, dropping states it
-/// already reported.
+/// already reported. It also keeps the session's OSC 7501 records, which no
+/// `[vt]` key gates.
 pub(crate) struct OscFilter {
     policy: OscPolicy,
     last_cwd: Option<OscEvent>,
     last_progress: Option<OscEvent>,
     last_pointer_shape: Option<OscEvent>,
+    records: Records,
+    shown_status: Option<ProgramState>,
 }
 
 impl OscFilter {
-    /// `None` when no `[vt]` key is on, so such a session keeps no filter.
-    pub(crate) fn new(policy: OscPolicy) -> Option<Self> {
-        policy.vt.any_enabled().then_some(Self {
+    pub(crate) fn new(policy: OscPolicy) -> Self {
+        Self {
             policy,
             last_cwd: None,
             last_progress: None,
             last_pointer_shape: None,
-        })
+            records: Records::default(),
+            shown_status: None,
+        }
     }
 
     /// A sequence `vte` handed on uninterpreted, as its `;`-split params.
     pub(crate) fn unhandled(&mut self, params: &[&[u8]]) -> Option<OscEvent> {
+        match params.first().copied() {
+            Some(b"7501") => {
+                self.records.apply(program_status::parse(params)?);
+                return self.program_status();
+            },
+            // A new prompt means the program that reported has finished.
+            Some(b"133") if params.get(1).copied() == Some(b"A") => {
+                self.records.end_activity();
+                return self.program_status();
+            },
+            _ => {},
+        }
         let event = classify(params, &self.policy)?;
         (!self.is_repeat(&event)).then_some(event)
+    }
+
+    /// The child exited.
+    pub(crate) fn exited(&mut self) -> Option<OscEvent> {
+        self.records.end_activity();
+        self.program_status()
+    }
+
+    /// A full reset (RIS). A soft reset (DECSTR) keeps the records.
+    pub(crate) fn reset(&mut self) -> Option<OscEvent> {
+        self.records.clear();
+        self.program_status()
+    }
+
+    /// The shown state, when it changed. Shells send OSC 133 on every
+    /// prompt, and a prompt that changes nothing is not worth a wake.
+    fn program_status(&mut self) -> Option<OscEvent> {
+        let shown = self.records.shown();
+        if shown == self.shown_status {
+            return None;
+        }
+        self.shown_status = shown;
+        Some(OscEvent::ProgramStatus(shown))
     }
 
     /// OSC 22, which `vte` parses itself and accepts only by CSS name.
@@ -295,7 +341,7 @@ impl OscFilter {
     /// not worth a repaint.  A notification is an occurrence, never a repeat.
     fn is_repeat(&mut self, event: &OscEvent) -> bool {
         let last = match event {
-            OscEvent::Notify(_) => return false,
+            OscEvent::Notify(_) | OscEvent::ProgramStatus(_) => return false,
             OscEvent::Cwd(_) => &mut self.last_cwd,
             OscEvent::Progress(_) => &mut self.last_progress,
             OscEvent::PointerShape(_) => &mut self.last_pointer_shape,
@@ -498,7 +544,7 @@ mod tests {
 
     #[test]
     fn a_repeated_state_is_emitted_once_and_a_repeated_notification_every_time() {
-        let mut filter = OscFilter::new(policy(ShellPlatform::Unix)).unwrap();
+        let mut filter = OscFilter::new(policy(ShellPlatform::Unix));
         let split = |payload: &'static str| -> Vec<&[u8]> {
             payload.split(';').map(str::as_bytes).collect()
         };
@@ -519,13 +565,57 @@ mod tests {
     }
 
     #[test]
-    fn a_filter_exists_only_when_a_vt_key_is_on() {
-        let off = OscPolicy { vt: VtConfig::default(), ..policy(ShellPlatform::Unix) };
-        assert!(OscFilter::new(off).is_none());
+    fn a_vt_key_gates_only_its_own_sequence() {
         let mut pointer_only = policy(ShellPlatform::Unix);
         pointer_only.vt = VtConfig { pointer_shape: true, ..VtConfig::default() };
-        let mut filter = OscFilter::new(pointer_only).unwrap();
+        let mut filter = OscFilter::new(pointer_only);
         assert_eq!(filter.unhandled(&[b"9", b"done"]), None);
+    }
+
+    fn report(filter: &mut OscFilter, body: &str) -> Option<OscEvent> {
+        filter.unhandled(&[b"7501", body.as_bytes()])
+    }
+
+    fn shown(state: Option<ProgramState>) -> Option<OscEvent> {
+        Some(OscEvent::ProgramStatus(state))
+    }
+
+    #[test]
+    fn a_program_status_report_needs_no_vt_key() {
+        let off = OscPolicy { vt: VtConfig::default(), ..policy(ShellPlatform::Unix) };
+        let mut filter = OscFilter::new(off);
+        assert_eq!(report(&mut filter, "state=working"), shown(Some(ProgramState::Working)));
+    }
+
+    #[test]
+    fn a_report_that_changes_nothing_shown_emits_nothing() {
+        let mut filter = OscFilter::new(policy(ShellPlatform::Unix));
+        assert_eq!(report(&mut filter, "state=working:id=a"), shown(Some(ProgramState::Working)));
+        assert_eq!(report(&mut filter, "state=working:id=b"), None);
+        assert_eq!(report(&mut filter, "state=idle:id=a"), None);
+        assert_eq!(report(&mut filter, "state=bogus"), None);
+        assert_eq!(filter.unhandled(&[b"133", b"A"]), shown(Some(ProgramState::Idle)));
+        assert_eq!(filter.unhandled(&[b"133", b"A"]), None);
+        assert_eq!(report(&mut filter, "state=idle:id=a"), None);
+    }
+
+    /// OSC 133 `B`, `C` and `D` mark the command line and its output.
+    #[test]
+    fn only_a_prompt_start_ends_activity() {
+        let mut filter = OscFilter::new(policy(ShellPlatform::Unix));
+        report(&mut filter, "state=working");
+        for mark in [b"B".as_slice(), b"C", b"D"] {
+            assert_eq!(filter.unhandled(&[b"133", mark]), None);
+        }
+        assert_eq!(filter.unhandled(&[b"133", b"A", b"k=s"]), shown(None));
+    }
+
+    #[test]
+    fn a_full_reset_removes_every_record() {
+        let mut filter = OscFilter::new(policy(ShellPlatform::Unix));
+        report(&mut filter, "state=done:id=a");
+        report(&mut filter, "state=error:id=b");
+        assert_eq!(filter.reset(), shown(None));
     }
 
     #[test]

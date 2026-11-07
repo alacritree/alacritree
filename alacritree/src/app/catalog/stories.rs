@@ -77,6 +77,7 @@ impl Catalog {
                 ShownState::Working,
                 ShownState::Pinged,
                 ShownState::Done,
+                ShownState::Error,
                 ShownState::Blocked,
             ] {
                 ui.horizontal(|ui| {

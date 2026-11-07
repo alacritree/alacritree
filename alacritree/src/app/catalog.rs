@@ -375,6 +375,7 @@ impl Catalog {
                         ShownState::Working,
                         ShownState::Pinged,
                         ShownState::Done,
+                        ShownState::Error,
                         ShownState::Blocked,
                     ] {
                         ui.allocate_ui_with_layout(
@@ -712,6 +713,7 @@ fn session(
         needs_attention,
         done: false,
         activity,
+        program_status: None,
         is_active,
         is_displayed,
         managed: None,

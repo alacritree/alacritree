@@ -46,6 +46,7 @@ use crate::osc::Progress as OscProgress;
 use crate::panel_filter::{self, PanelFilter};
 use crate::path_style::PathStyle;
 use crate::pr_status::{self, PrCache};
+use crate::program_status::ProgramState;
 use crate::projects::{Discovered, NotAProject, Project, project_json};
 use crate::session::{
     self, Attachment, AttentionVerdict, LiveState, PendingAttention, Session, SessionActivity,
@@ -187,6 +188,7 @@ struct GitColors {
 struct StateColors {
     blocked: Color32,
     done: Color32,
+    error: Color32,
     idle: Color32,
     unknown: Color32,
 }
@@ -252,7 +254,10 @@ impl Theme {
             state_colors: StateColors {
                 blocked: rgb_to_color32(config.palette.normal[1]), // red
                 done: rgb_to_color32(config.palette.normal[6]),    // cyan, herdr's teal
-                idle: rgb_to_color32(config.palette.normal[2]),    // green
+                // Red is taken by blocked, and the dots set tells the two
+                // apart by colour alone.
+                error: rgb_to_color32(config.palette.normal[5]), // magenta
+                idle: rgb_to_color32(config.palette.normal[2]),  // green
                 unknown: text_muted,
             },
             status_indicators: config.ui.status_indicators,
@@ -3026,7 +3031,10 @@ impl AlacritreeApp {
                     let is_agent = live.is_some();
                     let session = &mut self.sessions[idx];
                     let was_latched = session.done || session.needs_attention;
-                    session.done |= pending.finished && is_agent;
+                    // A program that reports its own state says when it is
+                    // done, so a title settling is no evidence of it.
+                    let reported = session.program_status().is_some();
+                    session.done |= pending.finished && is_agent && !reported;
                     session.needs_attention |=
                         pending.rang || pending.notified || (pending.finished && !is_agent);
                     // Only toast on the transition into a latch: BEL and the
@@ -3048,17 +3056,26 @@ impl AlacritreeApp {
             if let Some(idx) = visible_idx {
                 self.sessions[idx].needs_attention = false;
                 self.sessions[idx].done = false;
+                self.sessions[idx].see_program_status();
             }
         }
     }
 
-    /// A session's live reading with its multiplexer's status folded in.
+    /// A session's live reading, from its program's own report when it
+    /// made one, and otherwise with its multiplexer's status folded in.
     fn session_activity(&self, s: &AppSession) -> SessionActivity {
-        pane_backed_activity(s.activity(), self.session_pane_status(s))
+        match s.program_status() {
+            Some(state) => s.activity().with_live(LiveState::from(state)),
+            None => pane_backed_activity(s.activity(), self.session_pane_status(s)),
+        }
     }
 
-    /// The mark a session's row draws, from its live reading and its latches.
+    /// The mark a session's row draws, from its live reading and its latches,
+    /// or from its program's own report when it made one.
     fn session_shown_state(&self, s: &AppSession) -> Option<ShownState> {
+        if let Some(state) = s.program_status() {
+            return Some(ShownState::reported(state, s.needs_attention));
+        }
         let pane_done = self.session_pane_status(s) == Some(PaneStatus::Done);
         ShownState::of(self.session_activity(s).live(), s.done || pane_done, s.needs_attention)
     }
@@ -3094,6 +3111,7 @@ impl AlacritreeApp {
                 done: s.done || self.session_pane_status(s) == Some(PaneStatus::Done),
                 activity: self.session_activity(s),
                 managed: None,
+                program: s.program_status(),
             },
             None => RowStatus::live(self.workspace_activity(ws)),
         }
@@ -3110,7 +3128,7 @@ impl AlacritreeApp {
             if s.working_directory != *ws {
                 continue;
             }
-            let activity = pane_backed_activity(s.activity(), self.session_pane_status(s));
+            let activity = self.session_activity(s);
             let Some(live) = activity.live() else {
                 continue;
             };
@@ -3206,7 +3224,7 @@ impl AlacritreeApp {
             .filter_map(|entry| match entry {
                 sidebar_nav::WorkspaceEntry::Session(id) => {
                     let s = self.sessions.iter().find(|s| s.id == *id)?;
-                    let activity = pane_backed_activity(s.activity(), self.session_pane_status(s));
+                    let activity = self.session_activity(s);
                     Some(WorkspaceRowData::Session(SessionRowData {
                         id: s.id,
                         name: session_row_name(&s.title, activity, self.session_pane(s)),
@@ -3216,6 +3234,7 @@ impl AlacritreeApp {
                         needs_attention: s.needs_attention,
                         done: s.done,
                         activity,
+                        program_status: s.program_status(),
                         is_active: active == Some(s.id),
                         is_displayed: is_current && active == Some(s.id),
                         managed: self.session_managed(s),
@@ -4843,6 +4862,91 @@ mod tests {
         assert!(!app.sessions[0].done);
         assert!(app.sessions[0].needs_attention);
         assert_eq!(app.session_shown_state(&app.sessions[0]), Some(ShownState::Pinged));
+    }
+
+    /// Bytes as the program wrote them, through the session's own parser.
+    fn feed_pty(app: &mut AlacritreeApp, bytes: &str) {
+        use alacritty_terminal::vte::ansi::{Processor, StdSyncHandler};
+        Processor::<StdSyncHandler>::new()
+            .advance(&mut *app.sessions[0].term.lock(), bytes.as_bytes());
+        app.process_session_events(&Context::default());
+    }
+
+    #[test]
+    fn a_program_status_report_shows_its_state_on_the_row() {
+        let mut app = app_with_a_background_session("shell");
+        for terminator in ["\x1b\\", "\x07"] {
+            for (state, shown) in [
+                ("working", ShownState::Working),
+                ("idle", ShownState::Idle),
+                ("blocked", ShownState::Blocked),
+                ("done", ShownState::Done),
+                ("error", ShownState::Error),
+            ] {
+                feed_pty(&mut app, &format!("\x1b]7501;state={state}{terminator}"));
+                assert_eq!(
+                    app.session_shown_state(&app.sessions[0]),
+                    Some(shown),
+                    "{state} ended by {terminator:?}"
+                );
+            }
+        }
+    }
+
+    /// The spinner says working and the program says idle. The program wins,
+    /// and the title settling later latches no `done` of its own.
+    #[test]
+    fn a_program_status_report_overrides_the_title_heuristics() {
+        use alacritty_terminal::event::Event;
+        let mut app = app_with_a_background_session("\u{280b} claude");
+        assert_eq!(app.session_shown_state(&app.sessions[0]), Some(ShownState::Working));
+        feed_pty(&mut app, "\x1b]7501;state=idle\x1b\\");
+        assert_eq!(app.session_shown_state(&app.sessions[0]), Some(ShownState::Idle));
+        drain(&mut app, Event::Title("\u{2733} claude".into()));
+        assert!(!app.sessions[0].done);
+        assert_eq!(app.session_shown_state(&app.sessions[0]), Some(ShownState::Idle));
+    }
+
+    #[test]
+    fn a_row_shows_the_record_that_most_wants_a_human() {
+        let mut app = app_with_a_background_session("shell");
+        feed_pty(&mut app, "\x1b]7501;state=blocked:id=tool\x1b\\");
+        feed_pty(&mut app, "\x1b]7501;state=working:id=turn\x1b\\");
+        assert_eq!(app.session_shown_state(&app.sessions[0]), Some(ShownState::Blocked));
+        assert!(app.workspace_needs_attention(&None));
+        feed_pty(&mut app, "\x1b]7501;state=clear:id=tool\x1b\\");
+        assert_eq!(app.session_shown_state(&app.sessions[0]), Some(ShownState::Working));
+    }
+
+    /// The probe sees an idle agent, and the program says it is blocked.
+    #[test]
+    fn a_program_status_report_overrides_the_process_probe() {
+        let mut app = app_with_a_background_session("shell");
+        app.sessions[0].force_agent_for_test("claude");
+        assert_eq!(app.session_shown_state(&app.sessions[0]), Some(ShownState::Idle));
+        feed_pty(&mut app, "\x1b]7501;state=blocked\x07");
+        assert_eq!(app.session_shown_state(&app.sessions[0]), Some(ShownState::Blocked));
+        assert_eq!(app.session_activity(&app.sessions[0]).name(), Some("claude"));
+    }
+
+    /// A reported result wants a human the way the `done` latch does, until
+    /// the user looks. The next result wants one again.
+    #[test]
+    fn a_reported_result_stops_wanting_attention_once_viewed() {
+        let mut app = app_with_a_background_session("shell");
+        feed_pty(&mut app, "\x1b]7501;state=error\x07");
+        assert!(app.workspace_needs_attention(&None));
+
+        app.current_workspace = None;
+        app.set_active_in_current_workspace(app.sessions[0].id);
+        app.process_session_events(&Context::default());
+        assert_eq!(app.session_shown_state(&app.sessions[0]), Some(ShownState::Idle));
+        assert!(!app.workspace_needs_attention(&None));
+
+        app.current_workspace = Some(PathBuf::from("elsewhere"));
+        feed_pty(&mut app, "\x1b]7501;state=working\x07");
+        feed_pty(&mut app, "\x1b]7501;state=done\x07");
+        assert_eq!(app.session_shown_state(&app.sessions[0]), Some(ShownState::Done));
     }
 
     mod notifications {
@@ -9378,6 +9482,7 @@ mod tests {
                 needs_attention: false,
                 done: false,
                 activity: SessionActivity::Shell,
+                program_status: None,
                 is_active: true,
                 is_displayed: true,
                 managed: None,
@@ -9523,6 +9628,7 @@ mod tests {
                 needs_attention: false,
                 done: false,
                 activity: SessionActivity::Shell,
+                program_status: None,
                 is_active: true,
                 is_displayed: true,
                 managed: None,
@@ -9723,6 +9829,7 @@ mod tests {
             needs_attention: attention,
             done: false,
             activity,
+            program_status: None,
             is_active: true,
             is_displayed: true,
             managed: None,
@@ -9959,6 +10066,7 @@ mod tests {
             needs_attention: false,
             done: false,
             activity: SessionActivity::Shell,
+            program_status: None,
             is_active: true,
             is_displayed: true,
             managed: None,

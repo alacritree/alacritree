@@ -171,8 +171,7 @@ impl AlacritreeApp {
         }
         for session in &self.sessions {
             let agent = self.session_pane(session);
-            let activity =
-                pane_backed_activity(session.activity(), self.session_pane_status(session));
+            let activity = self.session_activity(session);
             let name = session_row_name(&session.title, activity, agent);
             if let Some(key) = session.pane_key.as_ref() {
                 let multiplexer = self.multiplexers.get(key.multiplexer);
@@ -365,6 +364,7 @@ impl AlacritreeApp {
                         done: session.done,
                         activity: self.session_activity(session),
                         managed: managed.as_ref(),
+                        program: session.program_status(),
                     })
                 },
                 PaletteAction::AttachPane(attach) => {

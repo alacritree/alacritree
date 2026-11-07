@@ -20,6 +20,7 @@ use alacritty_terminal::vte::ansi::{Processor, Rgb, StdSyncHandler};
 use crate::clipboard::Target;
 use crate::config::{Config, HoldExitedSessions, Palette};
 use crate::process_probe::{self, ProbeHandle};
+use crate::program_status::{self, ProgramState};
 use crate::repaint::Repaint;
 use crate::{colors, osc, scratchpad, wsl_spare};
 
@@ -30,7 +31,7 @@ pub(crate) struct EventProxy<R> {
     /// Whether this session's grid is the one on screen.  Read from the PTY
     /// thread on every event, written by the UI thread once per frame.
     visible: Arc<AtomicBool>,
-    /// `None` when no `[vt]` key is on, and OSC events are then dropped.
+    /// `None` for a session with no PTY, whose OSC events are dropped.
     osc: Option<Arc<Mutex<OscRoute>>>,
 }
 
@@ -103,7 +104,13 @@ fn carries_payload(event: &TermEvent) -> bool {
 const SPINNER_COALESCE: Duration = Duration::from_millis(120);
 
 impl<R: Repaint> EventListener for EventProxy<R> {
-    fn unhandled_osc(&self, params: &[&[u8]], _bell_terminated: bool) {
+    fn unhandled_osc(&self, params: &[&[u8]], bell_terminated: bool) {
+        // Sent down the terminal's own reply path, so the program reads it
+        // before the answer to the `CSI c` it sends after the query.
+        if program_status::is_query(params) {
+            self.send_event(TermEvent::PtyWrite(program_status::query_reply(bell_terminated)));
+            return;
+        }
         self.route_osc(|filter| filter.unhandled(params));
     }
 
@@ -111,6 +118,9 @@ impl<R: Repaint> EventListener for EventProxy<R> {
         if let TermEvent::MouseCursorIcon(icon) = event {
             self.route_osc(|filter| filter.pointer_shape(icon));
             return;
+        }
+        if let TermEvent::ChildExit(_) = event {
+            self.route_osc(osc::OscFilter::exited);
         }
         // A hidden session's grid is not on screen, so a repaint for it would
         // redraw the *visible* session to the same pixels.  Nothing then
@@ -206,9 +216,21 @@ pub(crate) enum LiveState {
     /// An approval or permission dialog is on screen right now.  Unlike the
     /// latched attention flag, this clears itself when the dialog does, so an
     /// agent that auto-approves after you walk away stops claiming to want
-    /// you.  Only a watcher outside the pane can see it, and no native
-    /// alacritree signal reaches inside one yet.
+    /// you. Only a watcher outside the pane or the program's own OSC 7501
+    /// report can see it.
     Blocked,
+}
+
+/// A finished result is not work in flight, so `done` and `error` read idle
+/// here. [`ShownState`] keeps the distinction.
+impl From<ProgramState> for LiveState {
+    fn from(state: ProgramState) -> Self {
+        match state {
+            ProgramState::Idle | ProgramState::Done | ProgramState::Error => Self::Idle,
+            ProgramState::Working => Self::Working,
+            ProgramState::Blocked => Self::Blocked,
+        }
+    }
 }
 
 impl LiveState {
@@ -254,6 +276,8 @@ pub(crate) enum ShownState {
     Pinged,
     /// The agent finished a turn while nobody was looking.
     Done,
+    /// The program reported that it failed.
+    Error,
     Blocked,
 }
 
@@ -264,6 +288,14 @@ impl ShownState {
         let done = (done && live.is_some()).then_some(Self::Done);
         let pinged = pinged.then_some(Self::Pinged);
         [live.map(Self::from), done, pinged].into_iter().flatten().max()
+    }
+
+    /// The mark for a session whose program reports its own state. The
+    /// report replaces the live reading and the `done` latch, which only
+    /// guess at it. A ring is not a guess, so a ping still shows.
+    pub(crate) fn reported(state: ProgramState, pinged: bool) -> Self {
+        let state = Self::from(state);
+        if pinged { state.max(Self::Pinged) } else { state }
     }
 
     /// The states that want a human: what the attention filter keeps and
@@ -283,6 +315,18 @@ impl From<PaneStatus> for ShownState {
             PaneStatus::Blocked => Self::Blocked,
             PaneStatus::Done => Self::Done,
             PaneStatus::Unknown => Self::Unknown,
+        }
+    }
+}
+
+impl From<ProgramState> for ShownState {
+    fn from(state: ProgramState) -> Self {
+        match state {
+            ProgramState::Idle => Self::Idle,
+            ProgramState::Working => Self::Working,
+            ProgramState::Done => Self::Done,
+            ProgramState::Error => Self::Error,
+            ProgramState::Blocked => Self::Blocked,
         }
     }
 }
@@ -371,6 +415,11 @@ pub(crate) struct Session<R: Repaint> {
     pub events: mpsc::Receiver<TermEvent>,
     pub osc_events: Option<mpsc::Receiver<osc::OscEvent>>,
     pub progress: Option<osc::Progress>,
+    /// The state the program's OSC 7501 records show, read through
+    /// [`Self::program_status`].
+    program_status: Option<ProgramState>,
+    /// The user has looked at the session since `program_status` changed.
+    program_status_seen: bool,
     pub pointer_shape: Option<egui::CursorIcon>,
     /// Most recent notification body, kept whether or not it toasted.
     pub last_notification: Option<String>,
@@ -663,8 +712,11 @@ fn new_term<R: Repaint>(
     let graphics = term.graphics_mut();
     let (width, height) = cell_pixels(cell_size);
     graphics.set_cell_pixels(width, height);
-    let proxy = proxy.clone();
-    graphics.set_waker(move || proxy.send_event(TermEvent::Wakeup));
+    let waker = proxy.clone();
+    graphics.set_waker(move || waker.send_event(TermEvent::Wakeup));
+    // `Term` reports a full reset to its graphics and to nothing else.
+    let resetter = proxy.clone();
+    graphics.set_reset_hook(move || resetter.route_osc(osc::OscFilter::reset));
     if let Some(distro) = distro {
         // With remote-to-remote symlink evaluation off, Windows' default,
         // Windows opens no Linux symlink through `\\wsl.localhost`, so the
@@ -956,6 +1008,8 @@ impl<R: Repaint> Session<R> {
             events,
             osc_events: None,
             progress: None,
+            program_status: None,
+            program_status_seen: false,
             pointer_shape: None,
             last_notification: None,
             scratchpad: Some(editor),
@@ -1003,6 +1057,8 @@ impl<R: Repaint> Session<R> {
             events,
             osc_events: None,
             progress: None,
+            program_status: None,
+            program_status_seen: false,
             pointer_shape: None,
             last_notification: None,
             scratchpad: None,
@@ -1162,13 +1218,8 @@ impl<R: Repaint> Session<R> {
             shell: shell_platform,
         };
         let (proxy, events) = EventProxy::new(repaint);
-        let (proxy, osc_events) = match osc::OscFilter::new(policy) {
-            Some(filter) => {
-                let (proxy, receiver) = proxy.with_osc(filter);
-                (proxy, Some(receiver))
-            },
-            None => (proxy, None),
-        };
+        let (proxy, osc_events) = proxy.with_osc(osc::OscFilter::new(policy));
+        let osc_events = Some(osc_events);
 
         let term = new_term(config, &size, cell_size, &proxy, distro.as_deref());
 
@@ -1216,6 +1267,8 @@ impl<R: Repaint> Session<R> {
             events,
             osc_events,
             progress: None,
+            program_status: None,
+            program_status_seen: false,
             pointer_shape: None,
             last_notification: None,
             scratchpad: None,
@@ -1391,6 +1444,10 @@ impl<R: Repaint> Session<R> {
                     },
                     osc::OscEvent::Progress(progress) => self.progress = Some(progress),
                     osc::OscEvent::PointerShape(icon) => self.pointer_shape = Some(icon),
+                    osc::OscEvent::ProgramStatus(state) => {
+                        self.program_status = state;
+                        self.program_status_seen = false;
+                    },
                 }
             }
             self.osc_events = Some(receiver);
@@ -1482,6 +1539,27 @@ impl<R: Repaint> Session<R> {
         }
         let signals = self.probe.signals();
         session_activity(signals.agent, &self.title, signals.answered)
+    }
+
+    /// What the program says it is doing over OSC 7501, `None` while it
+    /// holds no record. It wins over every heuristic reading. A result the
+    /// user has looked at since it arrived reads idle, the way the `done`
+    /// latch clears on view, so a finished session leaves the attention
+    /// filter.
+    pub(crate) fn program_status(&self) -> Option<ProgramState> {
+        let state = self.program_status?;
+        Some(if self.program_status_seen && state.is_result() { ProgramState::Idle } else { state })
+    }
+
+    /// The user is looking at this session.
+    pub(crate) fn see_program_status(&mut self) {
+        self.program_status_seen = true;
+    }
+
+    /// Pretend the probe just recognized `agent` in the foreground.
+    #[cfg(test)]
+    pub(crate) fn force_agent_for_test(&self, agent: &'static str) {
+        self.probe.force_agent_for_test(agent);
     }
 
     /// A session "looks busy" when a process is running in the terminal
@@ -1749,17 +1827,20 @@ pub(crate) mod tests {
         }
     }
 
-    /// Shells send OSC 133 on every prompt, and with no `[vt]` key on
-    /// nothing reads it.
+    /// Shells send OSC 133 on every prompt, and one that ends no program
+    /// status changes nothing on screen.
     #[test]
-    fn an_uninterpreted_osc_with_no_vt_key_on_is_dropped_without_a_wake() {
+    fn an_osc_that_changes_nothing_is_dropped_without_a_wake() {
         let repaint = Recorder::default();
+        let off = osc::OscPolicy { vt: crate::config::VtConfig::default(), ..all_on_policy() };
         let (proxy, events) = EventProxy::new(repaint.clone());
+        let (proxy, osc_events) = proxy.with_osc(osc::OscFilter::new(off));
 
         proxy.unhandled_osc(&[b"133", b"A"], true);
         proxy.send_event(TermEvent::MouseCursorIcon(CursorIcon::Pointer));
 
         assert!(events.try_recv().is_err());
+        assert!(osc_events.try_recv().is_err());
         assert_eq!(repaint.wakes(), 0);
     }
 
@@ -1768,9 +1849,8 @@ pub(crate) mod tests {
     #[test]
     fn a_hidden_session_wakes_once_per_changed_progress() {
         let repaint = Recorder::default();
-        let (proxy, osc_events) = EventProxy::new(repaint.clone())
-            .0
-            .with_osc(osc::OscFilter::new(all_on_policy()).unwrap());
+        let (proxy, osc_events) =
+            EventProxy::new(repaint.clone()).0.with_osc(osc::OscFilter::new(all_on_policy()));
         proxy.set_visible(false);
         let progress =
             |value: &str| proxy.unhandled_osc(&[b"9", b"4", b"1", value.as_bytes()], true);
@@ -2172,7 +2252,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_session_with_no_vt_key_keeps_no_filter() {
+    fn a_session_with_no_vt_key_drops_the_vt_sequences() {
         let config = Config::default();
         assert!(!config.vt.any_enabled());
         let (mut session, _) = Session::pending_shell(
@@ -2185,12 +2265,84 @@ pub(crate) mod tests {
             None,
             None,
         );
-        assert!(session.osc_events.is_none());
 
         feed(&session, "\x1b]22;pointer\x07\x1b]9;4;1;50\x07");
         session.drain_events(&config.palette);
         assert_eq!(session.pointer_shape, None);
         assert_eq!(session.progress, None);
+    }
+
+    /// A session with every `[vt]` key off, which is the default config.
+    fn plain_session() -> Session<Recorder> {
+        Session::pending_shell(
+            Recorder::default(),
+            &Config::default(),
+            None,
+            TermSize::new(80, 24),
+            (8.0, 16.0),
+            None,
+            None,
+            None,
+        )
+        .0
+    }
+
+    fn program_status_after(session: &mut Session<Recorder>, bytes: &str) -> Option<ProgramState> {
+        feed(session, bytes);
+        session.drain_events(&Palette::default());
+        session.program_status()
+    }
+
+    /// A program that probes sends `CSI c` straight after the query and
+    /// takes a device-attributes reply that arrives first as "unsupported".
+    #[test]
+    fn the_program_status_query_is_answered_before_the_next_reply() {
+        for (query, reply) in
+            [("\x1b]7501;?\x1b\\", "\x1b]7501;?\x1b\\"), ("\x1b]7501;?\x07", "\x1b]7501;?\x07")]
+        {
+            let mut session = plain_session();
+            feed(&session, &format!("{query}\x1b[c"));
+            session.drain_events(&Palette::default());
+            let written = String::from_utf8(session.pending_writes.take().unwrap()).unwrap();
+            assert!(written.starts_with(reply), "{query:?} got {written:?}");
+            assert!(written.len() > reply.len(), "the `CSI c` reply follows: {written:?}");
+            assert_eq!(session.program_status(), None);
+        }
+    }
+
+    #[test]
+    fn an_exit_drops_working_and_blocked_and_keeps_results() {
+        let mut session = plain_session();
+        let state = program_status_after(&mut session, "\x1b]7501;state=working:id=a\x07");
+        assert_eq!(state, Some(ProgramState::Working));
+        session.inject_for_test(TermEvent::ChildExit(clean_status()));
+        assert_eq!(program_status_after(&mut session, ""), None);
+
+        let mut session = plain_session();
+        program_status_after(&mut session, "\x1b]7501;state=blocked:id=a\x07");
+        program_status_after(&mut session, "\x1b]7501;state=error:id=b\x07");
+        session.inject_for_test(TermEvent::ChildExit(dirty_status()));
+        assert_eq!(program_status_after(&mut session, ""), Some(ProgramState::Error));
+    }
+
+    #[test]
+    fn a_new_prompt_drops_working_and_blocked_and_keeps_results() {
+        let mut session = plain_session();
+        program_status_after(&mut session, "\x1b]7501;state=working:id=a\x1b\\");
+        program_status_after(&mut session, "\x1b]7501;state=done:id=b\x1b\\");
+        assert_eq!(
+            program_status_after(&mut session, "\x1b]7501;state=blocked\x07"),
+            Some(ProgramState::Blocked)
+        );
+        assert_eq!(program_status_after(&mut session, "\x1b]133;A\x07"), Some(ProgramState::Done));
+    }
+
+    #[test]
+    fn a_full_reset_drops_every_record_and_a_soft_reset_keeps_them() {
+        let mut session = plain_session();
+        program_status_after(&mut session, "\x1b]7501;state=done:id=a\x07");
+        assert_eq!(program_status_after(&mut session, "\x1b[!p"), Some(ProgramState::Done));
+        assert_eq!(program_status_after(&mut session, "\x1bc"), None);
     }
 
     #[test]
@@ -2372,6 +2524,8 @@ pub(crate) mod tests {
             events,
             osc_events: None,
             progress: None,
+            program_status: None,
+            program_status_seen: false,
             pointer_shape: None,
             last_notification: None,
             scratchpad: None,

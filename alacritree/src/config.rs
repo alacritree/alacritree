@@ -1099,6 +1099,7 @@ pub struct Icons<C = Rgb> {
     pub agent_working: IconStyle<C>,
     pub agent_blocked: IconStyle<C>,
     pub agent_done: IconStyle<C>,
+    pub agent_error: IconStyle<C>,
     pub agent_unknown: IconStyle<C>,
     pub attention: IconStyle<C>,
 }
@@ -1134,6 +1135,7 @@ impl<C: Copy> Icons<C> {
             agent_working: self.agent_working.map_color(f),
             agent_blocked: self.agent_blocked.map_color(f),
             agent_done: self.agent_done.map_color(f),
+            agent_error: self.agent_error.map_color(f),
             agent_unknown: self.agent_unknown.map_color(f),
             attention: self.attention.map_color(f),
         }
@@ -2721,6 +2723,10 @@ struct RawIcons {
     /// `[ui] status_indicators`: `⬤` for dots, `✓` for symbols.
     #[serde(skip_serializing_if = "Option::is_none")]
     agent_done: Option<RawIconStyle>,
+    /// A program that reported over OSC 7501 that it failed. Unset follows
+    /// `[ui] status_indicators`: `⬤` for dots, `!` for symbols.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent_error: Option<RawIconStyle>,
     /// An agent nothing could read a state from.  Unset follows
     /// `[ui] status_indicators`: `◯` for dots, `?` for symbols.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2768,6 +2774,7 @@ impl Default for RawIcons {
             agent_working: None,
             agent_blocked: None,
             agent_done: None,
+            agent_error: None,
             agent_unknown: None,
             attention: None,
         }
@@ -2804,6 +2811,7 @@ fn build_icons(raw: RawIcons) -> Icons {
         agent_working: raw.agent_working.map(Into::into).unwrap_or_default(),
         agent_blocked: raw.agent_blocked.map(Into::into).unwrap_or_default(),
         agent_done: raw.agent_done.map(Into::into).unwrap_or_default(),
+        agent_error: raw.agent_error.map(Into::into).unwrap_or_default(),
         agent_unknown: raw.agent_unknown.map(Into::into).unwrap_or_default(),
         attention: raw.attention.map(Into::into).unwrap_or_default(),
     }

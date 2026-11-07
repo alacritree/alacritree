@@ -36,6 +36,10 @@ impl AlacritreeApp {
         let key = session.pane_key.as_ref();
         let activity = self.session_activity(session);
         let done = session.done || self.session_pane_status(session) == Some(PaneStatus::Done);
+        let reported = match session.program_status() {
+            Some(state) => Some(state.into()),
+            None => done.then_some("done"),
+        };
         json!({
             "id": session.id,
             "title": session.title,
@@ -50,7 +54,7 @@ impl AlacritreeApp {
             "lines": session.size.screen_lines,
             "is_active_tab": is_active_tab,
             "needs_attention": session.needs_attention,
-            "agent": activity_json(activity, done),
+            "agent": activity_json(activity, reported),
             "busy": key.is_none().then(|| session.is_busy()),
             "multiplexer": key.map(|key| self.session_multiplexer_json(key)),
         })
@@ -318,14 +322,15 @@ impl AlacritreeApp {
 /// `SessionActivity` as the reply spells it.  A plain shell is null rather
 /// than an object, so a consumer testing for presence needs no second field.
 ///
-/// `state` is the live reading, except that a finished turn nobody has looked
-/// at yet reads `done`, the word herdr uses for the same thing.
-fn activity_json(activity: SessionActivity, done: bool) -> Value {
+/// `state` is the live reading unless `reported` names one. That is the
+/// program's own OSC 7501 word, or `done` for a finished turn nobody has
+/// looked at yet, the word herdr uses for the same thing.
+fn activity_json(activity: SessionActivity, reported: Option<&str>) -> Value {
     match activity {
         SessionActivity::Shell => Value::Null,
         SessionActivity::Agent { name, live } => json!({
             "name": name,
-            "state": if done { "done" } else { live.label() },
+            "state": reported.unwrap_or(live.label()),
         }),
     }
 }

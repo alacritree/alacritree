@@ -336,6 +336,13 @@
         "italic": false,
         "size": null
       },
+      "agent_error": {
+        "bold": false,
+        "color": null,
+        "glyph": null,
+        "italic": false,
+        "size": null
+      },
       "agent_idle": {
         "bold": false,
         "color": null,

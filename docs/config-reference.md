@@ -470,6 +470,8 @@ Sidebar glyph overrides.
   - The table form takes the same keys as `integrations.herdr.icon`.
 - `agent_done` (string or table): An agent that finished a turn while nobody was looking. Unset follows `[ui] status_indicators`: `⬤` for dots, `✓` for symbols.
   - The table form takes the same keys as `integrations.herdr.icon`.
+- `agent_error` (string or table): A program that reported over OSC 7501 that it failed. Unset follows `[ui] status_indicators`: `⬤` for dots, `!` for symbols.
+  - The table form takes the same keys as `integrations.herdr.icon`.
 - `agent_idle` (string or table): An agent waiting with nothing in flight. Unset follows `[ui] status_indicators`: `◯` in both sets.
   - The table form takes the same keys as `integrations.herdr.icon`.
 - `agent_unknown` (string or table): An agent nothing could read a state from. Unset follows `[ui] status_indicators`: `◯` for dots, `?` for symbols.
