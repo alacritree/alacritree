@@ -2021,27 +2021,22 @@ fn progress_tone(progress: OscProgress) -> ProgressTone {
     }
 }
 
-/// The session's name, then where its shell reported it is and the last
-/// notification it sent, under the mode that governs every sidebar name.
+/// The session's name, then where its shell reported it is, what its
+/// program last reported, and the last notification it sent, under the mode
+/// that governs every sidebar name.
 fn session_name_tooltip(
     resp: egui::Response,
     row: &SessionRowData,
     elided: bool,
     mode: SidebarTooltips,
 ) -> egui::Response {
-    if row.reported_cwd.is_none() && row.last_notification.is_none() {
-        return name_tooltip(resp, &row.name.text, elided, mode);
-    }
-    let mut tooltip = row.name.text.clone();
-    if let Some(path) = &row.reported_cwd {
-        tooltip.push('\n');
-        tooltip.push_str(&path.display().to_string());
-    }
-    if let Some(body) = &row.last_notification {
-        tooltip.push('\n');
-        tooltip.push_str(body);
-    }
-    name_tooltip(resp, &tooltip, elided, mode)
+    let cwd = row.reported_cwd.as_ref().map(|path| path.display().to_string());
+    let lines: Vec<&str> = std::iter::once(row.name.text.as_str())
+        .chain(cwd.as_deref())
+        .chain(row.program_msg.as_deref())
+        .chain(row.last_notification.as_deref())
+        .collect();
+    name_tooltip(resp, &lines.join("\n"), elided, mode)
 }
 
 /// `draggable` makes the whole row the drag handle rather than adding a grip:
@@ -2616,6 +2611,8 @@ pub(super) struct SessionRowData {
     pub(super) done: bool,
     pub(super) activity: SessionActivity,
     pub(super) program_status: Option<ProgramState>,
+    /// The `msg` of the OSC 7501 record the row shows.
+    pub(super) program_msg: Option<String>,
     /// This workspace's remembered active session (accent icon).
     pub(super) is_active: bool,
     /// Active *and* the workspace is current — the session on screen

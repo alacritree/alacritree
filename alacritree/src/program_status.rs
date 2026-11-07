@@ -39,11 +39,78 @@ impl ProgramState {
     }
 }
 
+/// What a blocked program waits for. Each variant is spelled as the protocol
+/// spells it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, strum::EnumString)]
+#[strum(serialize_all = "lowercase")]
+pub(crate) enum BlockedKind {
+    /// Approval to do something.
+    Permission,
+    /// An answer the user must type.
+    Question,
+    /// A login, token or credential.
+    Auth,
+}
+
+/// What one record says. `state` is the one key every report carries.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Status {
+    pub state: ProgramState,
+    /// Only a `blocked` record has one.
+    pub kind: Option<BlockedKind>,
+    /// The program's stable identifier, such as `claude-code`.
+    pub app: Option<String>,
+    /// A short label for the record.
+    pub title: Option<String>,
+    /// One line on what the record is doing, waiting for, or finished.
+    pub msg: Option<String>,
+}
+
+impl Status {
+    #[cfg(test)]
+    pub(crate) fn new(state: ProgramState) -> Self {
+        Self { state, kind: None, app: None, title: None, msg: None }
+    }
+
+    /// One line for a notification. The program's own `msg` wins, and
+    /// without one the line says what the state and kind mean.
+    pub(crate) fn summary(&self) -> String {
+        if let Some(msg) = &self.msg {
+            return msg.clone();
+        }
+        let who = self.app.as_deref().map_or_else(|| "The program".to_owned(), app_name);
+        match (self.state, self.kind) {
+            (ProgramState::Blocked, Some(BlockedKind::Permission)) => {
+                format!("{who} needs permission")
+            },
+            (ProgramState::Blocked, Some(BlockedKind::Question)) => {
+                format!("{who} has a question")
+            },
+            (ProgramState::Blocked, Some(BlockedKind::Auth)) => format!("{who} needs a login"),
+            (ProgramState::Blocked, None) => format!("{who} is waiting for you"),
+            (ProgramState::Done, _) => format!("{who} finished"),
+            (ProgramState::Error, _) => format!("{who} failed"),
+            (ProgramState::Working, _) => format!("{who} is working"),
+            (ProgramState::Idle, _) => format!("{who} is idle"),
+        }
+    }
+}
+
+/// An `app` or agent identifier as a person reads it: `claude-code` is
+/// `Claude Code`.
+pub(crate) fn app_name(id: &str) -> String {
+    let words = id.split(['-', '_']).filter(|word| !word.is_empty()).map(|word| {
+        let mut chars = word.chars();
+        chars.next().map_or_else(String::new, |first| first.to_uppercase().chain(chars).collect())
+    });
+    words.collect::<Vec<_>>().join(" ")
+}
+
 /// A report that changes the records. `None` addresses the root record for
-/// a state, and every record for `Clear`.
+/// a status, and every record for `Clear`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Report {
-    Set { id: Option<String>, state: ProgramState },
+    Set { id: Option<String>, status: Status },
     Clear { id: Option<String> },
 }
 
@@ -110,19 +177,27 @@ pub(crate) fn parse(params: &[&[u8]]) -> Option<Report> {
         Some(id) => Some(valid_id(id)?.to_owned()),
         None => None,
     };
-    if fields.get("app").is_some_and(|app| app.len() > MAX_APP) {
+    let app = fields.get("app").map(|app| (*app).to_owned());
+    if app.as_ref().is_some_and(|app| !is_name(app, MAX_APP)) {
         return None;
     }
-    for (key, limits) in [("msg", MSG_LIMITS), ("title", TITLE_LIMITS)] {
-        if let Some(text) = fields.get(key) {
-            valid_text(text, limits)?;
-        }
-    }
+    let text = |key, limits| match fields.get(key) {
+        Some(encoded) => decode_text(encoded, limits).map(Some),
+        None => Some(None),
+    };
+    let msg = text("msg", MSG_LIMITS)?;
+    let title = text("title", TITLE_LIMITS)?;
 
-    match *fields.get("state")? {
-        "clear" => Some(Report::Clear { id }),
-        state => Some(Report::Set { id, state: state.parse().ok()? }),
-    }
+    let state: ProgramState = match *fields.get("state")? {
+        "clear" => return Some(Report::Clear { id }),
+        state => state.parse().ok()?,
+    };
+    // An unknown kind, or one on a state other than `blocked`, is absent.
+    let kind = fields
+        .get("kind")
+        .filter(|_| state == ProgramState::Blocked)
+        .and_then(|kind| kind.parse().ok());
+    Some(Report::Set { id, status: Status { state, kind, app, title, msg } })
 }
 
 fn is_key(key: &str) -> bool {
@@ -133,14 +208,16 @@ fn is_value_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || b"_.,+/=-".contains(&byte)
 }
 
+/// An `app`, or one segment of an `id`.
+fn is_name(name: &str, max: usize) -> bool {
+    (1..=max).contains(&name.len())
+        && name.bytes().all(|b| b.is_ascii_alphanumeric() || b"_.+-".contains(&b))
+}
+
 fn valid_id(id: &str) -> Option<&str> {
-    let segment_ok = |segment: &str| {
-        (1..=MAX_ID_SEGMENT).contains(&segment.len())
-            && segment.bytes().all(|b| b.is_ascii_alphanumeric() || b"_.+-".contains(&b))
-    };
     let ok = id.len() <= MAX_ID
         && id.split('/').count() <= MAX_ID_DEPTH
-        && id.split('/').all(segment_ok);
+        && id.split('/').all(|segment| is_name(segment, MAX_ID_SEGMENT));
     ok.then_some(id)
 }
 
@@ -150,9 +227,8 @@ const BASE64: GeneralPurpose = GeneralPurpose::new(
     GeneralPurposeConfig::new().with_decode_padding_mode(DecodePaddingMode::Indifferent),
 );
 
-/// Checks a free-text value. The text itself is not kept, since nothing
-/// shows it.
-fn valid_text(encoded: &str, (max_encoded, max_decoded): (usize, usize)) -> Option<()> {
+/// A free-text value's text, or `None` when it breaks a rule.
+fn decode_text(encoded: &str, (max_encoded, max_decoded): (usize, usize)) -> Option<String> {
     if encoded.len() > max_encoded {
         return None;
     }
@@ -161,11 +237,11 @@ fn valid_text(encoded: &str, (max_encoded, max_decoded): (usize, usize)) -> Opti
         return None;
     }
     let text = String::from_utf8(decoded).ok()?;
-    (!text.chars().any(char::is_control)).then_some(())
+    (!text.chars().any(char::is_control)).then_some(text)
 }
 
 struct Record {
-    state: ProgramState,
+    status: Status,
     /// When the record was last written, on the store's own clock.
     updated: u64,
 }
@@ -180,7 +256,7 @@ pub(crate) struct Records {
 impl Records {
     pub(crate) fn apply(&mut self, report: Report) {
         match report {
-            Report::Set { id, state } => self.set(id.unwrap_or_default(), state),
+            Report::Set { id, status } => self.set(id.unwrap_or_default(), status),
             Report::Clear { id: None } => self.records.clear(),
             Report::Clear { id: Some(id) } => {
                 let prefix = format!("{id}/");
@@ -189,7 +265,7 @@ impl Records {
         }
     }
 
-    fn set(&mut self, id: String, state: ProgramState) {
+    fn set(&mut self, id: String, status: Status) {
         self.clock += 1;
         if self.records.len() >= MAX_RECORDS && !self.records.contains_key(&id) {
             let oldest = self.records.iter().min_by_key(|(_, r)| r.updated).map(|(k, _)| k.clone());
@@ -197,13 +273,13 @@ impl Records {
                 self.records.remove(&oldest);
             }
         }
-        self.records.insert(id, Record { state, updated: self.clock });
+        self.records.insert(id, Record { status, updated: self.clock });
     }
 
     /// The program exited or a new prompt began, so nothing it reported is
     /// still in flight. A result stays.
     pub(crate) fn end_activity(&mut self) {
-        self.records.retain(|_, record| record.state.survives_exit());
+        self.records.retain(|_, record| record.status.state.survives_exit());
     }
 
     /// A full reset (RIS).
@@ -211,10 +287,25 @@ impl Records {
         self.records.clear();
     }
 
-    /// The state of the record that most wants a human, or `None` while the
-    /// program has reported nothing.
-    pub(crate) fn shown(&self) -> Option<ProgramState> {
-        self.records.values().map(|record| record.state).max()
+    /// The record that most wants a human, the newest of those that tie, or
+    /// `None` while the program has reported nothing. A record without an
+    /// `app` takes its nearest ancestor's.
+    pub(crate) fn shown(&self) -> Option<Status> {
+        let (id, record) =
+            self.records.iter().max_by_key(|(_, record)| (record.status.state, record.updated))?;
+        let mut status = record.status.clone();
+        if status.app.is_none() {
+            status.app = self.ancestors(id).find_map(|record| record.status.app.clone());
+        }
+        Some(status)
+    }
+
+    /// The records above `id`, nearest first, ending at the root.
+    fn ancestors<'a>(&'a self, id: &'a str) -> impl Iterator<Item = &'a Record> {
+        let parents = std::iter::successors(Some(id), |id| {
+            (!id.is_empty()).then(|| id.rsplit_once('/').map_or("", |(parent, _)| parent))
+        });
+        parents.skip(1).filter_map(|parent| self.records.get(parent))
     }
 }
 
@@ -229,7 +320,11 @@ mod tests {
     }
 
     fn set(id: Option<&str>, state: ProgramState) -> Option<Report> {
-        Some(Report::Set { id: id.map(str::to_owned), state })
+        Some(Report::Set { id: id.map(str::to_owned), status: Status::new(state) })
+    }
+
+    fn shown_state(records: &Records) -> Option<ProgramState> {
+        records.shown().map(|status| status.state)
     }
 
     fn records(bodies: &[&str]) -> Records {
@@ -260,20 +355,55 @@ mod tests {
         assert_eq!(report("state=clear"), Some(Report::Clear { id: None }));
     }
 
-    /// The spec's own examples, `msg` included.
+    /// The spec's own examples.
     #[test]
     fn the_spec_examples_parse() {
         assert_eq!(
             report("state=working:app=brew:msg=SW5zdGFsbGluZyB1cGRhdGVz"),
-            set(None, ProgramState::Working)
+            Some(Report::Set {
+                id: None,
+                status: Status {
+                    app: Some("brew".into()),
+                    msg: Some("Installing updates".into()),
+                    ..Status::new(ProgramState::Working)
+                },
+            })
         );
         assert_eq!(
             report(
                 "state=blocked:kind=permission:app=terraform:\
-                 msg=QXBwbHkgMyB0byBhZGQsIDEgdG8gY2hhbmdlLCAwIHRvIGRlc3Ryb3k/"
+                 msg=QXBwbHkgMyB0byBhZGQsIDEgdG8gY2hhbmdlLCAwIHRvIGRlc3Ryb3k/:title=cGxhbg"
             ),
-            set(None, ProgramState::Blocked)
+            Some(Report::Set {
+                id: None,
+                status: Status {
+                    kind: Some(BlockedKind::Permission),
+                    app: Some("terraform".into()),
+                    title: Some("plan".into()),
+                    msg: Some("Apply 3 to add, 1 to change, 0 to destroy?".into()),
+                    ..Status::new(ProgramState::Blocked)
+                },
+            })
         );
+    }
+
+    /// A kind is absent when the protocol does not know it or the state is
+    /// not `blocked`.
+    #[test]
+    fn a_kind_counts_only_when_known_and_blocked() {
+        assert_eq!(report("state=working:kind=question"), set(None, ProgramState::Working));
+        assert_eq!(report("state=blocked:kind=coffee"), set(None, ProgramState::Blocked));
+        for (word, kind) in [
+            ("permission", BlockedKind::Permission),
+            ("question", BlockedKind::Question),
+            ("auth", BlockedKind::Auth),
+        ] {
+            let Some(Report::Set { status, .. }) = report(&format!("state=blocked:kind={word}"))
+            else {
+                panic!("{word} was ignored")
+            };
+            assert_eq!(status.kind, Some(kind));
+        }
     }
 
     #[test]
@@ -331,6 +461,9 @@ mod tests {
         assert_eq!(report(&format!("state=idle:title={}", encode(193))), None);
         assert!(report(&format!("state=idle:app={}", "a".repeat(32))).is_some());
         assert_eq!(report(&format!("state=idle:app={}", "a".repeat(33))), None);
+        for app in ["", "a/b", "a,b", "a=b"] {
+            assert_eq!(report(&format!("state=idle:app={app}")), None, "{app:?}");
+        }
         // `ESC ] 7501 ;` and `ESC \` take nine of the sequence's 4096 bytes.
         let body = |len: usize| format!("state=idle:pad={}", "x".repeat(len - 15));
         assert!(report(&body(4087)).is_some());
@@ -350,7 +483,7 @@ mod tests {
     fn each_report_replaces_its_record() {
         let records = records(&["state=blocked:id=a", "state=idle:id=a"]);
         assert_eq!(records.records.len(), 1);
-        assert_eq!(records.shown(), Some(ProgramState::Idle));
+        assert_eq!(shown_state(&records), Some(ProgramState::Idle));
     }
 
     #[test]
@@ -363,24 +496,75 @@ mod tests {
             "state=clear:id=a",
         ]);
         assert_eq!(records.records.len(), 1);
-        assert_eq!(records.shown(), Some(ProgramState::Working));
+        assert_eq!(shown_state(&records), Some(ProgramState::Working));
     }
 
     #[test]
     fn clear_without_an_id_removes_every_record() {
         let records = records(&["state=blocked", "state=working:id=a/b", "state=clear"]);
-        assert_eq!(records.shown(), None);
+        assert_eq!(shown_state(&records), None);
     }
 
     #[test]
     fn the_record_that_most_wants_a_human_is_shown() {
         use ProgramState::*;
-        let shown = |bodies: &[&str]| records(bodies).shown();
+        let shown = |bodies: &[&str]| shown_state(&records(bodies));
         assert_eq!(shown(&["state=working:id=a", "state=blocked:id=b"]), Some(Blocked));
         assert_eq!(shown(&["state=blocked:id=b", "state=working:id=a"]), Some(Blocked));
         assert_eq!(shown(&["state=done:id=a", "state=error:id=b"]), Some(Error));
         assert_eq!(shown(&["state=working:id=a", "state=done:id=b"]), Some(Done));
         assert_eq!(shown(&["state=idle:id=a", "state=working:id=b"]), Some(Working));
+    }
+
+    /// Among records that want a human equally, the newest one shows, with
+    /// the `app` its nearest ancestor names when it names none.
+    #[test]
+    fn the_newest_of_tied_records_shows_with_an_inherited_app() {
+        let records = records(&[
+            "state=working:app=claude-code",
+            "state=blocked:id=a:app=other",
+            "state=blocked:id=b:msg=c2Vjb25k",
+            "state=blocked:id=b/c:msg=dGhpcmQ",
+        ]);
+        let status = records.shown().unwrap();
+        assert_eq!(status.msg.as_deref(), Some("third"));
+        assert_eq!(status.app.as_deref(), Some("claude-code"));
+    }
+
+    #[test]
+    fn a_summary_is_the_programs_msg_or_what_its_state_means() {
+        use BlockedKind::*;
+        use ProgramState::*;
+        let status = |state, kind, msg: Option<&str>| Status {
+            kind,
+            app: Some("claude-code".into()),
+            msg: msg.map(str::to_owned),
+            ..Status::new(state)
+        };
+        for (status, line) in [
+            (status(Blocked, Some(Question), Some("Which parser?")), "Which parser?"),
+            (status(Blocked, Some(Question), None), "Claude Code has a question"),
+            (status(Blocked, Some(Permission), None), "Claude Code needs permission"),
+            (status(Blocked, Some(Auth), None), "Claude Code needs a login"),
+            (status(Blocked, None, None), "Claude Code is waiting for you"),
+            (status(Done, None, None), "Claude Code finished"),
+            (status(Error, None, None), "Claude Code failed"),
+        ] {
+            assert_eq!(status.summary(), line);
+        }
+        assert_eq!(Status::new(Done).summary(), "The program finished");
+    }
+
+    #[test]
+    fn an_app_id_reads_as_words() {
+        for (id, name) in [
+            ("claude-code", "Claude Code"),
+            ("claude", "Claude"),
+            ("my_tool.v2", "My Tool.v2"),
+            ("a--b", "A B"),
+        ] {
+            assert_eq!(app_name(id), name);
+        }
     }
 
     #[test]
@@ -396,7 +580,7 @@ mod tests {
         assert_eq!(records.records.len(), MAX_RECORDS);
         assert!(records.records.contains_key("r0"));
         assert!(!records.records.contains_key("r1"));
-        assert_eq!(records.shown(), Some(ProgramState::Blocked));
+        assert_eq!(shown_state(&records), Some(ProgramState::Blocked));
     }
 
     #[test]
@@ -409,7 +593,7 @@ mod tests {
         ]);
         records.end_activity();
         assert_eq!(records.records.len(), 2);
-        assert_eq!(records.shown(), Some(ProgramState::Error));
+        assert_eq!(shown_state(&records), Some(ProgramState::Error));
     }
 
     #[test]

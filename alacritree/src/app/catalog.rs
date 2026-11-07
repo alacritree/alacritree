@@ -714,6 +714,7 @@ fn session(
         done: false,
         activity,
         program_status: None,
+        program_msg: None,
         is_active,
         is_displayed,
         managed: None,

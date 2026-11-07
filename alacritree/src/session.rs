@@ -20,7 +20,7 @@ use alacritty_terminal::vte::ansi::{Processor, Rgb, StdSyncHandler};
 use crate::clipboard::Target;
 use crate::config::{Config, HoldExitedSessions, Palette};
 use crate::process_probe::{self, ProbeHandle};
-use crate::program_status::{self, ProgramState};
+use crate::program_status::{self, ProgramState, Status};
 use crate::repaint::Repaint;
 use crate::{colors, osc, scratchpad, wsl_spare};
 
@@ -415,9 +415,9 @@ pub(crate) struct Session<R: Repaint> {
     pub events: mpsc::Receiver<TermEvent>,
     pub osc_events: Option<mpsc::Receiver<osc::OscEvent>>,
     pub progress: Option<osc::Progress>,
-    /// The state the program's OSC 7501 records show, read through
-    /// [`Self::program_status`].
-    program_status: Option<ProgramState>,
+    /// The record the program's OSC 7501 reports show, read through
+    /// [`Self::program_status`] and [`Self::program_report`].
+    program_status: Option<Status>,
     /// The user has looked at the session since `program_status` changed.
     program_status_seen: bool,
     pub pointer_shape: Option<egui::CursorIcon>,
@@ -1449,10 +1449,11 @@ impl<R: Repaint> Session<R> {
                     },
                     osc::OscEvent::Progress(progress) => self.progress = Some(progress),
                     osc::OscEvent::PointerShape(icon) => self.pointer_shape = Some(icon),
-                    osc::OscEvent::ProgramStatus(state) => {
-                        outcome.reported |=
-                            state.is_some_and(|s| ShownState::from(s).wants_attention());
-                        self.program_status = state;
+                    osc::OscEvent::ProgramStatus(status) => {
+                        outcome.reported |= status
+                            .as_ref()
+                            .is_some_and(|s| ShownState::from(s.state).wants_attention());
+                        self.program_status = status;
                         self.program_status_seen = false;
                     },
                 }
@@ -1554,8 +1555,13 @@ impl<R: Repaint> Session<R> {
     /// latch clears on view, so a finished session leaves the attention
     /// filter.
     pub(crate) fn program_status(&self) -> Option<ProgramState> {
-        let state = self.program_status?;
+        let state = self.program_status.as_ref()?.state;
         Some(if self.program_status_seen && state.is_result() { ProgramState::Idle } else { state })
+    }
+
+    /// The whole record behind [`Self::program_status`], text included.
+    pub(crate) fn program_report(&self) -> Option<&Status> {
+        self.program_status.as_ref()
     }
 
     /// The user is looking at this session.

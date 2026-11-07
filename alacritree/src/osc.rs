@@ -13,7 +13,7 @@ use std::sync::OnceLock;
 use alacritty_terminal::vte::ansi::cursor_icon::CursorIcon;
 
 use crate::config::VtConfig;
-use crate::program_status::{self, ProgramState, Records};
+use crate::program_status::{self, Records, Status};
 
 /// What the shell on the other end of the PTY spells a path like.  A WSL
 /// session on Windows is `Unix`: the payload is a Linux path, and the
@@ -42,9 +42,9 @@ pub(crate) enum OscEvent {
     Notify(String),
     Progress(Progress),
     PointerShape(egui::CursorIcon),
-    /// The OSC 7501 state the session's row shows, `None` once the program
+    /// The OSC 7501 record the session's row shows, `None` once the program
     /// holds no record.
-    ProgramStatus(Option<ProgramState>),
+    ProgramStatus(Option<Status>),
 }
 
 pub(crate) struct OscPolicy {
@@ -272,7 +272,7 @@ pub(crate) struct OscFilter {
     last_progress: Option<OscEvent>,
     last_pointer_shape: Option<OscEvent>,
     records: Records,
-    shown_status: Option<ProgramState>,
+    shown_status: Option<Status>,
 }
 
 impl OscFilter {
@@ -317,14 +317,14 @@ impl OscFilter {
         self.program_status()
     }
 
-    /// The shown state, when it changed. Shells send OSC 133 on every
+    /// The shown record, when it changed. Shells send OSC 133 on every
     /// prompt, and a prompt that changes nothing is not worth a wake.
     fn program_status(&mut self) -> Option<OscEvent> {
         let shown = self.records.shown();
         if shown == self.shown_status {
             return None;
         }
-        self.shown_status = shown;
+        self.shown_status.clone_from(&shown);
         Some(OscEvent::ProgramStatus(shown))
     }
 
@@ -572,12 +572,14 @@ mod tests {
         assert_eq!(filter.unhandled(&[b"9", b"done"]), None);
     }
 
+    use crate::program_status::ProgramState;
+
     fn report(filter: &mut OscFilter, body: &str) -> Option<OscEvent> {
         filter.unhandled(&[b"7501", body.as_bytes()])
     }
 
     fn shown(state: Option<ProgramState>) -> Option<OscEvent> {
-        Some(OscEvent::ProgramStatus(state))
+        Some(OscEvent::ProgramStatus(state.map(Status::new)))
     }
 
     #[test]

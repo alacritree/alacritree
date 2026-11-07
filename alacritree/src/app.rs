@@ -46,7 +46,7 @@ use crate::osc::Progress as OscProgress;
 use crate::panel_filter::{self, PanelFilter};
 use crate::path_style::PathStyle;
 use crate::pr_status::{self, PrCache};
-use crate::program_status::ProgramState;
+use crate::program_status::{self, ProgramState, Status};
 use crate::projects::{Discovered, NotAProject, Project, project_json};
 use crate::session::{
     self, Attachment, AttentionVerdict, LiveState, PendingAttention, Session, SessionActivity,
@@ -786,6 +786,10 @@ impl AlacritreeApp {
         #[cfg(target_os = "macos")]
         if config.ui.notifications {
             notify::macos::init(cc.egui_ctx.clone());
+        }
+        #[cfg(windows)]
+        if config.ui.notifications {
+            notify::windows_identity::app_id();
         }
 
         let notify_rx = notify::channel();
@@ -3041,10 +3045,15 @@ impl AlacritreeApp {
                     // event, so only the transition into a latch toasts. A
                     // notification's own text and a program's report, which
                     // latches nothing, toast every time.
-                    let body = session.last_notification.clone().filter(|_| pending.notified);
-                    let fresh = !was_latched || body.is_some() || pending.reported;
+                    let notified = session.last_notification.clone().filter(|_| pending.notified);
+                    let reported =
+                        session.program_report().filter(|_| pending.reported).map(Status::summary);
+                    let fresh = !was_latched || notified.is_some() || reported.is_some();
                     if fresh && self.config.ui.notifications {
-                        notify::attention(&self.sessions[idx], ctx, body);
+                        let body = notified.or(reported);
+                        let session = &self.sessions[idx];
+                        let toast = self.toast(session, body);
+                        notify::attention(session.id, ctx, toast);
                     }
                 },
             }
@@ -3059,6 +3068,25 @@ impl AlacritreeApp {
                 self.sessions[idx].done = false;
                 self.sessions[idx].see_program_status();
             }
+        }
+    }
+
+    /// A session's desktop notification. It is headed by the program or
+    /// agent that wants attention and the session's row name, and closes on
+    /// the workspace. `body` is the text a program sent.
+    fn toast(&self, s: &AppSession, body: Option<String>) -> notify::Toast {
+        let activity = self.session_activity(s);
+        let row = session_row_name(&s.title, activity, self.session_pane(s)).text;
+        let reporter = s.program_report().and_then(|status| status.app.as_deref());
+        let who = reporter.or(activity.name()).map(program_status::app_name);
+        let title = match who {
+            Some(who) if !who.eq_ignore_ascii_case(&row) => format!("{who}: {row}"),
+            _ => row,
+        };
+        notify::Toast {
+            title,
+            body: body.unwrap_or_else(|| "Waiting for input".to_owned()),
+            place: workspace_label_for(&self.projects, &s.working_directory),
         }
     }
 
@@ -3236,6 +3264,7 @@ impl AlacritreeApp {
                         done: s.done,
                         activity,
                         program_status: s.program_status(),
+                        program_msg: s.program_report().and_then(|r| r.msg.clone()),
                         is_active: active == Some(s.id),
                         is_displayed: is_current && active == Some(s.id),
                         managed: self.session_managed(s),
@@ -5020,7 +5049,7 @@ mod tests {
         }
 
         fn toasts() -> Vec<String> {
-            TOASTS.with_borrow(Vec::clone)
+            TOASTS.with_borrow(|toasts| toasts.iter().map(|toast| toast.body.clone()).collect())
         }
 
         /// Upstream answers a clipboard read only for the window the user is
@@ -5133,7 +5162,7 @@ mod tests {
             app.notify("build failed", Visibility::Hidden);
             app.drain(Visibility::VisibleAndFocused);
             app.term(Event::Bell, Visibility::Hidden);
-            assert_eq!(toasts(), ["build failed", "shell is waiting for input"]);
+            assert_eq!(toasts(), ["build failed", "Waiting for input"]);
         }
 
         #[test]
@@ -5141,7 +5170,7 @@ mod tests {
             let mut app = notification_app();
             app.term(Event::Bell, Visibility::Hidden);
             app.term(Event::Bell, Visibility::Hidden);
-            assert_eq!(toasts(), ["shell is waiting for input"]);
+            assert_eq!(toasts(), ["Waiting for input"]);
         }
 
         /// A program that reports it wants a human toasts the way a bell does,
@@ -5166,8 +5195,37 @@ mod tests {
             let pending = app.sessions[0].pending_attention.as_mut().unwrap();
             pending.since = Instant::now() - app.config.ui.attention_grace;
             app.process_session_events(&Context::default());
-            assert_eq!(toasts(), ["shell is waiting for input"]);
+            assert_eq!(toasts(), ["The program finished"]);
             assert_eq!(app.session_shown_state(&app.sessions[0]), Some(ShownState::Done));
+        }
+
+        /// A program's toast names the session and says what the program
+        /// reported, and a new question while it is still blocked toasts
+        /// again.
+        #[test]
+        fn a_reported_toast_names_the_session_and_carries_the_programs_line() {
+            use base64::Engine;
+            TOASTS.with_borrow_mut(Vec::clear);
+            let mut app = app_with_a_background_session("shell");
+            app.config.ui.notifications = true;
+            let ask = |question: &str| {
+                let msg = base64::engine::general_purpose::STANDARD.encode(question);
+                format!("\x1b]7501;state=blocked:kind=question:app=claude-code:msg={msg}\x07")
+            };
+            feed_pty(&mut app, &ask("Which parser?"));
+            feed_pty(&mut app, &ask("Which parser?"));
+            feed_pty(&mut app, &ask("Which lexer?"));
+            feed_pty(&mut app, "\x1b]7501;state=blocked:kind=permission:app=claude-code\x07");
+            let toast = |body: &str| crate::notify::Toast {
+                title: "Claude Code: shell".to_owned(),
+                body: body.to_owned(),
+                place: "Home".to_owned(),
+            };
+            assert_eq!(TOASTS.with_borrow(Vec::clone), [
+                toast("Which parser?"),
+                toast("Which lexer?"),
+                toast("Claude Code needs permission"),
+            ]);
         }
 
         #[test]
@@ -9510,6 +9568,7 @@ mod tests {
                 done: false,
                 activity: SessionActivity::Shell,
                 program_status: None,
+                program_msg: None,
                 is_active: true,
                 is_displayed: true,
                 managed: None,
@@ -9655,12 +9714,13 @@ mod tests {
                 needs_attention: false,
                 done: false,
                 activity: SessionActivity::Shell,
-                program_status: None,
+                program_status: Some(ProgramState::Blocked),
+                program_msg: Some("Which parser?".to_owned()),
                 is_active: true,
                 is_displayed: true,
                 managed: None,
             };
-            let tooltip = format!("{name}\n{}\nbuild failed", cwd.display());
+            let tooltip = format!("{name}\n{}\nWhich parser?\nbuild failed", cwd.display());
             let texts = texts_while_hovering(140.0, |ui| {
                 session_row(ui, &row, false, false, false, &icons, &theme);
             });
@@ -9857,6 +9917,7 @@ mod tests {
             done: false,
             activity,
             program_status: None,
+            program_msg: None,
             is_active: true,
             is_displayed: true,
             managed: None,
@@ -10094,6 +10155,7 @@ mod tests {
             done: false,
             activity: SessionActivity::Shell,
             program_status: None,
+            program_msg: None,
             is_active: true,
             is_displayed: true,
             managed: None,
