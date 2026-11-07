@@ -68,7 +68,7 @@ pub enum SessionError {
 
 /// What the app asks of a session backend. `H` is the app's own handle type,
 /// which each backend's handle converts into. Every method may block for
-/// milliseconds, so the app calls them off the UI thread.
+/// milliseconds.
 #[ambassador::delegatable_trait]
 pub trait SessionBackend<H> {
     /// Start a new terminal for a session.
