@@ -145,23 +145,20 @@ impl Catalog {
                 }
                 if project.expanded {
                     let checkout = &project.checkouts[0];
-                    sidebar::worktree_row(
-                        ui,
-                        &sidebar::WorktreeRowView {
-                            wt: checkout,
-                            missing: None,
-                            display_name: "main",
-                            pr: None,
-                            is_active: true,
-                            is_cursor: false,
-                            scroll_into_view: false,
-                            status: RowStatus::live(SessionActivity::Shell),
-                            deleting: false,
-                            profiles: &[],
-                            icons: &self.icons,
-                            theme: &self.theme,
-                        },
-                    );
+                    sidebar::worktree_row(ui, &sidebar::WorktreeRowView {
+                        wt: checkout,
+                        missing: None,
+                        display_name: "main",
+                        pr: None,
+                        is_active: true,
+                        is_cursor: false,
+                        scroll_into_view: false,
+                        status: RowStatus::live(SessionActivity::Shell),
+                        deleting: false,
+                        profiles: &[],
+                        icons: &self.icons,
+                        theme: &self.theme,
+                    });
                 }
                 if !self.samples.last_action.is_empty() {
                     ui.label(RichText::new(&self.samples.last_action).weak().small());
@@ -194,26 +191,23 @@ impl Catalog {
                         gone: index == 3,
                         upstream: None,
                     };
-                    sidebar::worktree_row(
-                        ui,
-                        &sidebar::WorktreeRowView {
-                            wt: &checkout,
-                            missing: None,
-                            display_name: name,
-                            pr: None,
-                            is_active: index == 1,
-                            is_cursor: index == 2,
-                            scroll_into_view: false,
-                            status: RowStatus::live(SessionActivity::Shell),
-                            deleting: index == 4,
-                            profiles: &[
-                                ("Development shell".into(), "zsh -l".into()),
-                                ("Ubuntu (WSL)".into(), "wsl.exe -d Ubuntu".into()),
-                            ],
-                            icons: &self.icons,
-                            theme: &self.theme,
-                        },
-                    );
+                    sidebar::worktree_row(ui, &sidebar::WorktreeRowView {
+                        wt: &checkout,
+                        missing: None,
+                        display_name: name,
+                        pr: None,
+                        is_active: index == 1,
+                        is_cursor: index == 2,
+                        scroll_into_view: false,
+                        status: RowStatus::live(SessionActivity::Shell),
+                        deleting: index == 4,
+                        profiles: &[
+                            ("Development shell".into(), "zsh -l".into()),
+                            ("Ubuntu (WSL)".into(), "wsl.exe -d Ubuntu".into()),
+                        ],
+                        icons: &self.icons,
+                        theme: &self.theme,
+                    });
                 }
                 sidebar::creating_row(ui, "feature/creating", &self.icons, &self.theme);
             },
@@ -224,22 +218,17 @@ impl Catalog {
             "Hover the PR and upstream badges; right-click a row for its menu",
             |ui| {
                 for (index, (state, upstream)) in [
-                    (
-                        PrState::Open,
-                        UpstreamState::Level { upstream: "origin/feature/catalog".into() },
-                    ),
-                    (
-                        PrState::Draft,
-                        UpstreamState::Diverged {
-                            upstream: "origin/feature/catalog".into(),
-                            ahead: 3,
-                            behind: 2,
-                        },
-                    ),
-                    (
-                        PrState::Merged,
-                        UpstreamState::Gone { upstream: "origin/feature/catalog".into() },
-                    ),
+                    (PrState::Open, UpstreamState::Level {
+                        upstream: "origin/feature/catalog".into(),
+                    }),
+                    (PrState::Draft, UpstreamState::Diverged {
+                        upstream: "origin/feature/catalog".into(),
+                        ahead: 3,
+                        behind: 2,
+                    }),
+                    (PrState::Merged, UpstreamState::Gone {
+                        upstream: "origin/feature/catalog".into(),
+                    }),
                     (PrState::Closed, UpstreamState::Untracked),
                 ]
                 .into_iter()
@@ -260,23 +249,20 @@ impl Catalog {
                         url: String::new(),
                         state,
                     };
-                    sidebar::worktree_row(
-                        ui,
-                        &sidebar::WorktreeRowView {
-                            wt: &checkout,
-                            missing: None,
-                            display_name: &name,
-                            pr: Some(&pr),
-                            is_active: false,
-                            is_cursor: false,
-                            scroll_into_view: false,
-                            status: RowStatus::live(SessionActivity::Shell),
-                            deleting: false,
-                            profiles: &[],
-                            icons: &self.icons,
-                            theme: &self.theme,
-                        },
-                    );
+                    sidebar::worktree_row(ui, &sidebar::WorktreeRowView {
+                        wt: &checkout,
+                        missing: None,
+                        display_name: &name,
+                        pr: Some(&pr),
+                        is_active: false,
+                        is_cursor: false,
+                        scroll_into_view: false,
+                        status: RowStatus::live(SessionActivity::Shell),
+                        deleting: false,
+                        profiles: &[],
+                        icons: &self.icons,
+                        theme: &self.theme,
+                    });
                 }
             },
         );

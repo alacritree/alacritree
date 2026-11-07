@@ -76,19 +76,44 @@ pub(crate) enum DeferredRequest {
 pub(crate) enum FrameRequest {
     ListProjects,
     ListSessions,
-    SelectWorkspace { path: Option<PathBuf> },
-    CloseSession { session_id: u64 },
-    SendText { session_id: u64, text: String },
-    MoveSession { session_id: u64, path: PathBuf },
-    ReadScreen { session_id: u64, scrollback_lines: usize },
-    ReadScratchpad { workspace: Option<String> },
-    RemoveProject { root: PathBuf },
-    RenameProject { root: PathBuf, label: Option<String> },
+    SelectWorkspace {
+        path: Option<PathBuf>,
+    },
+    CloseSession {
+        session_id: u64,
+    },
+    SendText {
+        session_id: u64,
+        text: String,
+    },
+    MoveSession {
+        session_id: u64,
+        path: PathBuf,
+    },
+    ReadScreen {
+        session_id: u64,
+        scrollback_lines: usize,
+    },
+    ReadScratchpad {
+        workspace: Option<String>,
+    },
+    RemoveProject {
+        root: PathBuf,
+    },
+    RenameProject {
+        root: PathBuf,
+        label: Option<String>,
+    },
     ListMultiplexerPanes,
-    RunAction { action: String },
+    RunAction {
+        action: String,
+    },
     /// No client sends this. The connection that created a temporary worktree
     /// tells the app which session it belongs to, as it does its refresh.
-    ClaimTemporaryWorktree { path: PathBuf, session_id: u64 },
+    ClaimTemporaryWorktree {
+        path: PathBuf,
+        session_id: u64,
+    },
 }
 
 impl From<DeferredRequest> for AppRequest {

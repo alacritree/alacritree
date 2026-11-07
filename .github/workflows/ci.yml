@@ -17,16 +17,40 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
 
+# Every cargo command runs from the workspace root without `-p` or
+# `--workspace`, so `default-members` keeps it off the vendored alacritty crates.
 jobs:
-  alacritree:
+  # rustfmt.toml needs nightly. The pin keeps CI and a local nightly from
+  # disagreeing about the same file.
+  fmt:
     runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Rust toolchain
+        run: rustup toolchain install nightly-2026-09-12 --profile minimal --component rustfmt
+
+      - name: Format
+        run: cargo +nightly-2026-09-12 fmt --check
+
+  # Each OS lints its own cfg branches: the Windows process spawning in
+  # alacritree_common's wsl.rs and wsl_helper.rs, and the macOS arms of links.rs
+  # and session.rs, are lint-visible nowhere else.
+  clippy:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
 
     steps:
       - uses: actions/checkout@v6
 
       # eframe (winit + glow), arboard (X11/Wayland clipboard), and the unix
       # fontconfig dep all need C headers that aren't on the runner by default.
-      - name: Install system dependencies
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -35,32 +59,33 @@ jobs:
             libxkbcommon-dev libxcb-shape0-dev libxcb-xfixes0-dev \
             libwayland-dev libgl1-mesa-dev libegl1-mesa-dev
 
+      - name: Install system dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install cmake pkg-config fontconfig freetype
+
       - name: Rust toolchain
         run: rustup show && rustup component add clippy
 
-      - name: Build
-        run: cargo build --workspace --exclude alacritty --exclude alacritty_terminal --exclude alacritty_config --exclude alacritty_config_derive --locked
+      # A cache that fails to restore or save costs build time and nothing else.
+      - uses: Swatinem/rust-cache@v2
+        continue-on-error: true
+        with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
-      - name: Test
-        run: cargo test --workspace --exclude alacritty --exclude alacritty_terminal --exclude alacritty_config --exclude alacritty_config_derive --locked
-
-      # --no-deps keeps clippy on our own crate. The vendored alacritty_terminal
-      # is #![deny(clippy::all)], so a newer toolchain that adds a lint (e.g.
-      # question_mark) turns it into a hard error we can't fix without editing a
-      # read-only dependency. Linting the fork's code, not upstream's, is what we
-      # want anyway.
+      # --no-deps keeps clippy on our own crates. The vendored
+      # alacritty_terminal is #![deny(clippy::all)], so a lint that a newer
+      # toolchain adds would fail CI in code we cannot edit.
       #
-      # disallowed_methods is denied on its own rather than through -D warnings:
-      # it is the backstop for a process wait written inline in a UI handler, and
-      # a lint that only warns lets one ship. Every other lint stays a warning so
-      # unrelated code does not fail the build.
+      # disallowed_methods is the backstop for a process wait written inline in
+      # a UI handler, so it alone is denied. Other lints stay warnings.
       - name: Clippy
-        run: cargo clippy --workspace --exclude alacritty --exclude alacritty_terminal --exclude alacritty_config --exclude alacritty_config_derive --all-targets --locked --no-deps -- -D clippy::disallowed_methods
+        run: cargo clippy --all-targets --locked --no-deps -- -D clippy::disallowed_methods
 
       # Pinned: the audit parses ast-grep's JSON, and an upgrade that moves that
       # format would leave it inspecting nothing. The script exits 2 on an empty
       # scan rather than reporting a clean one, so a stale pin is loud.
       - name: ast-grep
+        if: runner.os == 'Linux'
         run: npm install -g @ast-grep/cli@0.45.1
 
       # The `jobs::Blocking` token is a compile-time gate, but `on_this_thread`
@@ -68,47 +93,40 @@ jobs:
       # what catches that. The script reads source text and does not evaluate
       # cfg, so one platform covers every target's code.
       - name: UI-thread audit
+        if: runner.os == 'Linux'
         run: python3 alacritree/tools/ui-thread-audit.py .
 
-  # Compile the platform-specific process and notification integrations before
-  # a release tag reaches cargo-dist.
-  alacritree-macos:
-    runs-on: macos-15
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
 
     steps:
       - uses: actions/checkout@v6
 
-      - name: Install system dependencies
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake pkg-config \
+            libfreetype6-dev libfontconfig1-dev \
+            libxkbcommon-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            libwayland-dev libgl1-mesa-dev libegl1-mesa-dev
+
+      - name: Install system dependencies (macOS)
+        if: runner.os == 'macOS'
         run: brew install cmake pkg-config fontconfig freetype
 
       - name: Rust toolchain
-        run: rustup show && rustup component add clippy
+        run: rustup show
 
-      # Clippy rather than a plain check, for the same reason as the Windows
-      # job: the macOS arms of links.rs and session.rs are lint-visible nowhere
-      # else.  --all-targets is what reaches session.rs's macOS-only test.
-      - name: Clippy
-        run: cargo clippy --workspace --exclude alacritty --exclude alacritty_terminal --exclude alacritty_config --exclude alacritty_config_derive --all-targets --locked --no-deps -- -D clippy::disallowed_methods
-
-  # Clipboard file/image fallbacks and WSL path handling are primarily
-  # Windows-facing. Compile and run their pure tests before those cfg branches
-  # reach a release tag.
-  alacritree-windows:
-    runs-on: windows-2022
-
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Rust toolchain
-        run: rustup show && rustup component add clippy
-
-      # Clippy in place of a plain check: it compiles the same cfg branches and
-      # is the only run that lints them. Most of the process spawning lives
-      # behind #[cfg(windows)], in alacritree_common's wsl.rs and wsl_helper.rs
-      # and the Windows arm of alacritree's links.rs, which a Linux-only lint
-      # never sees.
-      - name: Clippy
-        run: cargo clippy --workspace --exclude alacritty --exclude alacritty_terminal --exclude alacritty_config --exclude alacritty_config_derive --all-targets --locked --no-deps -- -D clippy::disallowed_methods
+      - uses: Swatinem/rust-cache@v2
+        continue-on-error: true
+        with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Test
-        run: cargo test --workspace --exclude alacritty --exclude alacritty_terminal --exclude alacritty_config --exclude alacritty_config_derive --locked
+        run: cargo test --locked

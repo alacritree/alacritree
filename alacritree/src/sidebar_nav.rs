@@ -798,9 +798,10 @@ pub(crate) mod tests {
             open,
             worktrees: vec![PathBuf::from("/x/.temporary/wt1/scratch")],
         };
-        let listed = ListedRows::from([(Some(PathBuf::from("/a/wt1")), vec![
-            WorkspaceEntry::Temporary(section),
-        ])]);
+        let listed =
+            ListedRows::from([(Some(PathBuf::from("/a/wt1")), vec![WorkspaceEntry::Temporary(
+                section,
+            )])]);
         (vec![repo], listed)
     }
 
