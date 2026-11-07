@@ -602,7 +602,7 @@ pub(super) struct RowStatus<'a> {
     pub(super) activity: SessionActivity,
     pub(super) managed: Option<&'a Managed>,
     /// The program's own OSC 7501 report, which outranks the rest.
-    pub(super) program: Option<ProgramState>,
+    pub(super) program: Option<AgentStatus>,
 }
 
 impl RowStatus<'_> {
@@ -626,7 +626,7 @@ pub(super) fn session_status_mark(status: &RowStatus<'_>) -> Option<(ShownState,
         return Some((state, agent_hint(state, status.activity.name())));
     }
     let pane_status = status.managed.and_then(|managed| managed.status);
-    let pane_done = pane_status == Some(PaneStatus::Done);
+    let pane_done = pane_status == Some(AgentStatus::Done);
     let state = ShownState::of(status.activity.live(), status.done || pane_done, status.pinged)?;
     let hint = match (status.managed, pane_status) {
         (Some(managed), Some(reported)) if ShownState::from(reported) == state => {
@@ -642,7 +642,7 @@ mod tests {
     use super::*;
     use crate::test_util::{listed_agent, managed};
     use alacritree_common::side::Side;
-    use alacritree_multiplexer::{Pane, PaneStatus};
+    use alacritree_multiplexer::{AgentStatus, Pane};
 
     const EVERY_STATE: [ShownState; 7] = [
         ShownState::Unknown,
@@ -772,7 +772,7 @@ mod tests {
     /// disagree about what a pane is doing.
     #[test]
     fn session_status_mark_matches_the_sidebar_for_a_pane_backed_session() {
-        let agent = Pane { status: Some(PaneStatus::Working), ..listed_agent(Some("claude")) };
+        let agent = Pane { status: Some(AgentStatus::Working), ..listed_agent(Some("claude")) };
         let managed = managed(&agent, &Side::Native, false);
         let activity = SessionActivity::agent(Some("claude"), LiveState::Working);
         let status = RowStatus { managed: Some(&managed), ..RowStatus::live(activity) };
@@ -786,7 +786,7 @@ mod tests {
     /// shows done with no latch of alacritree's own.
     #[test]
     fn a_pane_reporting_done_shows_done() {
-        let agent = Pane { status: Some(PaneStatus::Done), ..listed_agent(Some("claude")) };
+        let agent = Pane { status: Some(AgentStatus::Done), ..listed_agent(Some("claude")) };
         let managed = managed(&agent, &Side::Native, false);
         let activity = SessionActivity::agent(Some("claude"), LiveState::Idle);
         let status = RowStatus { managed: Some(&managed), ..RowStatus::live(activity) };
@@ -799,7 +799,7 @@ mod tests {
     /// `done` latch, and a ping still shows over a quiet report.
     #[test]
     fn a_program_report_outranks_the_pane_and_the_done_latch() {
-        let agent = Pane { status: Some(PaneStatus::Blocked), ..listed_agent(Some("claude")) };
+        let agent = Pane { status: Some(AgentStatus::Blocked), ..listed_agent(Some("claude")) };
         let managed = managed(&agent, &Side::Native, false);
         let activity = SessionActivity::agent(Some("claude"), LiveState::Idle);
         let reported = |program, pinged| RowStatus {
@@ -810,10 +810,10 @@ mod tests {
             ..RowStatus::live(activity)
         };
         let mark = |status: RowStatus<'_>| session_status_mark(&status).unwrap();
-        assert_eq!(mark(reported(ProgramState::Working, false)).0, ShownState::Working);
-        assert_eq!(mark(reported(ProgramState::Idle, true)).0, ShownState::Pinged);
+        assert_eq!(mark(reported(AgentStatus::Working, false)).0, ShownState::Working);
+        assert_eq!(mark(reported(AgentStatus::Idle, true)).0, ShownState::Pinged);
         assert_eq!(
-            mark(reported(ProgramState::Error, true)),
+            mark(reported(AgentStatus::Error, true)),
             (ShownState::Error, "claude failed".to_owned())
         );
     }

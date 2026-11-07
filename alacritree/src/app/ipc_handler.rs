@@ -35,9 +35,9 @@ impl AlacritreeApp {
     pub(super) fn session_json(&self, session: &AppSession, is_active_tab: bool) -> Value {
         let key = session.pane_key.as_ref();
         let activity = self.session_activity(session);
-        let done = session.done || self.session_pane_status(session) == Some(PaneStatus::Done);
+        let done = session.done || self.session_pane_status(session) == Some(AgentStatus::Done);
         let reported = match session.program_status() {
-            Some(state) => Some(state.into()),
+            Some(state) => Some(state.label()),
             None => done.then_some("done"),
         };
         json!({

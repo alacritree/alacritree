@@ -572,13 +572,13 @@ mod tests {
         assert_eq!(filter.unhandled(&[b"9", b"done"]), None);
     }
 
-    use crate::program_status::ProgramState;
+    use alacritree_common::agent_status::AgentStatus;
 
     fn report(filter: &mut OscFilter, body: &str) -> Option<OscEvent> {
         filter.unhandled(&[b"7501", body.as_bytes()])
     }
 
-    fn shown(state: Option<ProgramState>) -> Option<OscEvent> {
+    fn shown(state: Option<AgentStatus>) -> Option<OscEvent> {
         Some(OscEvent::ProgramStatus(state.map(Status::new)))
     }
 
@@ -586,17 +586,17 @@ mod tests {
     fn a_program_status_report_needs_no_vt_key() {
         let off = OscPolicy { vt: VtConfig::default(), ..policy(ShellPlatform::Unix) };
         let mut filter = OscFilter::new(off);
-        assert_eq!(report(&mut filter, "state=working"), shown(Some(ProgramState::Working)));
+        assert_eq!(report(&mut filter, "state=working"), shown(Some(AgentStatus::Working)));
     }
 
     #[test]
     fn a_report_that_changes_nothing_shown_emits_nothing() {
         let mut filter = OscFilter::new(policy(ShellPlatform::Unix));
-        assert_eq!(report(&mut filter, "state=working:id=a"), shown(Some(ProgramState::Working)));
+        assert_eq!(report(&mut filter, "state=working:id=a"), shown(Some(AgentStatus::Working)));
         assert_eq!(report(&mut filter, "state=working:id=b"), None);
         assert_eq!(report(&mut filter, "state=idle:id=a"), None);
         assert_eq!(report(&mut filter, "state=bogus"), None);
-        assert_eq!(filter.unhandled(&[b"133", b"A"]), shown(Some(ProgramState::Idle)));
+        assert_eq!(filter.unhandled(&[b"133", b"A"]), shown(Some(AgentStatus::Idle)));
         assert_eq!(filter.unhandled(&[b"133", b"A"]), None);
         assert_eq!(report(&mut filter, "state=idle:id=a"), None);
     }

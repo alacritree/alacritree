@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use alacritree_common::wsl_helper::{self, WslProbe};
-use alacritree_multiplexer::{PaneKey, PaneStatus};
+use alacritree_multiplexer::{AgentStatus, PaneKey};
 use alacritty_terminal::event::{Event as TermEvent, EventListener, Notify, OnResize, WindowSize};
 use alacritty_terminal::event_loop::{EventLoop, EventLoopSender, Msg, Notifier};
 use alacritty_terminal::grid::Dimensions;
@@ -20,7 +20,7 @@ use alacritty_terminal::vte::ansi::{Processor, Rgb, StdSyncHandler};
 use crate::clipboard::Target;
 use crate::config::{Config, HoldExitedSessions, Palette};
 use crate::process_probe::{self, ProbeHandle};
-use crate::program_status::{self, ProgramState, Status};
+use crate::program_status::{self, Status};
 use crate::repaint::Repaint;
 use crate::{colors, osc, scratchpad, wsl_spare};
 
@@ -223,34 +223,19 @@ pub(crate) enum LiveState {
 
 /// A finished result is not work in flight, so `done` and `error` read idle
 /// here. [`ShownState`] keeps the distinction.
-impl From<ProgramState> for LiveState {
-    fn from(state: ProgramState) -> Self {
-        match state {
-            ProgramState::Idle | ProgramState::Done | ProgramState::Error => Self::Idle,
-            ProgramState::Working => Self::Working,
-            ProgramState::Blocked => Self::Blocked,
+impl From<AgentStatus> for LiveState {
+    fn from(status: AgentStatus) -> Self {
+        match status {
+            AgentStatus::Unknown => Self::Unknown,
+            AgentStatus::Idle | AgentStatus::Done | AgentStatus::Error => Self::Idle,
+            AgentStatus::Working => Self::Working,
+            AgentStatus::Blocked => Self::Blocked,
         }
     }
 }
 
 impl LiveState {
-    /// The live state a multiplexer's status reports.  `None` is the
-    /// multiplexer declining to say rather than a claim that the agent is idle, so a caller that
-    /// already has a reading of its own keeps it.
-    ///
-    /// `done` collapses to `Idle`: a finished turn is not work in flight.
-    /// The word survives in the row's label, which is where the distinction
-    /// is worth drawing.
-    pub(crate) fn from_pane(status: PaneStatus) -> Option<Self> {
-        match status {
-            PaneStatus::Idle | PaneStatus::Done => Some(Self::Idle),
-            PaneStatus::Working => Some(Self::Working),
-            PaneStatus::Blocked => Some(Self::Blocked),
-            PaneStatus::Unknown => None,
-        }
-    }
-
-    /// Word a row paints for this state, mirroring `PaneStatus::label` so
+    /// Word a row paints for this state, mirroring `AgentStatus::label` so
     /// an agent alacritree reads on its own speaks the same vocabulary herdr
     /// does.
     pub(crate) fn label(self) -> &'static str {
@@ -293,7 +278,7 @@ impl ShownState {
     /// The mark for a session whose program reports its own state. The
     /// report replaces the live reading and the `done` latch, which only
     /// guess at it. A ring is not a guess, so a ping still shows.
-    pub(crate) fn reported(state: ProgramState, pinged: bool) -> Self {
+    pub(crate) fn reported(state: AgentStatus, pinged: bool) -> Self {
         let state = Self::from(state);
         if pinged { state.max(Self::Pinged) } else { state }
     }
@@ -305,28 +290,17 @@ impl ShownState {
     }
 }
 
-/// A multiplexer latches `done` on its own side, so its status maps onto the
-/// shown states directly.  `unknown` is the multiplexer declining to say.
-impl From<PaneStatus> for ShownState {
-    fn from(status: PaneStatus) -> Self {
+/// A multiplexer latches `done` on its own side, and a program's report is
+/// its own word, so either maps onto the shown states directly.
+impl From<AgentStatus> for ShownState {
+    fn from(status: AgentStatus) -> Self {
         match status {
-            PaneStatus::Idle => Self::Idle,
-            PaneStatus::Working => Self::Working,
-            PaneStatus::Blocked => Self::Blocked,
-            PaneStatus::Done => Self::Done,
-            PaneStatus::Unknown => Self::Unknown,
-        }
-    }
-}
-
-impl From<ProgramState> for ShownState {
-    fn from(state: ProgramState) -> Self {
-        match state {
-            ProgramState::Idle => Self::Idle,
-            ProgramState::Working => Self::Working,
-            ProgramState::Done => Self::Done,
-            ProgramState::Error => Self::Error,
-            ProgramState::Blocked => Self::Blocked,
+            AgentStatus::Unknown => Self::Unknown,
+            AgentStatus::Idle => Self::Idle,
+            AgentStatus::Working => Self::Working,
+            AgentStatus::Done => Self::Done,
+            AgentStatus::Error => Self::Error,
+            AgentStatus::Blocked => Self::Blocked,
         }
     }
 }
@@ -1554,9 +1528,9 @@ impl<R: Repaint> Session<R> {
     /// user has looked at since it arrived reads idle, the way the `done`
     /// latch clears on view, so a finished session leaves the attention
     /// filter.
-    pub(crate) fn program_status(&self) -> Option<ProgramState> {
+    pub(crate) fn program_status(&self) -> Option<AgentStatus> {
         let state = self.program_status.as_ref()?.state;
-        Some(if self.program_status_seen && state.is_result() { ProgramState::Idle } else { state })
+        Some(if self.program_status_seen && state.is_result() { AgentStatus::Idle } else { state })
     }
 
     /// The whole record behind [`Self::program_status`], text included.
@@ -2300,7 +2274,7 @@ pub(crate) mod tests {
         .0
     }
 
-    fn program_status_after(session: &mut Session<Recorder>, bytes: &str) -> Option<ProgramState> {
+    fn program_status_after(session: &mut Session<Recorder>, bytes: &str) -> Option<AgentStatus> {
         feed(session, bytes);
         session.drain_events(&Palette::default());
         session.program_status()
@@ -2327,7 +2301,7 @@ pub(crate) mod tests {
     fn an_exit_drops_working_and_blocked_and_keeps_results() {
         let mut session = plain_session();
         let state = program_status_after(&mut session, "\x1b]7501;state=working:id=a\x07");
-        assert_eq!(state, Some(ProgramState::Working));
+        assert_eq!(state, Some(AgentStatus::Working));
         session.inject_for_test(TermEvent::ChildExit(clean_status()));
         assert_eq!(program_status_after(&mut session, ""), None);
 
@@ -2335,7 +2309,7 @@ pub(crate) mod tests {
         program_status_after(&mut session, "\x1b]7501;state=blocked:id=a\x07");
         program_status_after(&mut session, "\x1b]7501;state=error:id=b\x07");
         session.inject_for_test(TermEvent::ChildExit(dirty_status()));
-        assert_eq!(program_status_after(&mut session, ""), Some(ProgramState::Error));
+        assert_eq!(program_status_after(&mut session, ""), Some(AgentStatus::Error));
     }
 
     #[test]
@@ -2345,16 +2319,16 @@ pub(crate) mod tests {
         program_status_after(&mut session, "\x1b]7501;state=done:id=b\x1b\\");
         assert_eq!(
             program_status_after(&mut session, "\x1b]7501;state=blocked\x07"),
-            Some(ProgramState::Blocked)
+            Some(AgentStatus::Blocked)
         );
-        assert_eq!(program_status_after(&mut session, "\x1b]133;A\x07"), Some(ProgramState::Done));
+        assert_eq!(program_status_after(&mut session, "\x1b]133;A\x07"), Some(AgentStatus::Done));
     }
 
     #[test]
     fn a_full_reset_drops_every_record_and_a_soft_reset_keeps_them() {
         let mut session = plain_session();
         program_status_after(&mut session, "\x1b]7501;state=done:id=a\x07");
-        assert_eq!(program_status_after(&mut session, "\x1b[!p"), Some(ProgramState::Done));
+        assert_eq!(program_status_after(&mut session, "\x1b[!p"), Some(AgentStatus::Done));
         assert_eq!(program_status_after(&mut session, "\x1bc"), None);
     }
 
@@ -3276,15 +3250,15 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_herdr_status_maps_onto_the_live_axis() {
-        assert_eq!(LiveState::from_pane(PaneStatus::Idle), Some(LiveState::Idle));
-        assert_eq!(LiveState::from_pane(PaneStatus::Working), Some(LiveState::Working));
-        assert_eq!(LiveState::from_pane(PaneStatus::Blocked), Some(LiveState::Blocked));
-        // A finished turn is not work in flight.  The word itself survives in
-        // the row's label, which is where `done` is worth distinguishing.
-        assert_eq!(LiveState::from_pane(PaneStatus::Done), Some(LiveState::Idle));
-        // herdr declining to say is not a claim that the agent is idle.
-        assert_eq!(LiveState::from_pane(PaneStatus::Unknown), None);
+    fn an_agent_status_maps_onto_the_live_axis() {
+        assert_eq!(LiveState::from(AgentStatus::Unknown), LiveState::Unknown);
+        assert_eq!(LiveState::from(AgentStatus::Idle), LiveState::Idle);
+        assert_eq!(LiveState::from(AgentStatus::Working), LiveState::Working);
+        assert_eq!(LiveState::from(AgentStatus::Blocked), LiveState::Blocked);
+        // A result is not work in flight. The word itself survives in the
+        // row's label, which is where `done` and `error` are worth telling apart.
+        assert_eq!(LiveState::from(AgentStatus::Done), LiveState::Idle);
+        assert_eq!(LiveState::from(AgentStatus::Error), LiveState::Idle);
     }
 
     #[test]

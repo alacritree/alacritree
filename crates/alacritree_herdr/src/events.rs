@@ -17,7 +17,7 @@ use super::PollError;
 use super::cli::bridge_command;
 use super::wire::{parse_pane_info, parse_status};
 use alacritree_common::{command_ext, jobs};
-use alacritree_multiplexer::{Pane, PaneStatus, Side};
+use alacritree_multiplexer::{AgentStatus, Pane, Side};
 
 /// Every kind that can change which panes a side has or how one renders,
 /// apart from agent status, which herdr only streams per pane.
@@ -58,7 +58,7 @@ impl Message {
 pub(super) enum Event {
     Status {
         pane_id: String,
-        status: PaneStatus,
+        status: AgentStatus,
     },
     Focused {
         pane_id: String,
@@ -331,7 +331,7 @@ mod tests {
         let line = r#"{"event":"pane.agent_status_changed","data":{"pane_id":"w1-2","workspace_id":"w1","agent_status":"working","agent":"claude","state_labels":{}}}"#;
         assert!(matches!(
             decode_event(line),
-            Some(Event::Status { pane_id, status: PaneStatus::Working }) if pane_id == "w1-2"
+            Some(Event::Status { pane_id, status: AgentStatus::Working }) if pane_id == "w1-2"
         ));
     }
 
@@ -351,7 +351,7 @@ mod tests {
         let Some(Event::Updated(pane)) = decode_event(line) else { panic!("not an update") };
         assert_eq!(pane.terminal_id, "term_a");
         assert_eq!(pane.title.as_deref(), Some("review"));
-        assert_eq!(pane.status, Some(PaneStatus::Idle));
+        assert_eq!(pane.status, Some(AgentStatus::Idle));
     }
 
     /// A kind alacritree has no patch for, including one a later herdr adds,

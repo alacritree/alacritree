@@ -514,7 +514,7 @@ mod tests {
     use std::sync::mpsc;
 
     use super::*;
-    use alacritree_multiplexer::{AttachFocus, PaneStatus, Reply};
+    use alacritree_multiplexer::{AgentStatus, AttachFocus, Reply};
 
     use crate::settings::AttachMode;
 
@@ -535,7 +535,7 @@ mod tests {
             tab_id: Some("w5:t1".into()),
             kind: kind.map(String::from),
             title: None,
-            status: Some(PaneStatus::Idle),
+            status: Some(AgentStatus::Idle),
             focused: false,
             cwd: None,
             foreground_cwd: None,

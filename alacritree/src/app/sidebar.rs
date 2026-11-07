@@ -2610,7 +2610,7 @@ pub(super) struct SessionRowData {
     pub(super) needs_attention: bool,
     pub(super) done: bool,
     pub(super) activity: SessionActivity,
-    pub(super) program_status: Option<ProgramState>,
+    pub(super) program_status: Option<AgentStatus>,
     /// The `msg` of the OSC 7501 record the row shows.
     pub(super) program_msg: Option<String>,
     /// This workspace's remembered active session (accent icon).

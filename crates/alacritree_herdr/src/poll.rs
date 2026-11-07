@@ -1073,7 +1073,7 @@ mod tests {
     use std::sync::mpsc;
 
     use super::*;
-    use alacritree_multiplexer::PaneStatus;
+    use alacritree_multiplexer::AgentStatus;
 
     /// One working agent, for the tests about what survives a poll that did
     /// not answer.
@@ -1128,9 +1128,9 @@ mod tests {
         cache.fail_listing_for_test(PollError::Absent("spawn_failed"));
 
         assert_eq!(cache.agents().len(), 1);
-        assert_eq!(cache.agents()[0].status, Some(PaneStatus::Working));
+        assert_eq!(cache.agents()[0].status, Some(AgentStatus::Working));
         let pane = cache.attachment_pane("agent").expect("the pane keeps its row");
-        assert_eq!(pane.agent.status, Some(PaneStatus::Working));
+        assert_eq!(pane.agent.status, Some(AgentStatus::Working));
         assert!(pane.current);
         // The listing and when it was taken are one fact, so a reader asking
         // whether the side is answering agrees with the rows still drawn.
@@ -1181,7 +1181,7 @@ mod tests {
         );
         cache.fail_listing_for_test(PollError::Absent("spawn_failed"));
 
-        assert_eq!(cache.agents()[0].status, Some(PaneStatus::Working));
+        assert_eq!(cache.agents()[0].status, Some(AgentStatus::Working));
     }
 
     #[test]
@@ -1279,10 +1279,10 @@ mod tests {
 
         send(&tx, &mut cache, Event::Status {
             pane_id: "w1:p2".into(),
-            status: PaneStatus::Working,
+            status: AgentStatus::Working,
         });
 
-        assert_eq!(cache.agents()[1].status, Some(PaneStatus::Working));
+        assert_eq!(cache.agents()[1].status, Some(AgentStatus::Working));
         assert_ne!(cache.generation(), before);
         assert!(cache.pending.is_none());
     }
@@ -1400,12 +1400,12 @@ mod tests {
         send(&tx, &mut cache, Event::Changed);
         send(&tx, &mut cache, Event::Status {
             pane_id: "w1:p1".into(),
-            status: PaneStatus::Blocked,
+            status: AgentStatus::Blocked,
         });
 
         land(&mut cache, TWO_AGENTS);
 
-        assert_eq!(cache.agents()[0].status, Some(PaneStatus::Blocked));
+        assert_eq!(cache.agents()[0].status, Some(AgentStatus::Blocked));
     }
 
     /// A shell's title churns with every prompt, so an update for a pane the
@@ -1722,7 +1722,7 @@ mod tests {
         assert!(reach.record_failure(&PollError::Server("server_not_running".into())));
     }
 
-    fn agent(id: &str, status: PaneStatus) -> Pane {
+    fn agent(id: &str, status: AgentStatus) -> Pane {
         Pane {
             terminal_id: id.into(),
             pane_id: "w1:p1".into(),
@@ -1738,14 +1738,14 @@ mod tests {
 
     #[test]
     fn an_unchanged_agent_list_is_not_a_change() {
-        let was = vec![agent("t1", PaneStatus::Idle)];
+        let was = vec![agent("t1", AgentStatus::Idle)];
         assert!(!rendered_differs(&was, &was));
     }
 
     #[test]
     fn a_status_change_counts() {
-        let was = vec![agent("t1", PaneStatus::Idle)];
-        let now = vec![agent("t1", PaneStatus::Working)];
+        let was = vec![agent("t1", AgentStatus::Idle)];
+        let now = vec![agent("t1", AgentStatus::Working)];
         assert!(rendered_differs(&was, &now));
     }
 }

@@ -7,37 +7,9 @@
 
 use std::collections::HashMap;
 
+use alacritree_common::agent_status::AgentStatus;
 use base64::Engine;
 use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
-
-/// What a record says, ordered by how much it wants a human, which is how a
-/// session with several records picks the one its row shows. Each variant is
-/// spelled as the protocol spells it.
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, strum::EnumString, strum::IntoStaticStr,
-)]
-#[strum(serialize_all = "lowercase")]
-pub(crate) enum ProgramState {
-    Idle,
-    Working,
-    Done,
-    /// The program failed. It ranks above `done`, since a failure is the
-    /// result to look at first.
-    Error,
-    Blocked,
-}
-
-impl ProgramState {
-    /// Whether the program has finished and left a result to look at.
-    pub(crate) fn is_result(self) -> bool {
-        matches!(self, Self::Done | Self::Error)
-    }
-
-    /// Whether the record outlives the program that wrote it.
-    fn survives_exit(self) -> bool {
-        self == Self::Idle || self.is_result()
-    }
-}
 
 /// What a blocked program waits for. Each variant is spelled as the protocol
 /// spells it.
@@ -55,7 +27,7 @@ pub(crate) enum BlockedKind {
 /// What one record says. `state` is the one key every report carries.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Status {
-    pub state: ProgramState,
+    pub state: AgentStatus,
     /// Only a `blocked` record has one.
     pub kind: Option<BlockedKind>,
     /// The program's stable identifier, such as `claude-code`.
@@ -68,7 +40,7 @@ pub(crate) struct Status {
 
 impl Status {
     #[cfg(test)]
-    pub(crate) fn new(state: ProgramState) -> Self {
+    pub(crate) fn new(state: AgentStatus) -> Self {
         Self { state, kind: None, app: None, title: None, msg: None }
     }
 
@@ -80,18 +52,18 @@ impl Status {
         }
         let who = self.app.as_deref().map_or_else(|| "The program".to_owned(), app_name);
         match (self.state, self.kind) {
-            (ProgramState::Blocked, Some(BlockedKind::Permission)) => {
+            (AgentStatus::Blocked, Some(BlockedKind::Permission)) => {
                 format!("{who} needs permission")
             },
-            (ProgramState::Blocked, Some(BlockedKind::Question)) => {
+            (AgentStatus::Blocked, Some(BlockedKind::Question)) => {
                 format!("{who} has a question")
             },
-            (ProgramState::Blocked, Some(BlockedKind::Auth)) => format!("{who} needs a login"),
-            (ProgramState::Blocked, None) => format!("{who} is waiting for you"),
-            (ProgramState::Done, _) => format!("{who} finished"),
-            (ProgramState::Error, _) => format!("{who} failed"),
-            (ProgramState::Working, _) => format!("{who} is working"),
-            (ProgramState::Idle, _) => format!("{who} is idle"),
+            (AgentStatus::Blocked, Some(BlockedKind::Auth)) => format!("{who} needs a login"),
+            (AgentStatus::Blocked, None) => format!("{who} is waiting for you"),
+            (AgentStatus::Done, _) => format!("{who} finished"),
+            (AgentStatus::Error, _) => format!("{who} failed"),
+            (AgentStatus::Working, _) => format!("{who} is working"),
+            (AgentStatus::Idle | AgentStatus::Unknown, _) => format!("{who} is idle"),
         }
     }
 }
@@ -188,14 +160,14 @@ pub(crate) fn parse(params: &[&[u8]]) -> Option<Report> {
     let msg = text("msg", MSG_LIMITS)?;
     let title = text("title", TITLE_LIMITS)?;
 
-    let state: ProgramState = match *fields.get("state")? {
+    let state: AgentStatus = match *fields.get("state")? {
         "clear" => return Some(Report::Clear { id }),
         state => state.parse().ok()?,
     };
     // An unknown kind, or one on a state other than `blocked`, is absent.
     let kind = fields
         .get("kind")
-        .filter(|_| state == ProgramState::Blocked)
+        .filter(|_| state == AgentStatus::Blocked)
         .and_then(|kind| kind.parse().ok());
     Some(Report::Set { id, status: Status { state, kind, app, title, msg } })
 }
@@ -279,7 +251,9 @@ impl Records {
     /// The program exited or a new prompt began, so nothing it reported is
     /// still in flight. A result stays.
     pub(crate) fn end_activity(&mut self) {
-        self.records.retain(|_, record| record.status.state.survives_exit());
+        self.records.retain(|_, record| {
+            !matches!(record.status.state, AgentStatus::Working | AgentStatus::Blocked)
+        });
     }
 
     /// A full reset (RIS).
@@ -319,11 +293,11 @@ mod tests {
         parse(&params)
     }
 
-    fn set(id: Option<&str>, state: ProgramState) -> Option<Report> {
+    fn set(id: Option<&str>, state: AgentStatus) -> Option<Report> {
         Some(Report::Set { id: id.map(str::to_owned), status: Status::new(state) })
     }
 
-    fn shown_state(records: &Records) -> Option<ProgramState> {
+    fn shown_state(records: &Records) -> Option<AgentStatus> {
         records.shown().map(|status| status.state)
     }
 
@@ -337,7 +311,7 @@ mod tests {
 
     #[test]
     fn each_state_parses_with_and_without_an_id() {
-        use ProgramState::*;
+        use AgentStatus::*;
         for (word, state) in [
             ("idle", Idle),
             ("working", Working),
@@ -365,7 +339,7 @@ mod tests {
                 status: Status {
                     app: Some("brew".into()),
                     msg: Some("Installing updates".into()),
-                    ..Status::new(ProgramState::Working)
+                    ..Status::new(AgentStatus::Working)
                 },
             })
         );
@@ -381,7 +355,7 @@ mod tests {
                     app: Some("terraform".into()),
                     title: Some("plan".into()),
                     msg: Some("Apply 3 to add, 1 to change, 0 to destroy?".into()),
-                    ..Status::new(ProgramState::Blocked)
+                    ..Status::new(AgentStatus::Blocked)
                 },
             })
         );
@@ -391,8 +365,8 @@ mod tests {
     /// not `blocked`.
     #[test]
     fn a_kind_counts_only_when_known_and_blocked() {
-        assert_eq!(report("state=working:kind=question"), set(None, ProgramState::Working));
-        assert_eq!(report("state=blocked:kind=coffee"), set(None, ProgramState::Blocked));
+        assert_eq!(report("state=working:kind=question"), set(None, AgentStatus::Working));
+        assert_eq!(report("state=blocked:kind=coffee"), set(None, AgentStatus::Blocked));
         for (word, kind) in [
             ("permission", BlockedKind::Permission),
             ("question", BlockedKind::Question),
@@ -410,7 +384,7 @@ mod tests {
     fn malformed_pairs_and_unknown_keys_are_skipped_and_the_last_value_wins() {
         assert_eq!(
             report("garbage:state=idle:Bad=x:unknown=1:v=a;b:state=working"),
-            set(None, ProgramState::Working)
+            set(None, AgentStatus::Working)
         );
     }
 
@@ -432,7 +406,7 @@ mod tests {
         let deepest = ["a"; 8].join("/");
         assert_eq!(
             report(&format!("state=idle:id={deepest}")),
-            set(Some(&deepest), ProgramState::Idle)
+            set(Some(&deepest), AgentStatus::Idle)
         );
     }
 
@@ -483,7 +457,7 @@ mod tests {
     fn each_report_replaces_its_record() {
         let records = records(&["state=blocked:id=a", "state=idle:id=a"]);
         assert_eq!(records.records.len(), 1);
-        assert_eq!(shown_state(&records), Some(ProgramState::Idle));
+        assert_eq!(shown_state(&records), Some(AgentStatus::Idle));
     }
 
     #[test]
@@ -496,7 +470,7 @@ mod tests {
             "state=clear:id=a",
         ]);
         assert_eq!(records.records.len(), 1);
-        assert_eq!(shown_state(&records), Some(ProgramState::Working));
+        assert_eq!(shown_state(&records), Some(AgentStatus::Working));
     }
 
     #[test]
@@ -507,7 +481,7 @@ mod tests {
 
     #[test]
     fn the_record_that_most_wants_a_human_is_shown() {
-        use ProgramState::*;
+        use AgentStatus::*;
         let shown = |bodies: &[&str]| shown_state(&records(bodies));
         assert_eq!(shown(&["state=working:id=a", "state=blocked:id=b"]), Some(Blocked));
         assert_eq!(shown(&["state=blocked:id=b", "state=working:id=a"]), Some(Blocked));
@@ -533,8 +507,8 @@ mod tests {
 
     #[test]
     fn a_summary_is_the_programs_msg_or_what_its_state_means() {
+        use AgentStatus::*;
         use BlockedKind::*;
-        use ProgramState::*;
         let status = |state, kind, msg: Option<&str>| Status {
             kind,
             app: Some("claude-code".into()),
@@ -580,7 +554,7 @@ mod tests {
         assert_eq!(records.records.len(), MAX_RECORDS);
         assert!(records.records.contains_key("r0"));
         assert!(!records.records.contains_key("r1"));
-        assert_eq!(shown_state(&records), Some(ProgramState::Blocked));
+        assert_eq!(shown_state(&records), Some(AgentStatus::Blocked));
     }
 
     #[test]
@@ -593,7 +567,7 @@ mod tests {
         ]);
         records.end_activity();
         assert_eq!(records.records.len(), 2);
-        assert_eq!(shown_state(&records), Some(ProgramState::Error));
+        assert_eq!(shown_state(&records), Some(AgentStatus::Error));
     }
 
     #[test]

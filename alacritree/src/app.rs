@@ -12,7 +12,7 @@ use alacritree_common::wsl::{self, ShellChoice};
 use alacritree_common::wsl_helper::{self, WslProbe};
 use alacritree_forge::{PrInfo, PrState};
 use alacritree_multiplexer::{
-    AttachFocus, Managed, MultiplexerSession, PaneKey, PaneStatus, PaneTarget,
+    AgentStatus, AttachFocus, Managed, MultiplexerSession, PaneKey, PaneTarget,
 };
 use eframe::CreationContext;
 use egui::{Color32, Context, Frame, Margin, RichText, ScrollArea, SidePanel, Stroke};
@@ -46,7 +46,7 @@ use crate::osc::Progress as OscProgress;
 use crate::panel_filter::{self, PanelFilter};
 use crate::path_style::PathStyle;
 use crate::pr_status::{self, PrCache};
-use crate::program_status::{self, ProgramState, Status};
+use crate::program_status::{self, Status};
 use crate::projects::{Discovered, NotAProject, Project, project_json};
 use crate::session::{
     self, Attachment, AttentionVerdict, LiveState, PendingAttention, Session, SessionActivity,
@@ -3105,7 +3105,7 @@ impl AlacritreeApp {
         if let Some(state) = s.program_status() {
             return Some(ShownState::reported(state, s.needs_attention));
         }
-        let pane_done = self.session_pane_status(s) == Some(PaneStatus::Done);
+        let pane_done = self.session_pane_status(s) == Some(AgentStatus::Done);
         ShownState::of(self.session_activity(s).live(), s.done || pane_done, s.needs_attention)
     }
 
@@ -3137,7 +3137,7 @@ impl AlacritreeApp {
         match loudest {
             Some((_, s)) => RowStatus {
                 pinged: s.needs_attention,
-                done: s.done || self.session_pane_status(s) == Some(PaneStatus::Done),
+                done: s.done || self.session_pane_status(s) == Some(AgentStatus::Done),
                 activity: self.session_activity(s),
                 managed: None,
                 program: s.program_status(),
@@ -4427,9 +4427,12 @@ fn agent_ring_target(
 /// `unknown` is the multiplexer declining to say, so the session's own
 /// reading stands.  The gate closes either way: an attached pane holds an
 /// agent whether or not the process probe recognized one.
-fn pane_backed_activity(own: SessionActivity, status: Option<PaneStatus>) -> SessionActivity {
+fn pane_backed_activity(own: SessionActivity, status: Option<AgentStatus>) -> SessionActivity {
     let Some(status) = status else { return own };
-    let live = LiveState::from_pane(status).unwrap_or(own.live().unwrap_or_default());
+    let live = match status {
+        AgentStatus::Unknown => own.live().unwrap_or_default(),
+        status => status.into(),
+    };
     own.with_live(live)
 }
 
@@ -4492,7 +4495,7 @@ mod tests {
     use crate::sidebar_model::build_snapshot;
     use crate::test_util::herdr_pane_key;
     use alacritree_multiplexer::{
-        AttachRequest, MultiplexerKind, Pane, PaneError, PaneStatus, Scripted,
+        AgentStatus, AttachRequest, MultiplexerKind, Pane, PaneError, Scripted,
     };
 
     fn plain_worktree_row<'a>(
@@ -5502,7 +5505,7 @@ mod tests {
         app.multiplexers.scripted_mut().enable();
         adopt_panes(&mut app, &Side::Native, vec![
             Scripted::pane("term-loose")
-                .with_agent("claude", PaneStatus::Working)
+                .with_agent("claude", AgentStatus::Working)
                 .with_title("loose pane")
                 .in_dir("/repo"),
         ]);
@@ -5522,7 +5525,7 @@ mod tests {
         app.multiplexers.scripted_mut().enable();
         adopt_panes(&mut app, &side, vec![
             Scripted::pane("term-held")
-                .with_agent("claude", PaneStatus::Working)
+                .with_agent("claude", AgentStatus::Working)
                 .with_title("held pane")
                 .in_dir("/repo"),
         ]);
@@ -5691,7 +5694,7 @@ mod tests {
         app.multiplexers.scripted_mut().enable();
         let side = Side::Native;
         adopt_panes(&mut app, &side, vec![
-            Scripted::pane("term-held").with_agent("claude", PaneStatus::Working).in_dir("/repo"),
+            Scripted::pane("term-held").with_agent("claude", AgentStatus::Working).in_dir("/repo"),
         ]);
         let id = bind_pane_fixture(&mut app, &side, "term-held");
         let (reply_tx, reply_rx) = mpsc::channel();
@@ -5714,7 +5717,7 @@ mod tests {
         app.multiplexers.scripted_mut().enable();
         let side = Side::Native;
         adopt_panes(&mut app, &side, vec![
-            Scripted::pane("term-held").with_agent("claude", PaneStatus::Working).in_dir("/repo"),
+            Scripted::pane("term-held").with_agent("claude", AgentStatus::Working).in_dir("/repo"),
         ]);
         let asked_from = Some(PathBuf::from("elsewhere"));
         app.current_workspace = asked_from.clone();
@@ -5742,7 +5745,7 @@ mod tests {
     fn attaching_without_focus_queues_an_attach_that_stays_in_the_background() {
         let mut app = lifecycle_app();
         adopt_panes(&mut app, &Side::Native, vec![
-            Scripted::pane("term-loose").with_agent("claude", PaneStatus::Working).in_dir("/repo"),
+            Scripted::pane("term-loose").with_agent("claude", AgentStatus::Working).in_dir("/repo"),
         ]);
         let asked_from = app.current_workspace.clone();
         let (reply_tx, _reply_rx) = mpsc::channel();
@@ -5880,7 +5883,7 @@ mod tests {
         let mut app = test_app();
         app.multiplexers.scripted_mut().enable();
         adopt_panes(&mut app, &Side::Native, vec![
-            Scripted::pane("term-native").with_agent("claude", PaneStatus::Idle).in_dir("/repo"),
+            Scripted::pane("term-native").with_agent("claude", AgentStatus::Idle).in_dir("/repo"),
         ]);
         let side = Side::Wsl("ubuntu".into());
         let id = bind_pane_fixture(&mut app, &side, "term-focused");
@@ -6520,7 +6523,7 @@ mod tests {
         app.multiplexers.herdr_mut_for_test().caches_mut_for_test()[0]
             .fail_listing_for_test(herdr::PollError::Absent("spawn_failed"));
 
-        assert_eq!(app.session_pane_status(&app.sessions[0]), Some(PaneStatus::Working));
+        assert_eq!(app.session_pane_status(&app.sessions[0]), Some(AgentStatus::Working));
         let items = app.palette_items();
         let item =
             items.iter().find(|item| item.action == PaletteAction::ActivateSession(id)).unwrap();
@@ -6777,8 +6780,8 @@ mod tests {
         let mut app = lifecycle_app();
         let side = Side::Native;
         adopt_panes(&mut app, &side, vec![
-            Scripted::pane("term-held").with_agent("claude", PaneStatus::Working).in_dir("/repo"),
-            Scripted::pane("term-loose").with_agent("claude", PaneStatus::Working).in_dir("/repo"),
+            Scripted::pane("term-held").with_agent("claude", AgentStatus::Working).in_dir("/repo"),
+            Scripted::pane("term-loose").with_agent("claude", AgentStatus::Working).in_dir("/repo"),
         ]);
         let held = bind_pane_fixture(&mut app, &side, "term-held");
 
@@ -6806,7 +6809,7 @@ mod tests {
     fn attaching_every_pane_leaves_the_user_where_the_batch_was_asked_from() {
         let mut app = lifecycle_app();
         adopt_panes(&mut app, &Side::Native, vec![
-            Scripted::pane("term-loose").with_agent("claude", PaneStatus::Working).in_dir("/repo"),
+            Scripted::pane("term-loose").with_agent("claude", AgentStatus::Working).in_dir("/repo"),
         ]);
         let asked_from = app.current_workspace.clone();
 
@@ -6833,8 +6836,8 @@ mod tests {
     fn attaching_every_pane_leaves_the_multiplexer_focus_alone() {
         let mut app = lifecycle_app();
         adopt_panes(&mut app, &Side::Native, vec![
-            Scripted::pane("term-one").with_agent("claude", PaneStatus::Done).in_dir("/repo"),
-            Scripted::pane("term-two").with_agent("claude", PaneStatus::Blocked).in_dir("/repo"),
+            Scripted::pane("term-one").with_agent("claude", AgentStatus::Done).in_dir("/repo"),
+            Scripted::pane("term-two").with_agent("claude", AgentStatus::Blocked).in_dir("/repo"),
         ]);
 
         app.attach_every_multiplexer_pane(&Context::default());
@@ -8277,7 +8280,7 @@ mod tests {
 
     /// A listed pane with an agent in it, for the bucketing cases.
     fn bucketing_agent() -> Pane {
-        Scripted::pane("term-a").with_agent("claude", PaneStatus::Idle)
+        Scripted::pane("term-a").with_agent("claude", AgentStatus::Idle)
     }
 
     /// `show_unmatched` is the sidebar's setting, and the palette reads the same
@@ -8374,7 +8377,7 @@ mod tests {
         let side = Side::Native;
         adopt_panes(&mut app, &side, vec![
             Scripted::pane("configured-term")
-                .with_agent("claude", PaneStatus::Idle)
+                .with_agent("claude", AgentStatus::Idle)
                 .with_title("claude"),
         ]);
         let id = bind_pane_fixture(&mut app, &side, "configured-term");
@@ -8478,7 +8481,7 @@ mod tests {
     #[test]
     fn the_tooltip_spells_out_what_the_marks_cannot() {
         let agent = Pane {
-            status: Some(PaneStatus::Working),
+            status: Some(AgentStatus::Working),
             ..titled(Some("claude"), Some("Claude Code"))
         };
         let mut row = pane_row(&agent, Side::Wsl("d".into()), false);
@@ -9714,7 +9717,7 @@ mod tests {
                 needs_attention: false,
                 done: false,
                 activity: SessionActivity::Shell,
-                program_status: Some(ProgramState::Blocked),
+                program_status: Some(AgentStatus::Blocked),
                 program_msg: Some("Which parser?".to_owned()),
                 is_active: true,
                 is_displayed: true,
@@ -10821,21 +10824,21 @@ mod tests {
 
         // herdr sees the approval dialog no title heuristic can.
         assert_eq!(
-            pane_backed_activity(claude, Some(PaneStatus::Blocked)),
+            pane_backed_activity(claude, Some(AgentStatus::Blocked)),
             SessionActivity::agent(Some("claude"), LiveState::Blocked)
         );
 
         // An attached pane holds an agent even when the process probe missed
         // one, so the gate closes on herdr's word alone.
         assert_eq!(
-            pane_backed_activity(SessionActivity::Shell, Some(PaneStatus::Working)),
+            pane_backed_activity(SessionActivity::Shell, Some(AgentStatus::Working)),
             SessionActivity::agent(None, LiveState::Working)
         );
 
         // `unknown` is herdr declining to say, not a claim of idleness: the
         // session keeps whatever it already knew.
         let working = SessionActivity::agent(Some("claude"), LiveState::Working);
-        assert_eq!(pane_backed_activity(working, Some(PaneStatus::Unknown)), working);
+        assert_eq!(pane_backed_activity(working, Some(AgentStatus::Unknown)), working);
     }
 
     /// A herdr pane running a plain shell.  herdr names no agent in it, so
