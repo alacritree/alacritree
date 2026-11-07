@@ -817,8 +817,8 @@ mod windows_process_probe {
     }
 
     #[cfg(test)]
-    pub(super) fn nothing_wanted() -> bool {
-        SHARED.lock().unwrap_or_else(PoisonError::into_inner).wanted.is_empty()
+    pub(super) fn is_wanted(shell_pid: u32) -> bool {
+        SHARED.lock().unwrap_or_else(PoisonError::into_inner).wanted.contains(&shell_pid)
     }
 
     fn refresh_loop() {
@@ -969,7 +969,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(50));
         }
         assert!(
-            windows_process_probe::nothing_wanted(),
+            !windows_process_probe::is_wanted(pid),
             "the refresher would keep enumerating for a window nobody is drawing"
         );
     }
