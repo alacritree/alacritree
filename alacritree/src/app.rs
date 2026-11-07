@@ -3033,16 +3033,17 @@ impl AlacritreeApp {
                     let was_latched = session.done || session.needs_attention;
                     // A program that reports its own state says when it is
                     // done, so a title settling is no evidence of it.
-                    let reported = session.program_status().is_some();
-                    session.done |= pending.finished && is_agent && !reported;
+                    let self_reporting = session.program_status().is_some();
+                    session.done |= pending.finished && is_agent && !self_reporting;
                     session.needs_attention |=
                         pending.rang || pending.notified || (pending.finished && !is_agent);
-                    // Only toast on the transition into a latch: BEL and the
-                    // title settling in the same idle cycle are one "Claude is
-                    // done" event, not two.  An explicit notification has its
-                    // own text, so it toasts every time.
+                    // BEL and the title settling in one idle cycle are one
+                    // event, so only the transition into a latch toasts. A
+                    // notification's own text and a program's report, which
+                    // latches nothing, toast every time.
                     let body = session.last_notification.clone().filter(|_| pending.notified);
-                    if (!was_latched || body.is_some()) && self.config.ui.notifications {
+                    let fresh = !was_latched || body.is_some() || pending.reported;
+                    if fresh && self.config.ui.notifications {
                         notify::attention(&self.sessions[idx], ctx, body);
                     }
                 },
@@ -5141,6 +5142,32 @@ mod tests {
             app.term(Event::Bell, Visibility::Hidden);
             app.term(Event::Bell, Visibility::Hidden);
             assert_eq!(toasts(), ["shell is waiting for input"]);
+        }
+
+        /// A program that reports it wants a human toasts the way a bell does,
+        /// after the same grace window. Going back to work inside the window
+        /// cancels the toast, and an idle report is no trigger.
+        #[test]
+        fn a_reported_status_that_wants_a_human_toasts_like_a_bell() {
+            TOASTS.with_borrow_mut(Vec::clear);
+            let mut app = app_with_a_background_session("shell");
+            app.config.ui.notifications = true;
+            app.config.ui.attention_grace = Duration::from_secs(60);
+            feed_pty(&mut app, "\x1b]7501;state=idle\x07");
+            assert!(app.sessions[0].pending_attention.is_none());
+
+            feed_pty(&mut app, "\x1b]7501;state=blocked\x07");
+            assert!(app.sessions[0].pending_attention.is_some());
+            feed_pty(&mut app, "\x1b]7501;state=working\x07");
+            assert!(app.sessions[0].pending_attention.is_none());
+
+            feed_pty(&mut app, "\x1b]7501;state=done\x07");
+            assert!(toasts().is_empty());
+            let pending = app.sessions[0].pending_attention.as_mut().unwrap();
+            pending.since = Instant::now() - app.config.ui.attention_grace;
+            app.process_session_events(&Context::default());
+            assert_eq!(toasts(), ["shell is waiting for input"]);
+            assert_eq!(app.session_shown_state(&app.sessions[0]), Some(ShownState::Done));
         }
 
         #[test]

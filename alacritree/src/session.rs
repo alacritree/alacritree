@@ -526,6 +526,9 @@ pub(crate) struct DrainOutcome {
     pub finished: bool,
     /// The terminal rang (BEL).
     pub rang: bool,
+    /// The program's OSC 7501 records came to show a state that wants a
+    /// human.
+    pub reported: bool,
     /// Newest explicit OSC 9 or OSC 777 notification body in this drain.
     pub notification: Option<String>,
     /// OSC 52 read requests.  Answered by the caller for the same reason
@@ -597,6 +600,7 @@ pub(crate) struct PendingAttention {
     pub since: Instant,
     pub finished: bool,
     pub rang: bool,
+    pub reported: bool,
     /// An explicit notification arrived.  Its body is the session's
     /// `last_notification`, so a burst coalesces to the newest one.
     pub notified: bool,
@@ -607,9 +611,9 @@ impl PendingAttention {
     /// arrival is kept, so a stream of bells cannot keep restarting the grace
     /// window.
     pub(crate) fn merge(held: Option<Self>, drained: &DrainOutcome, now: Instant) -> Option<Self> {
-        let DrainOutcome { finished, rang, .. } = *drained;
+        let DrainOutcome { finished, rang, reported, .. } = *drained;
         let notified = drained.notification.is_some();
-        if !finished && !rang && !notified {
+        if !finished && !rang && !reported && !notified {
             return held;
         }
         Some(match held {
@@ -617,9 +621,10 @@ impl PendingAttention {
                 since: held.since,
                 finished: held.finished || finished,
                 rang: held.rang || rang,
+                reported: held.reported || reported,
                 notified: held.notified || notified,
             },
-            None => Self { since: now, finished, rang, notified },
+            None => Self { since: now, finished, rang, reported, notified },
         })
     }
 }
@@ -1445,6 +1450,8 @@ impl<R: Repaint> Session<R> {
                     osc::OscEvent::Progress(progress) => self.progress = Some(progress),
                     osc::OscEvent::PointerShape(icon) => self.pointer_shape = Some(icon),
                     osc::OscEvent::ProgramStatus(state) => {
+                        outcome.reported |=
+                            state.is_some_and(|s| ShownState::from(s).wants_attention());
                         self.program_status = state;
                         self.program_status_seen = false;
                     },
@@ -2485,6 +2492,7 @@ pub(crate) mod tests {
             since: Instant::now(),
             finished: false,
             rang: true,
+            reported: false,
             notified: false,
         };
         session.pending_attention = Some(pending);
@@ -3358,13 +3366,25 @@ pub(crate) mod tests {
         let held = PendingAttention::merge(None, &finished, first);
         assert_eq!(
             held,
-            Some(PendingAttention { since: first, finished: true, rang: false, notified: false })
+            Some(PendingAttention {
+                since: first,
+                finished: true,
+                rang: false,
+                reported: false,
+                notified: false,
+            })
         );
         let held = PendingAttention::merge(held, &rang, later);
         let held = PendingAttention::merge(held, &notified, later);
         assert_eq!(
             held,
-            Some(PendingAttention { since: first, finished: true, rang: true, notified: true })
+            Some(PendingAttention {
+                since: first,
+                finished: true,
+                rang: true,
+                reported: false,
+                notified: true,
+            })
         );
         assert_eq!(PendingAttention::merge(None, &DrainOutcome::default(), later), None);
     }
