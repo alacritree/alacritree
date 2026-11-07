@@ -931,18 +931,12 @@ mod tests {
         };
         let click = |catalog: &mut Catalog, pos| {
             for pressed in [true, false] {
-                frame(
-                    catalog,
-                    vec![
-                        egui::Event::PointerMoved(pos),
-                        egui::Event::PointerButton {
-                            pos,
-                            button: egui::PointerButton::Primary,
-                            pressed,
-                            modifiers: egui::Modifiers::NONE,
-                        },
-                    ],
-                );
+                frame(catalog, vec![egui::Event::PointerMoved(pos), egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                }]);
             }
         };
         frame(&mut catalog, Vec::new());

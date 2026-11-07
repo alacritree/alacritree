@@ -55,13 +55,12 @@ enum HookError {
     Kept(PathBuf),
 }
 
-const DENY_WORKTREE_ADD: &str = "alacritree manages the worktrees here, so `git worktree add` is \
-                                 turned away. Run `alacritree worktree create <project-root> \
-                                 <branch>` (or the `create_worktree` MCP tool) instead: it \
-                                 branches off the default branch, copies the LLM config files \
-                                 and shows the worktree in the sidebar. For throwaway work, run \
-                                 `alacritree worktree create --temporary . <name>` and remove it \
-                                 with `alacritree worktree remove <path>` when you are done.";
+const DENY_WORKTREE_ADD: &str =
+    "alacritree manages the worktrees here, so `git worktree add` is turned away. Run `alacritree \
+     worktree create <project-root> <branch>` (or the `create_worktree` MCP tool) instead: it \
+     branches off the default branch, copies the LLM config files and shows the worktree in the \
+     sidebar. For throwaway work, run `alacritree worktree create --temporary . <name>` and \
+     remove it with `alacritree worktree remove <path>` when you are done.";
 
 pub(super) fn run(
     event: Event,

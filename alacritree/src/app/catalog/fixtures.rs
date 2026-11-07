@@ -2,7 +2,8 @@
 //! labels only; no fixture discovers a project or starts an integration.
 
 use super::*;
-use crate::tasks::view::{Scope, preview::Preview};
+use crate::tasks::view::Scope;
+use crate::tasks::view::preview::Preview;
 use alacritree_multiplexer::MultiplexerKind;
 use alacritree_tasks::Task;
 
@@ -74,7 +75,8 @@ impl Samples {
             scratchpads: [
                 scratchpad::Editor::preview("", None),
                 scratchpad::Editor::preview(
-                    "# Workspace notes\n\n- Inspect the worktree states\n- Compare narrow and wide layouts\n\n## Follow-up\n\nKeep the terminal at the center.\n",
+                    "# Workspace notes\n\n- Inspect the worktree states\n- Compare narrow and \
+                     wide layouts\n\n## Follow-up\n\nKeep the terminal at the center.\n",
                     None,
                 ),
                 scratchpad::Editor::preview(
@@ -109,7 +111,8 @@ pub(super) fn tasks() -> Preview {
         ("alacritree.catalog", "Preview every workspace state", false, None),
         (
             "alacritree.catalog",
-            "Add narrow-layout examples and check that long descriptions wrap beside their checkbox",
+            "Add narrow-layout examples and check that long descriptions wrap beside their \
+             checkbox",
             false,
             Some("fixture-2"),
         ),
@@ -132,14 +135,11 @@ pub(super) fn tasks() -> Preview {
             modified: None,
         })
         .collect();
-    Preview::new(
-        tasks,
-        Scope {
-            side: Side::Native,
-            repo: Some("alacritree".into()),
-            workspace: Some("alacritree.catalog".into()),
-        },
-    )
+    Preview::new(tasks, Scope {
+        side: Side::Native,
+        repo: Some("alacritree".into()),
+        workspace: Some("alacritree.catalog".into()),
+    })
 }
 
 pub(super) fn pane(

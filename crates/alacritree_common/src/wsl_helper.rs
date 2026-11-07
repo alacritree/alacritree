@@ -1928,7 +1928,10 @@ mod tests {
         let Ok(also) = second.1.try_recv().expect("the second late tab waited") else {
             panic!("the second late tab got an error");
         };
-        assert_eq!(also.generation, heard.generation, "the second late tab heard a different change");
+        assert_eq!(
+            also.generation, heard.generation,
+            "the second late tab heard a different change"
+        );
         drop(open);
         drop(rearmed);
         drop(first);

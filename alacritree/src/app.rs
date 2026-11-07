@@ -56,12 +56,11 @@ use crate::sidebar_model::{SidebarInputs, SidebarModel, Step};
 use crate::sidebar_nav::{self, SidebarRow, StepTarget};
 use crate::state::{self, PersistedProject};
 use crate::status_cache::StatusCache;
-use crate::temporary;
 use crate::workspace::WorkspaceKey;
 use crate::worktree::{self as wt, CreateRequest, Progress};
 use crate::{
     clipboard_image, file_drop, ipc, mouse_hide, notify, paste, path_style, scratchpad,
-    sidebar_focus, terminal_view, worktree_liveness,
+    sidebar_focus, temporary, terminal_view, worktree_liveness,
 };
 use alacritree_vcs::{Checkout, Dirty, Liveness, UpstreamState, VersionControl};
 

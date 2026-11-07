@@ -202,7 +202,10 @@ impl Catalog {
                 ui.checkbox(&mut self.samples.dialog_force, "Also delete branch `feature/catalog`");
             },
             Kind::Close => {
-                ui.label("A process is still running in `cargo test`. Closing this session terminates it.");
+                ui.label(
+                    "A process is still running in `cargo test`. Closing this session terminates \
+                     it.",
+                );
             },
             Kind::Detach => {
                 ui.label("Detach 3 sessions? Their panes keep running under the multiplexer.");
