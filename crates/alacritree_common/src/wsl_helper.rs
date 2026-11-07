@@ -2790,7 +2790,9 @@ mod tests {
     /// real pty under probe key `k`. `ws TTY [ROWS COLS WIDTH HEIGHT]` sets
     /// the tty's size and prints it; `ws "$tty" 31 91 0 0` rewrites it the
     /// way WSL does on a resize or a switch of screen buffer. Requests 4 and
-    /// 3 start together, as two cell sizes sent back to back do.
+    /// 3 start together, as two cell sizes sent back to back do. Each reading
+    /// waits up to 5 s for the size it expects, so a slow runner does not
+    /// read the tty before the watcher writes it.
     const PIXEL_SIZE_HARNESS: &str = r##"echo harness
 command -v perl >/dev/null && command -v script >/dev/null && command -v pgrep >/dev/null || { echo "skip: needs perl, script and pgrep"; exit 0; }
 pixel_size_script=$(cat <<'EOF_PIXEL_SIZE_SCRIPT'
@@ -2806,23 +2808,25 @@ i=0
 while [ ! -s "$d/session-k.pid" ] && [ $i -lt 100 ]; do sleep 0.05; i=$((i + 1)); done
 tty=$(readlink "/proc/$(cat "$d/session-k.pid")/fd/0")
 ws() { perl -e 'open(T, "+<", shift) or die; ioctl(T, 0x5414, pack("S4", @ARGV)) if @ARGV; my $w = pack("S4", 0, 0, 0, 0); ioctl(T, 0x5413, $w); print join(" ", unpack("S4", $w)), "\n"' "$@"; }
+until_true() { i=0; while ! eval "$1" && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done; }
+watchers() { pgrep -f -- " $d k " | wc -l; }
 ws "$tty" 30 90 0 0 >/dev/null
 sh -c "$pixel_size_script" sh k 1 10 20
-sleep 0.3
+until_true '[ "$(ws "$tty")" = "30 90 900 600" ]'
 ws "$tty"
 ws "$tty" 31 91 0 0 >/dev/null
-sleep 0.3
+until_true '[ "$(ws "$tty")" = "31 91 910 620" ]'
 ws "$tty"
 sh -c "$pixel_size_script" sh k 2 12 24
-sleep 0.3
+until_true '[ "$(ws "$tty")" = "31 91 1092 744" ]'
 ws "$tty"
 sh -c "$pixel_size_script" sh k 4 16 32
 sh -c "$pixel_size_script" sh k 3 14 28
-sleep 0.3
+until_true '[ "$(ws "$tty")" = "31 91 1456 992" ] && [ "$(watchers)" -eq 1 ]'
 ws "$tty"
-echo "$(pgrep -f -- " $d k " | wc -l) watcher"
+echo "$(watchers) watcher"
 kill "$(cat "$d/session-k.pid")" 2>/dev/null
-sleep 0.3
+until_true '[ ! -e "$d/pixels-k.pid" ]'
 [ -e "$d/pixels-k.pid" ] && echo "watcher outlived its shell" || echo "watcher gone"
 rm -rf "$XDG_RUNTIME_DIR"
 "##;
@@ -3114,16 +3118,30 @@ rm -rf "$bin"
 "##;
 
     /// A write that lands while `inotifywait` is still registering is not
-    /// lost. The wait is bounded, and the stamp after it sees the write.
+    /// lost. The wait is bounded, and the stamp after it sees the write. The
+    /// `inotifywait` on `PATH` writes the file and times out without an
+    /// event, so the write always lands after the helper's first stamp.
     const WATCH_RACE_HARNESS: &str = r##"echo harness
 command -v setsid >/dev/null && command -v base64 >/dev/null || { echo "skip: needs setsid and base64"; exit 0; }
 helper_script=$(cat <<'EOF_HELPER_SCRIPT'
 {script}
 EOF_HELPER_SCRIPT
 )
-real=$(command -v inotifywait || true)
 XDG_RUNTIME_DIR=$(mktemp -d)
 export XDG_RUNTIME_DIR
+dir=$XDG_RUNTIME_DIR/watched
+RACE_FILE=$dir/taskchampion.sqlite3
+RACE_DONE=$XDG_RUNTIME_DIR/raced
+export RACE_FILE RACE_DONE
+mkdir "$XDG_RUNTIME_DIR/bin"
+cat > "$XDG_RUNTIME_DIR/bin/inotifywait" <<'EOF'
+#!/bin/sh
+[ -e "$RACE_DONE" ] || { : > "$RACE_DONE"; printf raced > "$RACE_FILE"; }
+exit 2
+EOF
+chmod +x "$XDG_RUNTIME_DIR/bin/inotifywait"
+PATH=$XDG_RUNTIME_DIR/bin:$PATH
+export PATH
 mkfifo "$XDG_RUNTIME_DIR/in"
 setsid sh -c "$helper_script" sh < "$XDG_RUNTIME_DIR/in" > "$XDG_RUNTIME_DIR/out" 2>/dev/null &
 exec 5> "$XDG_RUNTIME_DIR/in"
@@ -3134,12 +3152,9 @@ while [ $i -lt 50 ]; do
   i=$((i + 1))
 done
 grep -q '^hello	' "$XDG_RUNTIME_DIR/out" || { echo "skip: the helper never said hello"; exit 0; }
-dir=$XDG_RUNTIME_DIR/watched
 mkdir -p "$dir"
 : > "$dir/taskchampion.sqlite3"
 path=$(printf %s "$dir" | base64 | tr -d '\n')
-# The write is in flight before the helper can register the watch.
-( sleep 0.05; printf raced > "$dir/taskchampion.sqlite3" ) &
 printf '1\tWATCH\t%s\n' "$path" >&5
 i=0
 while [ $i -lt 40 ]; do
@@ -3174,8 +3189,7 @@ rm -rf "$XDG_RUNTIME_DIR"
             return;
         };
         let found: Vec<&str> = lines.lines().collect();
-        let branch = if found.contains(&"bounded") { "bounded" } else { "stat" };
-        assert_eq!(found, ["changed", branch]);
+        assert_eq!(found, ["changed", "bounded"]);
     }
 
     /// `inotifywait` is what waits when the distro has it. A `PATH` without it
