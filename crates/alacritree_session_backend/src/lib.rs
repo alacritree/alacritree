@@ -18,11 +18,10 @@ use std::path::PathBuf;
 
 pub use alacritree_common::side::Side;
 pub use alacritree_common::wsl_helper::WslProbe;
+pub use alacritree_multiplexer::PaneKey;
 use strum::Display;
 
-pub use self::model::{
-    ForegroundProgram, OpenRequest, ProcessTree, Screen, ShellCommand, Signals, Terminal,
-};
+pub use self::model::{ForegroundProgram, OpenRequest, ProcessTree, Screen, ShellCommand, Signals};
 #[cfg(any(test, feature = "test-support"))]
 pub use self::scripted::{Call, Record, Scripted, ScriptedHandle};
 
@@ -79,24 +78,23 @@ pub trait SessionBackend<H> {
     where
         L: ::alacritty_terminal::event::EventListener + ::std::marker::Send + 'static;
 
-    /// The terminals this backend runs that no session holds and that a
-    /// session may take over.
-    fn adoptable(&self) -> ::std::vec::Vec<::alacritree_session_backend::Terminal>;
+    /// The panes this backend runs that no session holds and that a session
+    /// may take over.
+    fn adoptable(&self) -> ::std::vec::Vec<::alacritree_session_backend::PaneKey>;
 
-    /// Show `terminal` in a session that types into it and sizes it.
+    /// Show `pane` in a session that types into it and sizes it.
     fn attach<L>(
         &self,
-        terminal: &::alacritree_session_backend::Terminal,
+        pane: &::alacritree_session_backend::PaneKey,
         screen: ::alacritree_session_backend::Screen<L>,
     ) -> ::std::result::Result<H, ::alacritree_session_backend::SessionError>
     where
         L: ::alacritty_terminal::event::EventListener + ::std::marker::Send + 'static;
 
-    /// Show `terminal` in a session that neither types into it nor resizes
-    /// it.
+    /// Show `pane` in a session that neither types into it nor resizes it.
     fn watch<L>(
         &self,
-        terminal: &::alacritree_session_backend::Terminal,
+        pane: &::alacritree_session_backend::PaneKey,
         screen: ::alacritree_session_backend::Screen<L>,
     ) -> ::std::result::Result<H, ::alacritree_session_backend::SessionError>
     where

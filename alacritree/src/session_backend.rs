@@ -4,7 +4,7 @@
 
 use alacritree_native::{Native, NativeHandle};
 use alacritree_session_backend::{
-    OpenRequest, Screen, SessionBackend, SessionError, SessionHandle, Terminal,
+    OpenRequest, PaneKey, Screen, SessionBackend, SessionError, SessionHandle,
     ambassador_impl_SessionHandle,
 };
 #[cfg(test)]
@@ -44,7 +44,7 @@ impl SessionBackend<Handle> for Backend {
         }
     }
 
-    fn adoptable(&self) -> Vec<Terminal> {
+    fn adoptable(&self) -> Vec<PaneKey> {
         match self {
             Self::Native(backend) => SessionBackend::<Handle>::adoptable(backend),
             #[cfg(test)]
@@ -52,25 +52,25 @@ impl SessionBackend<Handle> for Backend {
         }
     }
 
-    fn attach<L>(&self, terminal: &Terminal, screen: Screen<L>) -> Result<Handle, SessionError>
+    fn attach<L>(&self, pane: &PaneKey, screen: Screen<L>) -> Result<Handle, SessionError>
     where
         L: EventListener + Send + 'static,
     {
         match self {
-            Self::Native(backend) => backend.attach(terminal, screen),
+            Self::Native(backend) => backend.attach(pane, screen),
             #[cfg(test)]
-            Self::Scripted(backend) => backend.attach(terminal, screen),
+            Self::Scripted(backend) => backend.attach(pane, screen),
         }
     }
 
-    fn watch<L>(&self, terminal: &Terminal, screen: Screen<L>) -> Result<Handle, SessionError>
+    fn watch<L>(&self, pane: &PaneKey, screen: Screen<L>) -> Result<Handle, SessionError>
     where
         L: EventListener + Send + 'static,
     {
         match self {
-            Self::Native(backend) => backend.watch(terminal, screen),
+            Self::Native(backend) => backend.watch(pane, screen),
             #[cfg(test)]
-            Self::Scripted(backend) => backend.watch(terminal, screen),
+            Self::Scripted(backend) => backend.watch(pane, screen),
         }
     }
 }

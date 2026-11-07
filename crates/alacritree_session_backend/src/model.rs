@@ -64,14 +64,6 @@ pub struct OpenRequest<L> {
     pub screen: Screen<L>,
 }
 
-/// A terminal that a backend runs and no session holds.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Terminal {
-    pub side: Side,
-    /// The backend's own name for the terminal, stable while it lives.
-    pub id: String,
-}
-
 /// The program that holds a session's terminal right now.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForegroundProgram {

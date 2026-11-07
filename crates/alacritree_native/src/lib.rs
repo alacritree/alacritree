@@ -16,8 +16,8 @@ use std::time::{Duration, Instant};
 
 use alacritree_common::wsl_helper::{self, WslProbe};
 use alacritree_session_backend::{
-    ForegroundProgram, OpenRequest, Operation, ProcessTree, Screen, SessionBackend,
-    SessionBackendKind, SessionError, SessionHandle, Signals, Terminal,
+    ForegroundProgram, OpenRequest, Operation, PaneKey, ProcessTree, Screen, SessionBackend,
+    SessionBackendKind, SessionError, SessionHandle, Signals,
 };
 use alacritty_terminal::event::{EventListener, Notify, OnResize, WindowSize};
 use alacritty_terminal::event_loop::{EventLoop, Msg, Notifier};
@@ -79,18 +79,18 @@ impl<H: From<NativeHandle>> SessionBackend<H> for Native {
         open(request, spare, self.phase_log).map(H::from)
     }
 
-    fn adoptable(&self) -> Vec<Terminal> {
+    fn adoptable(&self) -> Vec<PaneKey> {
         Vec::new()
     }
 
-    fn attach<L>(&self, _terminal: &Terminal, _screen: Screen<L>) -> Result<H, SessionError>
+    fn attach<L>(&self, _pane: &PaneKey, _screen: Screen<L>) -> Result<H, SessionError>
     where
         L: EventListener + Send + 'static,
     {
         Err(unsupported(Operation::Attach))
     }
 
-    fn watch<L>(&self, _terminal: &Terminal, _screen: Screen<L>) -> Result<H, SessionError>
+    fn watch<L>(&self, _pane: &PaneKey, _screen: Screen<L>) -> Result<H, SessionError>
     where
         L: EventListener + Send + 'static,
     {
@@ -373,9 +373,13 @@ pub(crate) mod tests {
         request.shell = None;
         let screen =
             Screen { term, listener: VoidListener, window_size: request.screen.window_size };
-        let terminal = Terminal { side: alacritree_session_backend::Side::Native, id: "t".into() };
+        let pane = PaneKey {
+            multiplexer: alacritree_multiplexer::MultiplexerKind::Herdr,
+            side: alacritree_session_backend::Side::Native,
+            terminal_id: "t".into(),
+        };
 
-        let attached: Result<NativeHandle, _> = Native::default().attach(&terminal, screen);
+        let attached: Result<NativeHandle, _> = Native::default().attach(&pane, screen);
 
         assert!(matches!(
             attached.err(),
