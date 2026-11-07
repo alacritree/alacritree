@@ -187,8 +187,7 @@ pub struct VtConfig {
 }
 
 impl VtConfig {
-    /// Whether any sequence is wanted. A session with none keeps no OSC
-    /// filter.
+    /// Whether any sequence that a `[vt]` key gates is wanted.
     pub fn any_enabled(&self) -> bool {
         self.report_cwd || self.notify || self.progress || self.pointer_shape
     }
@@ -3207,8 +3206,9 @@ struct RawUi {
     /// Badge color for a session asking to be looked at.  Unset uses the
     /// palette's `normal.yellow`.
     sidebar_attention: Option<RgbStr>,
-    /// Post a desktop notification when a hidden session rings the bell;
-    /// clicking it focuses that session.
+    /// Post a desktop notification when a hidden session wants attention,
+    /// such as a bell or a program that reports it waits on you; clicking
+    /// it focuses that session.
     notifications: bool,
     /// Grace window in milliseconds before an attention trigger pings; a
     /// session that resumes work inside it swallows the ping.

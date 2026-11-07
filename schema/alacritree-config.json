@@ -2016,7 +2016,7 @@
         },
         "notifications": {
           "default": true,
-          "description": "Post a desktop notification when a hidden session rings the bell;\nclicking it focuses that session.",
+          "description": "Post a desktop notification when a hidden session wants attention,\nsuch as a bell or a program that reports it waits on you; clicking\nit focuses that session.",
           "type": "boolean"
         },
         "paste": {

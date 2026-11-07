@@ -795,6 +795,10 @@ Persistent files written by Alacritree:
   sidebar visibility.
 - `$XDG_CONFIG_HOME/alacritree/scratchpads/*.md` holds one persistent Markdown
   scratchpad per workspace. Worktree deletion does not remove these notes.
+- On Windows, with `[ui] notifications` on, startup writes the
+  `HKCU\Software\Classes\AppUserModelId\alacritree` key and
+  `%LOCALAPPDATA%\alacritree\toast-icon.png`, so toasts carry alacritree's
+  name and icon.
 
 No telemetry, no analytics, no background network traffic.
 
