@@ -70,8 +70,8 @@ jobs:
       - name: UI-thread audit
         run: python3 alacritree/tools/ui-thread-audit.py .
 
-  # Compile the platform-specific process and notification integrations before
-  # a release tag reaches cargo-dist.
+  # Compile and test the platform-specific process and notification
+  # integrations before a release tag reaches cargo-dist.
   alacritree-macos:
     runs-on: macos-15
 
@@ -86,9 +86,12 @@ jobs:
 
       # Clippy rather than a plain check, for the same reason as the Windows
       # job: the macOS arms of links.rs and session.rs are lint-visible nowhere
-      # else.  --all-targets is what reaches session.rs's macOS-only test.
+      # else.
       - name: Clippy
         run: cargo clippy --workspace --exclude alacritty --exclude alacritty_terminal --exclude alacritty_config --exclude alacritty_config_derive --all-targets --locked --no-deps -- -D clippy::disallowed_methods
+
+      - name: Test
+        run: cargo test --workspace --exclude alacritty --exclude alacritty_terminal --exclude alacritty_config --exclude alacritty_config_derive --locked
 
   # Clipboard file/image fallbacks and WSL path handling are primarily
   # Windows-facing. Compile and run their pure tests before those cfg branches
