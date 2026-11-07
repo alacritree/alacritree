@@ -2133,6 +2133,7 @@ mod tests {
     /// a time. A second test resetting the table would answer the first's watch.
     /// The watch client is the same global the helper tests set, so this holds
     /// that lock too.
+    #[cfg(windows)]
     fn wsl_tests() -> (std::sync::MutexGuard<'static, ()>, std::sync::MutexGuard<'static, ()>) {
         let watch = wsl_helper::watch_tests();
         static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
