@@ -23,9 +23,7 @@ pub mod crash_log;
 pub(crate) mod cursor;
 pub(crate) mod decoration_sprites;
 pub(crate) mod digest;
-pub mod dll_search;
 pub(crate) mod file_drop;
-pub(crate) mod focus_priority;
 pub(crate) mod fonts;
 pub(crate) mod forge;
 pub mod frame_log;
@@ -53,15 +51,13 @@ pub(crate) mod panel_filter;
 pub(crate) mod paste;
 pub(crate) mod path_style;
 pub(crate) mod pr_status;
-pub(crate) mod process_probe;
 pub(crate) mod program_status;
 pub mod projects;
-#[cfg(windows)]
-pub(crate) mod pty_rearm;
 pub(crate) mod repaint;
 pub(crate) mod row_label;
 pub(crate) mod scratchpad;
 pub(crate) mod session;
+pub(crate) mod session_backend;
 pub(crate) mod shell_decision;
 pub(crate) mod shortcut;
 pub mod sidebar_focus;
@@ -82,7 +78,6 @@ pub mod win_session;
 pub(crate) mod workspace;
 pub(crate) mod worktree;
 pub(crate) mod worktree_liveness;
-pub mod wsl_spare;
 
 /// The timing reports inside unit tests read allocation counts too.
 #[cfg(test)]

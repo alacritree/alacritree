@@ -5,10 +5,9 @@ use std::io::IsTerminal;
 use alacritree::app::AlacritreeApp;
 #[cfg(windows)]
 use alacritree::win_session;
-use alacritree::{
-    cli, config, crash_log, dll_search, frame_log, logdir, logging, startup_log, state, wsl_spare,
-};
-use alacritree_common::{tools, wsl, wsl_helper};
+use alacritree::{cli, config, crash_log, frame_log, logdir, logging, startup_log, state};
+use alacritree_common::{dll_search, tools, wsl, wsl_helper};
+use alacritree_native::wsl_spare;
 use clap::Parser;
 
 /// Pre-resized from the 2048x2048 source so we don't embed a 4 MB blob for

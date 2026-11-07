@@ -26,6 +26,8 @@ alacritree_gh.workspace = true
 alacritree_git.workspace = true
 alacritree_herdr.workspace = true
 alacritree_multiplexer.workspace = true
+alacritree_native.workspace = true
+alacritree_session_backend.workspace = true
 alacritree_tasks.workspace = true
 alacritree_taskwarrior.workspace = true
 alacritree_vcs.workspace = true
@@ -97,6 +99,7 @@ alacritree_forge = { workspace = true, features = ["test-support"] }
 alacritree_git = { workspace = true, features = ["test-support"] }
 alacritree_herdr = { workspace = true, features = ["test-support"] }
 alacritree_multiplexer = { workspace = true, features = ["test-support"] }
+alacritree_session_backend = { workspace = true, features = ["test-support"] }
 alacritree_tasks = { workspace = true, features = ["test-support"] }
 alacritree_vcs = { workspace = true, features = ["test-support"] }
 alacritree_zellij = { workspace = true, features = ["test-support"] }
@@ -107,7 +110,8 @@ serde_json = "1"
 
 [target.'cfg(unix)'.dependencies]
 # Linux socket discovery uses the effective uid when a GUI launcher omits
-# XDG_RUNTIME_DIR. macOS uses libc for foreground-agent detection.
+# XDG_RUNTIME_DIR. macOS asks whether a pid is still running before pruning
+# its log.
 libc = "0.2"
 # Used for font matching: matches what alacritty does via crossfont so that
 # fontconfig <alias> rules and weight/slant substitution behave identically
@@ -117,18 +121,13 @@ libc = "0.2"
 fontconfig = "0.8"
 
 [target.'cfg(windows)'.dependencies]
-# Re-posts the console-pipe readiness that the emulated level mode drops
-# mid-burst (`pty_rearm`).  Must resolve to the same version alacritty_terminal
-# links, or the `Poller` handed to the registration is a different type.
-polling = "3.11"
-# Restricts the DLL search path at startup (`harden_dll_search_path`), borrows
-# the launching shell's console so the CLI can print (`attach_parent_console`),
-# reads the cursor during a file drag, which winit discards, and asks whether a
-# pid is still running before pruning its log.
+# Borrows the launching shell's console so the CLI can print (`attach_parent_console`),
+# reads the cursor during a file drag, which winit discards, asks whether a
+# pid is still running before pruning its log, and loads ConPTY by name in the
+# DLL search-order test.
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_System_Console",
-    "Win32_System_JobObjects",
     "Win32_System_LibraryLoader",
     "Win32_System_Threading",
     "Win32_UI_WindowsAndMessaging",
@@ -136,8 +135,7 @@ windows-sys = { version = "0.59", features = [
 # The HWND to subclass for session-end messages (`win_session`).  Same version
 # eframe links, so no duplicate build.
 raw-window-handle = "0.6"
-# Foreground-agent detection: walks the shell's descendant process tree.
-# Linux reads /proc directly, so the dependency is Windows-only.
+# `alacritree doctor` lists the running alacritree processes.
 sysinfo = { version = "0.36", default-features = false, features = ["system"] }
 # Distro enumeration reads HKCU\...\Lxss directly (Windows Terminal's
 # approach). That needs no process spawn at startup, and it identifies the

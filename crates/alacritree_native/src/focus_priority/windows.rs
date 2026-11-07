@@ -73,7 +73,7 @@ fn set_boosted(pid: u32, boosted: bool) {
 ///
 /// Asked for every frame, so the state is remembered and an unchanged answer
 /// costs no syscall.
-pub(crate) fn set_self_boosted(boosted: bool) {
+pub fn set_self_boosted(boosted: bool) {
     static SELF_BOOSTED: AtomicBool = AtomicBool::new(false);
     if SELF_BOOSTED.swap(boosted, Ordering::Relaxed) != boosted {
         set_boosted(std::process::id(), boosted);
@@ -619,7 +619,7 @@ mod tests {
                 escape_args: false,
             };
             let size = WindowSize { num_lines: 24, num_cols: 80, cell_width: 8, cell_height: 16 };
-            crate::dll_search::harden_dll_search_path();
+            alacritree_common::dll_search::harden_dll_search_path();
             let mut pty = tty::new(&options, size, 0).expect("open a pseudoconsole");
             let root = pty.child_watcher().pid().map(NonZeroU32::get).expect("the shell's pid");
             // Jobbed before the tree is waited for, as a session does it: a

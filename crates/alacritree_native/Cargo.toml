@@ -1,0 +1,38 @@
+[package]
+name = "alacritree_native"
+version = "0.0.0"
+license = "Apache-2.0"
+description = "The session backend that runs each terminal in a PTY alacritree owns"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+alacritree_common.workspace = true
+alacritree_session_backend.workspace = true
+alacritty_terminal = { path = "../../alacritty_terminal" }
+log = "0.4"
+
+[dev-dependencies]
+alacritree_multiplexer.workspace = true
+tempfile = "3"
+
+# macOS reads the foreground group, its argv and its cwd through libc.
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+# Re-posts the console-pipe readiness that the emulated level mode drops
+# mid-burst (`pty_rearm`).  Must resolve to the same version alacritty_terminal
+# links, or the `Poller` handed to the registration is a different type.
+polling = "3.11"
+# Foreground-agent detection: walks the shell's descendant process tree.
+# Linux reads /proc directly, so the dependency is Windows-only.
+sysinfo = { version = "0.36", default-features = false, features = ["system"] }
+# The job objects that boost and reap a session's process tree.
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_JobObjects",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Threading",
+] }

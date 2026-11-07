@@ -49,9 +49,10 @@ use crate::pr_status::{self, PrCache};
 use crate::program_status::{self, Status};
 use crate::projects::{Discovered, NotAProject, Project, project_json};
 use crate::session::{
-    self, Attachment, AttentionVerdict, LiveState, PendingAttention, Session, SessionActivity,
-    SessionId, SessionKind, ShellCommand, ShownState, TermSize, poll_attention_debounce,
+    self, AttentionVerdict, LiveState, PendingAttention, Session, SessionActivity, SessionId,
+    SessionKind, ShellCommand, ShownState, TermSize, poll_attention_debounce,
 };
+use crate::session_backend::{Backend, Handle};
 use crate::shell_decision::{ShellDecision, shell_decision};
 use crate::sidebar_model::{SidebarInputs, SidebarModel, Step};
 use crate::sidebar_nav::{self, SidebarRow, StepTarget};
@@ -63,6 +64,7 @@ use crate::{
     clipboard_image, file_drop, ipc, mouse_hide, notify, paste, path_style, scratchpad,
     sidebar_focus, temporary, terminal_view, worktree_liveness,
 };
+use alacritree_session_backend::{SessionBackend, SessionError, SessionHandle};
 use alacritree_vcs::{Checkout, Dirty, Liveness, UpstreamState, VersionControl};
 
 mod actions;
@@ -548,10 +550,12 @@ pub struct AlacritreeApp {
     /// that refreshes a project to act on the new worktree list would
     /// otherwise race its own request.
     project_refreshes: InFlight<PathBuf, Discovered>,
-    /// PTYs opened on a worker, adopted in `poll_pending_spawns`.  A client
-    /// that creates a session to write to it is answered once the PTY is
-    /// live, or it would race its own shell.
-    pending_spawns: InFlight<SessionId, std::io::Result<Attachment>>,
+    /// What opens every new session's terminal.
+    session_backend: Backend,
+    /// Terminals opened on a worker, adopted in `poll_pending_spawns`. A
+    /// client that creates a session to write to it is answered once the
+    /// terminal is live, or it would race its own shell.
+    pending_spawns: InFlight<SessionId, Result<Handle, SessionError>>,
     /// Every multiplexer alacritree hosts panes from, each with its own
     /// listing and calls in flight.
     multiplexers: Multiplexers,
@@ -666,6 +670,7 @@ impl AlacritreeApp {
             grid_paint: std::time::Duration::ZERO,
             last_pane_geometry: None,
             project_refreshes: Default::default(),
+            session_backend: Backend::native(),
             pending_spawns: Default::default(),
             multiplexers,
             liveness: Default::default(),
@@ -1085,15 +1090,15 @@ impl AlacritreeApp {
         &mut self,
         session: AppSession,
         request: session::OpenRequest<Context>,
-    ) -> std::io::Result<SessionId> {
+    ) -> Result<SessionId, SessionError> {
         let id = session.id;
         self.sessions.push(session);
 
         if !self.config.ui.async_session_spawn {
-            match session::open(request) {
-                Ok(attachment) => {
+            match self.session_backend.open(request) {
+                Ok(handle) => {
                     let idx = self.sessions.iter().position(|s| s.id == id).expect("just pushed");
-                    self.sessions[idx].attach(attachment);
+                    self.sessions[idx].attach(handle);
                     return Ok(id);
                 },
                 Err(e) => {
@@ -1114,29 +1119,31 @@ impl AlacritreeApp {
         // repaints once the job returns, so nothing here has to. Without that
         // the result would wait for whatever wakes the loop next, which under
         // load is the shell's own first output seconds later.
-        let job = jobs::pool()
-            .spawn(jobs::Priority::Interactive, move |_blocking| session::open(request));
+        let backend = self.session_backend.clone();
+        let job =
+            jobs::pool().spawn(jobs::Priority::Interactive, move |_blocking| backend.open(request));
         self.pending_spawns.start(id, || job);
         Ok(id)
     }
 
-    /// Adopt every PTY that finished opening.  A session whose record is gone
-    /// was closed while it was opening: dropping the attachment shuts its
-    /// shell down rather than resurrecting the tab.
+    /// Adopt every terminal that finished opening. A session whose record is
+    /// gone was closed while it was opening: killing the handle ends its shell
+    /// rather than resurrecting the tab.
     fn poll_pending_spawns(&mut self, ctx: &Context) {
         for Finished { key: id, outcome, waiters } in self.pending_spawns.take_finished() {
-            let opened = outcome
-                .unwrap_or_else(|| Err(std::io::Error::other("the session's PTY worker panicked")));
+            let opened = outcome.unwrap_or_else(|| {
+                Err(std::io::Error::other("the session's PTY worker panicked").into())
+            });
             match opened {
-                Ok(attachment) => match self.sessions.iter().position(|s| s.id == id) {
+                Ok(mut handle) => match self.sessions.iter().position(|s| s.id == id) {
                     Some(idx) => {
                         let started = Instant::now();
-                        self.sessions[idx].attach(attachment);
+                        self.sessions[idx].attach(handle);
                         crate::frame_log::spawn_phase(Some(id), "attach", started.elapsed());
                         waiters.answer(Ok(json!({ "session_id": id })));
                     },
                     None => {
-                        drop(attachment);
+                        handle.kill();
                         waiters.answer(Err(
                             "the session was closed while its shell was starting".into()
                         ));
@@ -1165,7 +1172,7 @@ impl AlacritreeApp {
         &mut self,
         ctx: &Context,
         working_directory: WorkspaceKey,
-    ) -> std::io::Result<SessionId> {
+    ) -> Result<SessionId, SessionError> {
         let (shell, wsl_probe, wsl_distro) =
             self.resolve_shell(&working_directory, working_directory.as_deref());
         self.spawn_session_with_shell(
@@ -1180,7 +1187,7 @@ impl AlacritreeApp {
 
     /// A new shell in the current workspace, started where the active
     /// session's shell last reported it was.
-    fn spawn_sibling_session(&mut self, ctx: &Context) -> std::io::Result<SessionId> {
+    fn spawn_sibling_session(&mut self, ctx: &Context) -> Result<SessionId, SessionError> {
         let workspace = self.current_workspace.clone();
         let directory = self.sibling_spawn_directory();
         let (shell, wsl_probe, wsl_distro) = self.resolve_shell(&workspace, directory.as_deref());
@@ -1231,17 +1238,18 @@ impl AlacritreeApp {
         shell: Option<ShellCommand>,
         wsl_probe: Option<WslProbe>,
         wsl_distro: Option<String>,
-    ) -> std::io::Result<SessionId> {
+    ) -> Result<SessionId, SessionError> {
         if let Some(dir) = &workspace {
             // A checkout git has forgotten is refused here rather than in
-            // `session::open`, which can only see whether the directory
+            // the backend's open, which can only see whether the directory
             // exists. A half-finished `git worktree remove` leaves one that
             // does. Refusing here is what keeps the greyed row's promise.
             if self.worktree_gone(dir) {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::NotFound,
                     format!("worktree is no longer checked out: {}", dir.display()),
-                ));
+                )
+                .into());
             }
             // Synchronous, so a second rapid spawn sees the once-per-worktree
             // guard set. The hooks run off-thread, so the first shell may
@@ -1353,7 +1361,7 @@ impl AlacritreeApp {
         &mut self,
         ctx: &Context,
         workspace: WorkspaceKey,
-    ) -> std::io::Result<SessionId> {
+    ) -> Result<SessionId, SessionError> {
         let file = scratchpad::ensure_file(&workspace)?;
         let session = Session::spawn_scratchpad(
             ctx.clone(),
@@ -1426,11 +1434,11 @@ impl AlacritreeApp {
         ctx: &Context,
         name: &str,
         ws: WorkspaceKey,
-    ) -> std::io::Result<SessionId> {
+    ) -> Result<SessionId, SessionError> {
         let Some(profile) = self.config.profile(name) else {
             let msg = format!("no shell profile named `{name}`");
             log::warn!("{msg}");
-            return Err(std::io::Error::new(std::io::ErrorKind::NotFound, msg));
+            return Err(std::io::Error::new(std::io::ErrorKind::NotFound, msg).into());
         };
         let (shell, wsl_probe, wsl_distro) = profile_session_shell(profile, wsl_helper::enabled());
         self.spawn_session_with_shell(ctx, ws.clone(), ws, shell, wsl_probe, wsl_distro)
@@ -1790,7 +1798,7 @@ impl AlacritreeApp {
     /// vanished checkout: git may have forgotten the worktree entirely, in
     /// which case the row should go rather than keep offering a shell that
     /// cannot start.
-    fn report_spawn_failure(&mut self, ctx: &Context, ws: &WorkspaceKey, e: &std::io::Error) {
+    fn report_spawn_failure(&mut self, ctx: &Context, ws: &WorkspaceKey, e: &SessionError) {
         self.modals.error_dialog = Some(format!("failed to spawn shell: {e}"));
         let Some(path) = ws.as_deref().filter(|p| self.worktree_gone(p)) else {
             return;
@@ -2970,7 +2978,7 @@ impl AlacritreeApp {
         // A boost covers every depth, so a focused tab running
         // `cargo build -j16` raises all sixteen compilers.  The GUI left at
         // normal would then lose to the tree it is drawing.
-        crate::focus_priority::set_self_boosted(anything_raised);
+        alacritree_native::set_self_boosted(anything_raised);
 
         let grace = self.config.ui.attention_grace;
         let hold = self.config.ui.hold_exited_sessions;
@@ -4477,6 +4485,7 @@ mod tests {
     use super::*;
     use crate::config::{SidebarFocus, UiTheme};
     use alacritree_multiplexer::{CreatedPane, Launch};
+    use alacritree_session_backend::{Scripted as ScriptedSessions, Signals};
 
     use super::focus::search_reveal_root;
     use super::git_panel::{
@@ -4950,11 +4959,145 @@ mod tests {
         assert_eq!(app.session_shown_state(&app.sessions[0]), Some(ShownState::Working));
     }
 
+    /// `test_app` with no session yet and sessions opening inline on a
+    /// scripted backend, which records what each session asks of its
+    /// terminal.
+    fn app_on_scripted_backend() -> (AlacritreeApp, ScriptedSessions) {
+        let mut app = test_app();
+        let placeholder = app.sessions[0].id;
+        app.sessions.remove(
+            &[placeholder],
+            app.config.ui.sidebar_focus,
+            app.config.ui.return_to_previous_session,
+        );
+        app.config.ui.async_session_spawn = false;
+        let backend = ScriptedSessions::default();
+        app.session_backend = Backend::Scripted(backend.clone());
+        (app, backend)
+    }
+
+    fn has_session(app: &AlacritreeApp, id: SessionId) -> bool {
+        app.sessions.iter().any(|session| session.id == id)
+    }
+
+    /// Poll the opens running on the pool until `done` holds or ten seconds
+    /// pass.
+    fn poll_spawns_until(app: &mut AlacritreeApp, done: impl Fn(&AlacritreeApp) -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !done(app) && Instant::now() < deadline {
+            app.poll_pending_spawns(&Context::default());
+            std::thread::yield_now();
+        }
+    }
+
+    fn clean_exit() -> std::process::ExitStatus {
+        #[cfg(not(windows))]
+        use std::os::unix::process::ExitStatusExt;
+        #[cfg(windows)]
+        use std::os::windows::process::ExitStatusExt;
+        std::process::ExitStatus::from_raw(0)
+    }
+
+    /// A program in the terminal finds its own session through the
+    /// environment, which is how `alacritree session move` knows what to
+    /// move.
+    #[test]
+    fn a_spawned_session_opens_a_terminal_that_knows_its_session() {
+        let (mut app, backend) = app_on_scripted_backend();
+
+        let id = app.spawn_session(&Context::default(), None).expect("a scripted open");
+
+        let record = backend.session(id).expect("the spawn opened a terminal");
+        assert_eq!(record.env.get(crate::session::SESSION_ID_ENV), Some(&id.to_string()));
+        assert_eq!(record.opened_at, Some((80, 24)));
+        assert!(app.sessions.iter().any(|session| session.id == id && !session.is_pending()));
+    }
+
+    /// With the open inline, a caller that gets the error sees no trace of
+    /// the session.
+    #[test]
+    fn a_refused_open_leaves_no_session_behind() {
+        let (mut app, backend) = app_on_scripted_backend();
+        backend.fail_next(SessionError::Scripted("no terminal".into()));
+
+        let error = app.spawn_session(&Context::default(), None).unwrap_err();
+
+        assert_eq!(error.to_string(), "no terminal");
+        assert_eq!(app.sessions.iter().count(), 0);
+        assert!(backend.records().is_empty());
+    }
+
+    /// On the pool the record is on screen before the open fails, so the
+    /// failure closes it and says why.
+    #[test]
+    fn a_refused_open_on_the_pool_closes_the_session_and_says_why() {
+        let (mut app, backend) = app_on_scripted_backend();
+        app.config.ui.async_session_spawn = true;
+        backend.fail_next(SessionError::Scripted("no terminal".into()));
+
+        let id = app.spawn_session(&Context::default(), None).expect("the record goes in first");
+        assert!(has_session(&app, id));
+        poll_spawns_until(&mut app, |app| !has_session(app, id));
+
+        assert!(!has_session(&app, id));
+        assert_eq!(app.modals.error_dialog.as_deref(), Some("failed to spawn shell: no terminal"));
+    }
+
+    #[test]
+    fn closing_a_session_kills_its_terminal() {
+        let (mut app, backend) = app_on_scripted_backend();
+        let id = app.spawn_session(&Context::default(), None).expect("a scripted open");
+
+        app.close_session(&Context::default(), id);
+
+        assert!(!has_session(&app, id));
+        let record = backend.session(id).expect("the spawn opened a terminal");
+        assert!(record.killed && !record.detached);
+    }
+
+    /// A terminal that arrives for a tab already closed is ended rather than
+    /// left running with nothing on screen to close it.
+    #[test]
+    fn a_terminal_that_opens_after_its_session_closed_is_killed() {
+        let (mut app, backend) = app_on_scripted_backend();
+        app.config.ui.async_session_spawn = true;
+        let id = app.spawn_session(&Context::default(), None).expect("the record goes in first");
+
+        app.close_session(&Context::default(), id);
+        let killed = |backend: &ScriptedSessions| backend.session(id).is_some_and(|r| r.killed);
+        poll_spawns_until(&mut app, |_| killed(&backend));
+
+        assert!(killed(&backend), "the late terminal was left running");
+        assert!(!has_session(&app, id));
+    }
+
+    #[test]
+    fn a_session_whose_program_exits_closes() {
+        let (mut app, backend) = app_on_scripted_backend();
+        let ctx = Context::default();
+        let id = app.spawn_session(&ctx, None).expect("a scripted open");
+
+        backend.exit(id, clean_exit());
+        app.process_session_events(&ctx);
+        app.reap_exited_sessions(&ctx);
+
+        assert!(!has_session(&app, id));
+        assert!(backend.session(id).expect("the spawn opened a terminal").killed);
+    }
+
     /// The probe sees an idle agent, and the program says it is blocked.
     #[test]
     fn a_program_status_report_overrides_the_process_probe() {
-        let mut app = app_with_a_background_session("shell");
-        app.sessions[0].force_agent_for_test("claude");
+        let (mut app, backend) = app_on_scripted_backend();
+        app.config.ui.notifications = false;
+        let id = app.spawn_session(&Context::default(), None).expect("a scripted open");
+        app.current_workspace = Some(PathBuf::from("elsewhere"));
+        app.sessions[0].title = "shell".to_owned();
+        backend.set_signals(id, Signals {
+            agent: Some("claude"),
+            answered: true,
+            ..Signals::default()
+        });
         assert_eq!(app.session_shown_state(&app.sessions[0]), Some(ShownState::Idle));
         feed_pty(&mut app, "\x1b]7501;state=blocked\x07");
         assert_eq!(app.session_shown_state(&app.sessions[0]), Some(ShownState::Blocked));

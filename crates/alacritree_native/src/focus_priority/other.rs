@@ -19,4 +19,4 @@ impl PriorityJob {
     pub(crate) fn set_boosted(&self, _boosted: bool) {}
 }
 
-pub(crate) fn set_self_boosted(_boosted: bool) {}
+pub fn set_self_boosted(_boosted: bool) {}

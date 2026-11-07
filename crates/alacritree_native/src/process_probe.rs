@@ -3,31 +3,28 @@
 //! One question, four operating systems, and a cache that keeps the answer
 //! for a beat so a frame does not walk the process table. [`ProbeHandle`] is
 //! the whole interface: hand it the shell's pid and, for a shimmed WSL
-//! session, the helper's probe key, and ask it for [`Signals`].
+//! session, the helper's probe key, and ask it for [`Signals`] or the
+//! [`ForegroundProgram`].
 //!
 //! Everything below that is per-platform: `/proc` on Linux, `sysctl` on
 //! macOS, a background refresher over `sysinfo` on Windows, and the WSL
 //! helper's own foreground `comm` for a session running inside a distro.
 
 use std::cell::Cell;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use alacritree_common::side::Side;
 use alacritree_common::wsl_helper::{self, WslProbe};
+use alacritree_session_backend::{ForegroundProgram, Signals};
 
-/// What the probe found running behind a PTY.
-#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
-pub(crate) struct Signals {
-    /// A recognized coding agent in the foreground, by its canonical name.
-    pub(crate) agent: Option<&'static str>,
-    /// Something other than the shell itself is running.
-    pub(crate) foreground_job: bool,
-    /// A split-managing TUI such as vim or tmux is running.
-    pub(crate) nav_tui: bool,
-    /// The probe could ask about this terminal at all.  False before a shell
-    /// pid is known, before the Windows refresher has scanned the shell, and
-    /// while a WSL session's helper gives no answer, so a caller can tell "no
-    /// agent here" from "nobody could look".
-    pub(crate) answered: bool,
+/// The process that holds a native terminal: on Unix the foreground group's
+/// leader, on Windows the shell's newest child.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct Program {
+    pid: u32,
+    argv: Vec<String>,
+    cwd: Option<PathBuf>,
 }
 
 /// The probe for one session, holding what it needs to ask and what it last
@@ -46,37 +43,10 @@ impl ProbeHandle {
         Self { shell_pid, wsl, cache: Cell::new(AgentCache::default()) }
     }
 
-    pub(crate) fn set_shell_pid(&mut self, shell_pid: Option<u32>) {
-        self.shell_pid = shell_pid;
-        self.cache.set(AgentCache::default());
-    }
-
     /// The shell the probe reads, for a test that drives a real one.
     #[cfg(all(test, target_os = "macos"))]
     pub(crate) fn shell_pid(&self) -> Option<u32> {
         self.shell_pid
-    }
-
-    /// Pretend the probe just saw a split-managing TUI, so a test about
-    /// what a session does with that answer needs no process to run.
-    #[cfg(test)]
-    pub(crate) fn force_nav_tui_for_test(&self) {
-        self.cache.set(AgentCache {
-            polled_at: Some(Instant::now()),
-            nav_tui: true,
-            ..AgentCache::default()
-        });
-    }
-
-    /// Pretend the probe just recognized `agent` in the foreground.
-    #[cfg(test)]
-    pub(crate) fn force_agent_for_test(&self, agent: &'static str) {
-        self.cache.set(AgentCache {
-            polled_at: Some(Instant::now()),
-            agent_name: Some(agent),
-            answered: true,
-            ..AgentCache::default()
-        });
     }
 
     pub(crate) fn signals(&self) -> Signals {
@@ -110,6 +80,22 @@ impl ProbeHandle {
             answered,
         });
         Signals { agent, foreground_job, nav_tui, answered }
+    }
+
+    /// Uncached: nothing asks for it every frame. A WSL session's helper
+    /// reports only the foreground `comm`, so it has no pid and no cwd.
+    pub(crate) fn foreground(&self) -> Option<ForegroundProgram> {
+        if let Some(probe) = &self.wsl {
+            let comm = wsl_helper::foreground_comm(&probe.distro, &probe.key)?;
+            return Some(ForegroundProgram {
+                side: Side::Wsl(probe.distro.clone()),
+                pid: None,
+                argv: vec![comm],
+                cwd: None,
+            });
+        }
+        let Program { pid, argv, cwd } = foreground_program(self.shell_pid?)?;
+        Some(ForegroundProgram { side: Side::Native, pid: Some(pid), argv, cwd })
     }
 }
 
@@ -271,6 +257,26 @@ fn foreground_agent_name(shell_pid: u32) -> Option<&'static str> {
 }
 
 #[cfg(target_os = "linux")]
+fn foreground_program(shell_pid: u32) -> Option<Program> {
+    let pid = u32::try_from(read_tpgid(shell_pid)?).ok().filter(|&pid| pid > 0)?;
+    let argv = std::fs::read(format!("/proc/{pid}/cmdline"))
+        .map(|bytes| nul_separated(&bytes))
+        .unwrap_or_default();
+    let cwd = std::fs::read_link(format!("/proc/{pid}/cwd")).ok();
+    Some(Program { pid, argv, cwd })
+}
+
+/// `/proc/<pid>/cmdline` ends each word with a NUL, empty words included.
+#[cfg(any(target_os = "linux", test))]
+fn nul_separated(bytes: &[u8]) -> Vec<String> {
+    if bytes.is_empty() {
+        return Vec::new();
+    }
+    let words = bytes.strip_suffix(&[0]).unwrap_or(bytes);
+    words.split(|&b| b == 0).map(|word| String::from_utf8_lossy(word).into_owned()).collect()
+}
+
+#[cfg(target_os = "linux")]
 fn read_cmdline(pid: u32) -> Option<String> {
     // `cmdline` is NUL-separated argv; rendering with spaces is good enough
     // for substring matching and human-readable logging.
@@ -376,6 +382,53 @@ fn comm_for_pid(pid: u32) -> Option<String> {
 /// foreground job always is.
 #[cfg(target_os = "macos")]
 fn read_cmdline(pid: u32) -> Option<String> {
+    procargs2_cmdline(&procargs2(pid)?)
+}
+
+#[cfg(target_os = "macos")]
+fn foreground_program(shell_pid: u32) -> Option<Program> {
+    let (_, tpgid) = pgid_tpgid(shell_pid)?;
+    let pid = foreground_group(tpgid)?;
+    let argv = procargs2(pid)
+        .and_then(|buf| procargs2_argv(&buf))
+        .or_else(|| comm_for_pid(pid).map(|comm| vec![comm]))
+        .unwrap_or_default();
+    Some(Program { pid, argv, cwd: cwd_for_pid(pid) })
+}
+
+/// `PROC_PIDVNODEPATHINFO` carries the current directory as a NUL-terminated
+/// path, split by libc into rows of 32 bytes.
+#[cfg(target_os = "macos")]
+fn cwd_for_pid(pid: u32) -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStringExt;
+
+    let mut info: libc::proc_vnodepathinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_vnodepathinfo>() as libc::c_int;
+    let written = unsafe {
+        libc::proc_pidinfo(
+            pid as libc::c_int,
+            libc::PROC_PIDVNODEPATHINFO,
+            0,
+            (&raw mut info).cast(),
+            size,
+        )
+    };
+    if written != size {
+        return None;
+    }
+    let bytes: Vec<u8> = info
+        .pvi_cdir
+        .vip_path
+        .iter()
+        .flatten()
+        .take_while(|&&c| c != 0)
+        .map(|&c| c as u8)
+        .collect();
+    (!bytes.is_empty()).then(|| PathBuf::from(std::ffi::OsString::from_vec(bytes)))
+}
+
+#[cfg(target_os = "macos")]
+fn procargs2(pid: u32) -> Option<Vec<u8>> {
     let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as libc::c_int];
     let mut size = 0usize;
     let rc = unsafe {
@@ -406,7 +459,7 @@ fn read_cmdline(pid: u32) -> Option<String> {
         return None;
     }
     buf.truncate(size);
-    procargs2_cmdline(&buf)
+    Some(buf)
 }
 
 /// `KERN_PROCARGS2` layout: native-endian `argc`, the executable path, NUL
@@ -415,18 +468,25 @@ fn read_cmdline(pid: u32) -> Option<String> {
 /// the same way the Linux `/proc/<pid>/cmdline` read renders them.
 #[cfg(target_os = "macos")]
 fn procargs2_cmdline(buf: &[u8]) -> Option<String> {
+    let joined = procargs2_argv(buf)?.join(" ");
+    let joined = joined.trim().to_string();
+    (!joined.is_empty()).then_some(joined)
+}
+
+/// The `argc` words of a `KERN_PROCARGS2` buffer, empty ones included.
+#[cfg(target_os = "macos")]
+fn procargs2_argv(buf: &[u8]) -> Option<Vec<String>> {
     let argc = i32::from_ne_bytes(buf.get(..4)?.try_into().ok()?);
     let argc = usize::try_from(argc).ok().filter(|&n| n > 0)?;
     let after_exec = buf[4..].iter().position(|&b| b == 0).map(|nul| &buf[4 + nul..])?;
     let args_start = after_exec.iter().position(|&b| b != 0)?;
-    let joined = after_exec[args_start..]
-        .split(|&b| b == 0)
-        .take(argc)
-        .map(String::from_utf8_lossy)
-        .collect::<Vec<_>>()
-        .join(" ");
-    let joined = joined.trim().to_string();
-    (!joined.is_empty()).then_some(joined)
+    Some(
+        after_exec[args_start..]
+            .split(|&b| b == 0)
+            .take(argc)
+            .map(|word| String::from_utf8_lossy(word).into_owned())
+            .collect(),
+    )
 }
 
 #[cfg(target_os = "macos")]
@@ -541,6 +601,18 @@ fn foreground_agent_name(shell_pid: u32) -> Option<&'static str> {
     windows_process_probe::probe(shell_pid).0
 }
 
+/// Windows has no foreground process group, so the program the user started
+/// last stands for it: the shell's newest child, or the shell itself.
+#[cfg(windows)]
+fn foreground_program(shell_pid: u32) -> Option<Program> {
+    windows_process_probe::foreground(shell_pid)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+fn foreground_program(_shell_pid: u32) -> Option<Program> {
+    None
+}
+
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 fn foreground_agent_name(_shell_pid: u32) -> Option<&'static str> {
     // No probe wired for this platform (BSDs would mirror the macOS sysctl).
@@ -632,7 +704,9 @@ mod windows_process_probe {
 
     use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
-    use super::{agent_name_by_cmdline, agent_name_by_name, is_nav_tui_name, process_tree_pids};
+    use super::{
+        Program, agent_name_by_cmdline, agent_name_by_name, is_nav_tui_name, process_tree_pids,
+    };
 
     /// Slightly under `AGENT_CACHE_TTL`, so a session polling on its own clock
     /// finds a result no older than one of its own cache windows.
@@ -674,12 +748,19 @@ mod windows_process_probe {
         /// no probes, and the refresher blocks instead of enumerating.
         wanted: BTreeSet<u32>,
         published: BTreeMap<u32, Signals>,
+        /// Shells whose foreground program was asked for since the last pass,
+        /// a subset of `wanted`. Kept apart because reading a command line
+        /// and a cwd costs a call per shell that the signals do not need.
+        wanted_foreground: BTreeSet<u32>,
+        foregrounds: BTreeMap<u32, Program>,
         refresher_running: bool,
     }
 
     static SHARED: Mutex<Shared> = Mutex::new(Shared {
         wanted: BTreeSet::new(),
         published: BTreeMap::new(),
+        wanted_foreground: BTreeSet::new(),
+        foregrounds: BTreeMap::new(),
         refresher_running: false,
     });
     /// Wakes the refresher when it is idling with nothing to scan.
@@ -689,6 +770,27 @@ mod windows_process_probe {
     /// running" until the refresher has seen it.  Registers the shell so the
     /// next pass covers it.
     pub(super) fn probe(shell_pid: u32) -> Signals {
+        let mut shared = shared_with_refresher();
+        let signals = shared.published.get(&shell_pid).copied();
+        if shared.wanted.insert(shell_pid) {
+            WANTED.notify_one();
+        }
+        signals.unwrap_or_default()
+    }
+
+    /// The last published foreground program for `shell_pid`, `None` until
+    /// the refresher has seen it. Registers the shell like [`probe`].
+    pub(super) fn foreground(shell_pid: u32) -> Option<Program> {
+        let mut shared = shared_with_refresher();
+        let program = shared.foregrounds.get(&shell_pid).cloned();
+        shared.wanted_foreground.insert(shell_pid);
+        if shared.wanted.insert(shell_pid) {
+            WANTED.notify_one();
+        }
+        program
+    }
+
+    fn shared_with_refresher() -> std::sync::MutexGuard<'static, Shared> {
         let mut shared = SHARED.lock().unwrap_or_else(PoisonError::into_inner);
         if !shared.refresher_running {
             shared.refresher_running = true;
@@ -702,11 +804,7 @@ mod windows_process_probe {
                 .spawn(refresh_loop)
                 .expect("spawn process probe thread");
         }
-        let signals = shared.published.get(&shell_pid).copied();
-        if shared.wanted.insert(shell_pid) {
-            WANTED.notify_one();
-        }
-        signals.unwrap_or_default()
+        shared
     }
 
     pub(super) fn has_scanned(shell_pid: u32) -> bool {
@@ -719,20 +817,20 @@ mod windows_process_probe {
     }
 
     #[cfg(test)]
-    pub(super) fn nothing_wanted() -> bool {
-        SHARED.lock().unwrap_or_else(PoisonError::into_inner).wanted.is_empty()
+    pub(super) fn is_wanted(shell_pid: u32) -> bool {
+        SHARED.lock().unwrap_or_else(PoisonError::into_inner).wanted.contains(&shell_pid)
     }
 
     fn refresh_loop() {
         let mut sys = System::new();
         let mut scanned = ScannedTrees::new();
         loop {
-            let wanted = {
+            let (wanted, wanted_foreground) = {
                 let mut shared = SHARED.lock().unwrap_or_else(PoisonError::into_inner);
                 while shared.wanted.is_empty() {
                     shared = WANTED.wait(shared).unwrap_or_else(PoisonError::into_inner);
                 }
-                std::mem::take(&mut shared.wanted)
+                (std::mem::take(&mut shared.wanted), std::mem::take(&mut shared.wanted_foreground))
             };
 
             // Everything below runs with no lock held: the UI thread must
@@ -753,6 +851,11 @@ mod windows_process_probe {
                 .filter(|pid| alive.contains(pid))
                 .map(|&pid| (pid, scan(&mut sys, &table, pid, &mut scanned)))
                 .collect();
+            let foregrounds: BTreeMap<u32, Program> = wanted_foreground
+                .iter()
+                .filter(|pid| alive.contains(pid))
+                .filter_map(|&pid| Some((pid, foreground_of(&mut sys, &table, pid)?)))
+                .collect();
             scanned.retain(|pid, _| alive.contains(pid));
 
             {
@@ -762,6 +865,8 @@ mod windows_process_probe {
                 let mut shared = SHARED.lock().unwrap_or_else(PoisonError::into_inner);
                 shared.published.retain(|pid, _| alive.contains(pid));
                 shared.published.extend(published);
+                shared.foregrounds.retain(|pid, _| alive.contains(pid));
+                shared.foregrounds.extend(foregrounds);
             }
             std::thread::sleep(REFRESH_INTERVAL);
         }
@@ -804,6 +909,33 @@ mod windows_process_probe {
         (name, has_children, nav_tui)
     }
 
+    /// The shell's newest child, or the shell when it has none, with the
+    /// command line and cwd read for that one process.
+    fn foreground_of(
+        sys: &mut System,
+        table: &[(u32, Option<u32>)],
+        shell_pid: u32,
+    ) -> Option<Program> {
+        let pid = table
+            .iter()
+            .filter(|(_, parent)| *parent == Some(shell_pid))
+            .filter_map(|&(pid, _)| Some((sys.process(Pid::from_u32(pid))?.start_time(), pid)))
+            .max()
+            .map_or(shell_pid, |(_, pid)| pid);
+        sys.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[Pid::from_u32(pid)]),
+            false,
+            ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always).with_cwd(UpdateKind::Always),
+        );
+        let process = sys.process(Pid::from_u32(pid))?;
+        let mut argv: Vec<String> =
+            process.cmd().iter().map(|arg| arg.to_string_lossy().into_owned()).collect();
+        if argv.is_empty() {
+            argv.push(process.name().to_string_lossy().into_owned());
+        }
+        Some(Program { pid, argv, cwd: process.cwd().map(std::path::Path::to_path_buf) })
+    }
+
     /// The agent remembered for `shell_pid`, or `None` when the tree has
     /// changed since it was taken and the scan has to run again.  Fetching
     /// command lines is the expensive half of a pass, and its answer can only
@@ -837,7 +969,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(50));
         }
         assert!(
-            windows_process_probe::nothing_wanted(),
+            !windows_process_probe::is_wanted(pid),
             "the refresher would keep enumerating for a window nobody is drawing"
         );
     }
@@ -918,12 +1050,7 @@ mod tests {
         }
         let each = started.elapsed() / iterations;
 
-        let (_, counts) = crate::alloc_count::measure(|| windows_process_probe::probe(pid));
-        println!(
-            "probe on the calling thread: {each:?}, {} allocations ({} KiB)",
-            counts.allocs,
-            counts.bytes / 1024,
-        );
+        println!("probe on the calling thread: {each:?}");
     }
     #[cfg(target_os = "macos")]
     #[test]
@@ -961,28 +1088,13 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn a_real_shells_foreground_job_flips_the_probe() {
-        use crate::config::Config;
-        use crate::repaint::Recorder;
-        use crate::session::{Session, SessionKind, TermSize};
+        use alacritree_session_backend::SessionHandle;
 
-        let mut config = Config::default();
-        config.env.insert("TERM".to_string(), "xterm-256color".to_string());
-
-        let mut session = Session::spawn_command(
-            Recorder::default(),
-            &config,
-            std::env::current_dir().ok(),
-            TermSize::new(80, 24),
-            (8.0, 16.0),
-            "/bin/zsh".to_string(),
-            // `-f` skips the user's rc files, whose plugins run transient
-            // foreground jobs of their own that would race the probe.
-            vec!["-f".to_string(), "-i".to_string()],
-            "probe".to_string(),
-            SessionKind::Shell,
-        )
-        .unwrap();
-        let shell_pid = session.shell_pid().expect("unix PTYs always report the child pid");
+        // `-f` skips the user's rc files, whose plugins run transient
+        // foreground jobs of their own that would race the probe.
+        let (request, _term) = crate::tests::request("/bin/zsh", &["-f", "-i"]);
+        let session = crate::open(request, None, |_, _, _| {}).unwrap();
+        let shell_pid = session.probe.shell_pid().expect("unix PTYs always report the child pid");
 
         // The shell owning its terminal (tpgid == pgid) is exactly the state
         // the probe reads as "not busy".
@@ -1010,6 +1122,31 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(10));
         }
+
+        let program = session.foreground().expect("the job holds the terminal");
+        assert_eq!(program.argv, ["/bin/sleep", "30"]);
+        assert_eq!(
+            program.cwd.and_then(|cwd| cwd.canonicalize().ok()),
+            std::env::current_dir().ok().and_then(|cwd| cwd.canonicalize().ok())
+        );
+    }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn procargs2_argv_keeps_each_word_and_drops_the_environment() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&3i32.to_ne_bytes());
+        buf.extend_from_slice(b"/bin/sh   sh  -c HOME=/Users/x ");
+        assert_eq!(procargs2_argv(&buf), Some(vec!["sh".into(), String::new(), "-c".into()]));
+    }
+    #[test]
+    fn a_cmdline_splits_into_its_words_empty_ones_included() {
+        assert_eq!(nul_separated(b"node cli.js  --continue "), [
+            "node",
+            "cli.js",
+            "",
+            "--continue"
+        ]);
+        assert!(nul_separated(b"").is_empty());
     }
     #[test]
     fn stat_parse_extracts_pgrp_and_tpgid_past_a_parenthesized_comm() {
