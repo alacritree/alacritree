@@ -408,7 +408,7 @@ mod tests {
     #[ignore = "timing harness, not an assertion"]
     fn report_slot_lookup() {
         #[cfg(windows)]
-        crate::dll_search::harden_dll_search_path();
+        alacritree_common::dll_search::harden_dll_search_path();
 
         let ctx = egui::Context::default();
         let _ = ctx.run(egui::RawInput::default(), |_| {});

@@ -6,6 +6,7 @@
 
 pub mod agent_status;
 pub mod command_ext;
+pub mod dll_search;
 pub mod jobs;
 pub mod settings;
 pub mod side;

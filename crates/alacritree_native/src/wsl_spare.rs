@@ -19,7 +19,7 @@ use alacritty_terminal::tty::{self, EventedPty, EventedReadWrite, Options as Pty
 
 use crate::focus_priority::PriorityJob;
 use crate::process_probe;
-use crate::session::SESSION_ID_ENV;
+use alacritree_session_backend::SESSION_ID_ENV;
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
 
@@ -284,7 +284,7 @@ fn launch(distro: &str, template: Template) -> io::Result<Spare> {
     };
 
     #[cfg(windows)]
-    crate::dll_search::harden_dll_search_path();
+    alacritree_common::dll_search::harden_dll_search_path();
 
     let mut pty = tty::new(&options, SPARE_SIZE, 0)?;
     let shell_pid = process_probe::shell_pid_of(&pty);

@@ -1,28 +1,28 @@
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitStatus;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
-use alacritree_common::wsl_helper::{self, WslProbe};
+use alacritree_common::wsl_helper::WslProbe;
 use alacritree_multiplexer::{AgentStatus, PaneKey};
-use alacritty_terminal::event::{Event as TermEvent, EventListener, Notify, OnResize, WindowSize};
-use alacritty_terminal::event_loop::{EventLoop, EventLoopSender, Msg, Notifier};
+use alacritree_session_backend::{ProcessTree, Screen, SessionHandle, Signals};
+pub(crate) use alacritree_session_backend::{SESSION_ID_ENV, ShellCommand};
+use alacritty_terminal::event::{Event as TermEvent, EventListener, WindowSize};
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::Point;
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::color::Colors;
 use alacritty_terminal::term::{ClipboardType, Config as TermConfig, Term};
-use alacritty_terminal::tty::{self, Options as PtyOptions, Shell};
 use alacritty_terminal::vte::ansi::{Processor, Rgb, StdSyncHandler};
 
 use crate::clipboard::Target;
 use crate::config::{Config, HoldExitedSessions, Palette};
-use crate::process_probe::{self, ProbeHandle};
 use crate::program_status::{self, Status};
 use crate::repaint::Repaint;
-use crate::{colors, osc, scratchpad, wsl_spare};
+use crate::session_backend::Handle;
+use crate::{colors, osc, scratchpad};
 
 #[derive(Clone)]
 pub(crate) struct EventProxy<R> {
@@ -418,28 +418,18 @@ pub(crate) struct Session<R: Repaint> {
     pub last_report_cell: Option<Point>,
     /// Whether this session's cursor is drawn, in what shape, and where.
     pub cursor: crate::cursor::Cursor,
-    /// Shell pid spawned for this PTY.  Used to walk to the foreground
-    /// process group when identifying which agent is running.  None on
-    /// platforms where we don't yet capture it.
-    probe: ProbeHandle,
     /// Distro that translates an OSC cwd report. Present only when cwd
     /// reporting is enabled.
     reported_cwd_distro: Option<String>,
-    /// Set for shimmed WSL sessions: the distro plus the probe key its
-    /// shim published, unregistered again on drop.  The Windows process
-    /// table ends at wsl.exe, so this is the only live view inside.
-    wsl_probe: Option<WslProbe>,
-    /// Holds the shell and, as they are created, everything it starts, so
-    /// focus can raise the whole tree in one call.  `None` unless
-    /// `[ui] focus_priority_boost` is on, when the shell refused the job, and
-    /// always on platforms that have no boost.
-    priority_job: Option<crate::focus_priority::PriorityJob>,
-    notifier: Option<Notifier>,
-    sender: Option<EventLoopSender>,
-    /// Bytes written before the PTY existed, replayed by `attach`.  `Some`
-    /// only between `pending` and `attach`, which also makes it the answer to
-    /// whether this session is still opening — a scratchpad has no PTY either
-    /// and must not be mistaken for one that is coming.
+    /// The distro a shimmed WSL shell runs in.
+    wsl_distro: Option<String>,
+    /// The terminal's backend side, from `attach` on. Scratchpads and task
+    /// lists never get one.
+    handle: Option<Handle>,
+    /// Bytes written before the terminal existed, replayed by `attach`.
+    /// `Some` only between `pending` and `attach`, which also makes it the
+    /// answer to whether this session is still opening. A scratchpad has no
+    /// terminal either, and must not be mistaken for one that is coming.
     pending_writes: Option<Vec<u8>>,
     /// Shares this session's on-screen flag with the `EventProxy` its PTY
     /// thread posts events through.
@@ -731,19 +721,6 @@ pub(crate) fn term_config(config: &Config) -> TermConfig {
     }
 }
 
-/// A vanished cwd would otherwise surface as the PTY backend's raw error
-/// (`os error 267`, "The directory name is invalid", on Windows) — reject it
-/// up front with a message the error toast can show as-is.
-fn ensure_working_directory(dir: Option<&Path>) -> std::io::Result<()> {
-    match dir {
-        Some(d) if !d.is_dir() => Err(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            format!("working directory no longer exists: {}", d.display()),
-        )),
-        _ => Ok(()),
-    }
-}
-
 /// The directory the PTY starts in: an explicit workspace dir always wins,
 /// then `[general] working_directory` fills in for sessions without one (the
 /// home tab).  A configured dir that does not exist is dropped with a warning
@@ -764,10 +741,6 @@ fn pty_working_directory(explicit: Option<PathBuf>, config: &Config) -> Option<P
         })
     })
 }
-
-/// How a process inside a session names itself to `alacritree session move`
-/// / the MCP tools.
-pub(crate) const SESSION_ID_ENV: &str = "ALACRITREE_SESSION_ID";
 
 /// Name and version a program reads to identify the terminal it runs in,
 /// the convention WezTerm and Ghostty follow. Programs such as Codex choose
@@ -829,122 +802,9 @@ fn session_env(
     env
 }
 
-/// A program and its arguments.  `tty::Shell` keeps both private, and
-/// [`open`] has to read a wsl.exe launch back to hand it to a warm spare.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ShellCommand {
-    pub program: String,
-    pub args: Vec<String>,
-}
-
-impl ShellCommand {
-    pub(crate) fn new(program: String, args: Vec<String>) -> Self {
-        Self { program, args }
-    }
-}
-
-/// Everything opening a PTY needs, and nothing that has to stay on the UI
-/// thread.  Built by [`Session::pending`], consumed by [`open`].
-pub(crate) struct OpenRequest<R> {
-    id: SessionId,
-    window_id: u64,
-    pty_options: PtyOptions,
-    window_size: WindowSize,
-    term: Arc<FairMutex<Term<EventProxy<R>>>>,
-    proxy: EventProxy<R>,
-    boost: bool,
-    reap: bool,
-    spare: Option<wsl_spare::Launch>,
-}
-
-/// The half of a session that only exists once its PTY does.  Applied by
-/// [`Session::attach`]; dropping one instead shuts the PTY down, which is
-/// what happens when the tab it belongs to closes mid-open.
-pub(crate) struct Attachment {
-    shell_pid: Option<u32>,
-    priority_job: Option<crate::focus_priority::PriorityJob>,
-    /// `None` only between `into_parts` and the drop that follows it, which
-    /// is what keeps the adopting session's own PTY out of `Drop`'s reach.
-    sender: Option<EventLoopSender>,
-}
-
-impl Attachment {
-    /// Take the pieces apart.  `attach` is what adopts an opened PTY, so
-    /// taking the sender out is what stops the "nobody adopted this" shutdown
-    /// running on the very attachment being adopted.
-    fn into_parts(
-        mut self,
-    ) -> (Option<u32>, Option<crate::focus_priority::PriorityJob>, EventLoopSender) {
-        let sender = self.sender.take().expect("an attachment is taken apart once");
-        (self.shell_pid, self.priority_job.take(), sender)
-    }
-}
-
-impl Drop for Attachment {
-    /// An attachment nobody adopted belongs to a tab that closed while its
-    /// PTY was opening.  Shutting the loop down here rather than at the call
-    /// site means a quit mid-open, or a receiver that hung up, cleans up too.
-    fn drop(&mut self) {
-        if let Some(sender) = &self.sender {
-            let _ = sender.send(Msg::Shutdown);
-        }
-    }
-}
-
-/// Open the PTY for a pending session: process creation, the job that owns
-/// it, and the event loop that drains it.  This is the part that costs
-/// milliseconds, which is why it is a free function rather than a method —
-/// it must be callable from a thread that holds no `Session`.
-pub(crate) fn open<R: Repaint>(request: OpenRequest<R>) -> std::io::Result<Attachment> {
-    let started = std::time::Instant::now();
-    let OpenRequest { id, window_id, pty_options, window_size, term, proxy, boost, reap, spare } =
-        request;
-
-    ensure_working_directory(pty_options.working_directory.as_deref())?;
-
-    let template = wsl_spare::Template::new(&pty_options.env, boost, reap);
-    let claimed = spare.and_then(|launch| wsl_spare::claim(&launch, &id.to_string(), &template));
-    let (pty, shell_pid, priority_job, line) = match claimed {
-        Some(mut claimed) => {
-            claimed.pty.on_resize(window_size);
-            Processor::<StdSyncHandler>::new().advance(&mut *term.lock(), &claimed.preamble);
-            crate::frame_log::spawn_phase(Some(id), "spare", started.elapsed());
-            (claimed.pty, claimed.shell_pid, claimed.priority_job, Some(claimed.line))
-        },
-        None => {
-            // `tty::new` is where `LoadLibraryW("conpty.dll")` happens, and the
-            // module it loads answers every later one for the life of the process.
-            #[cfg(windows)]
-            crate::dll_search::harden_dll_search_path();
-
-            let pty = tty::new(&pty_options, window_size, window_id)?;
-            crate::frame_log::spawn_phase(Some(id), "pty", started.elapsed());
-            let shell_pid = process_probe::shell_pid_of(&pty);
-
-            // Jobbed here rather than on focus: a process joins a job when it is
-            // created, so anything the shell starts before the job exists escapes
-            // it for its whole life.  One job serves both settings, so it is
-            // created when either wants it.
-            let priority_job = shell_pid
-                .filter(|_| boost || reap)
-                .and_then(|pid| crate::focus_priority::PriorityJob::adopt(pid, reap));
-            (pty, shell_pid, priority_job, None)
-        },
-    };
-
-    #[cfg(windows)]
-    let pty = crate::pty_rearm::RearmingPty::new(pty);
-
-    let event_loop = EventLoop::new(term, proxy, pty, pty_options.drain_on_exit, false)?;
-    let sender = event_loop.channel();
-    event_loop.spawn();
-    if let Some(line) = line {
-        let _ = sender.send(Msg::Input(line.into()));
-    }
-    crate::frame_log::spawn_phase(Some(id), "open", started.elapsed());
-
-    Ok(Attachment { shell_pid, priority_job, sender: Some(sender) })
-}
+/// Everything opening a session's terminal needs, and nothing that has to
+/// stay on the UI thread. Built by [`Session::pending`].
+pub(crate) type OpenRequest<R> = alacritree_session_backend::OpenRequest<EventProxy<R>>;
 
 impl<R: Repaint> Session<R> {
     pub(crate) fn bind_pane(&mut self, key: PaneKey, shared_view: bool) {
@@ -999,12 +859,9 @@ impl<R: Repaint> Session<R> {
             accumulated_scroll: (0.0, 0.0),
             last_report_cell: None,
             cursor: Default::default(),
-            probe: ProbeHandle::new(None, None),
             reported_cwd_distro: None,
-            wsl_probe: None,
-            priority_job: None,
-            notifier: None,
-            sender: None,
+            wsl_distro: None,
+            handle: None,
             pending_writes: None,
             proxy,
             exit_status: None,
@@ -1048,12 +905,9 @@ impl<R: Repaint> Session<R> {
             accumulated_scroll: (0.0, 0.0),
             last_report_cell: None,
             cursor: Default::default(),
-            probe: ProbeHandle::new(None, None),
             reported_cwd_distro: None,
-            wsl_probe: None,
-            priority_job: None,
-            notifier: None,
-            sender: None,
+            wsl_distro: None,
+            handle: None,
             pending_writes: None,
             proxy,
             exit_status: None,
@@ -1064,8 +918,9 @@ impl<R: Repaint> Session<R> {
     }
 
     /// A session running `program args` instead of the user's shell, opened
-    /// and attached in one call.  Test-only: the app reaches the same place
-    /// through `pending_command`, so that a slow open cannot cost a frame.
+    /// on the native backend and attached in one call. Test-only: the app
+    /// reaches the same place through `pending_command`, so that a slow open
+    /// cannot cost a frame.
     #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn spawn_command(
@@ -1078,7 +933,9 @@ impl<R: Repaint> Session<R> {
         args: Vec<String>,
         title: String,
         kind: SessionKind,
-    ) -> std::io::Result<Self> {
+    ) -> Result<Self, alacritree_session_backend::SessionError> {
+        use alacritree_session_backend::SessionBackend;
+
         let (mut session, request) = Self::pending_command(
             repaint,
             config,
@@ -1090,7 +947,7 @@ impl<R: Repaint> Session<R> {
             title,
             kind,
         );
-        session.attach(open(request)?);
+        session.attach(crate::session_backend::Backend::native().open(request)?);
         Ok(session)
     }
 
@@ -1205,34 +1062,19 @@ impl<R: Repaint> Session<R> {
         let id = next_session_id();
         let env = session_env(&config.env, &kind, id);
 
-        let spare = shell.as_ref().filter(|_| wsl_spare::enabled()).and_then(|shell| {
-            wsl_spare::Launch::parse(&shell.program, &shell.args, pty_cwd.as_deref())
-        });
-
-        #[cfg(not(windows))]
-        let _ = escape_args;
-        let pty_options = PtyOptions {
-            shell: shell.map(|shell| Shell::new(shell.program, shell.args)),
-            working_directory: pty_cwd,
-            // Without this the loop drops whatever the child wrote and it had
-            // not yet read: the last output a held session exists to show.
-            // Unconditional because any session can be held — a refused herdr
-            // attach is, under every `hold_exited_sessions` value.
-            drain_on_exit: true,
-            env,
-            // Windows has no argv: alacritty_terminal joins these args into a
-            // single CreateProcess command line, quoting them only when this
-            // is set.  True for argv built in code (diff panes, WSL shells,
-            // and a config shell shimmed by the resident helper), where an
-            // arg with a space (delta's pager spec, UNC paths) must survive
-            // as one argument; a config shell that isn't shimmed stays raw,
-            // matching upstream alacritty.
-            #[cfg(windows)]
+        let request = OpenRequest {
+            session_id: id,
+            shell,
             escape_args,
+            working_directory: pty_cwd,
+            env,
+            wsl_probe: wsl_probe.clone(),
+            process_tree: ProcessTree {
+                boost_on_focus: config.ui.focus_priority_boost,
+                reap_on_close: config.ui.reap_descendants_on_close,
+            },
+            screen: Screen { term: term.clone(), listener: proxy.clone(), window_size },
         };
-
-        // alacritty routes OSC 7 / signals by this id, so each session needs its own.
-        let window_id = next_window_id();
 
         let session = Self {
             id,
@@ -1258,69 +1100,33 @@ impl<R: Repaint> Session<R> {
             accumulated_scroll: (0.0, 0.0),
             last_report_cell: None,
             cursor: Default::default(),
-            probe: ProbeHandle::new(None, wsl_probe.clone()),
             reported_cwd_distro,
-            wsl_probe,
-            priority_job: None,
-            notifier: None,
-            sender: None,
+            wsl_distro: wsl_probe.as_ref().map(|probe| probe.distro.clone()),
+            handle: None,
             pending_writes: Some(Vec::new()),
-            proxy: proxy.clone(),
+            proxy,
             exit_status: None,
             pane_key: None,
             pane_bound_at: None,
             shared_view: false,
         };
 
-        let request = OpenRequest {
-            id,
-            window_id,
-            pty_options,
-            window_size,
-            term,
-            proxy,
-            boost: config.ui.focus_priority_boost,
-            reap: config.ui.reap_descendants_on_close,
-            spare,
-        };
-
         (session, request)
     }
 
-    /// Adopt a PTY opened elsewhere.  Everything a session cannot do without
-    /// one is switched on here, in one place, so there is a single answer to
-    /// "when does this session become live".
-    pub(crate) fn attach(&mut self, attachment: Attachment) {
-        let (shell_pid, priority_job, sender) = attachment.into_parts();
-        self.probe.set_shell_pid(shell_pid);
-        self.priority_job = priority_job;
-        self.notifier = Some(Notifier(sender.clone()));
-
-        for msg in attach_replay(self.size, self.cell_size, self.pending_writes.take()) {
-            let _ = sender.send(msg);
+    /// Adopt a terminal opened elsewhere. Everything a session cannot do
+    /// without one is switched on here, in one place, so there is a single
+    /// answer to "when does this session become live".
+    ///
+    /// The terminal was opened at an older size, so the resize leads: input
+    /// typed while it was opening is answered at the size the pane ended up
+    /// at rather than the one the terminal was born with.
+    pub(crate) fn attach(&mut self, mut handle: Handle) {
+        handle.resize(window_size(self.size, self.cell_size));
+        if let Some(input) = self.pending_writes.take() {
+            handle.write(input);
         }
-        self.sender = Some(sender);
-
-        // Registered here rather than where the PTY is opened: `Session::drop`
-        // is the only unregister, so a probe registered for a session that no
-        // longer exists would stay in the cache and be polled for the life of
-        // the process.
-        if let Some(probe) = &self.wsl_probe {
-            wsl_helper::register_probe(&probe.distro, &probe.key);
-        }
-        self.send_wsl_cell_size();
-    }
-
-    /// Have a shimmed WSL shell's tty report the pixel size ConPTY drops,
-    /// which programs such as `kitten icat` read to size images. The distro
-    /// side keeps it in step with the grid, so only a new cell size needs
-    /// sending.
-    fn send_wsl_cell_size(&self) {
-        if let Some(probe) = &self.wsl_probe {
-            let size = window_size(self.size, self.cell_size);
-            let cell = wsl_helper::CellSize { width: size.cell_width, height: size.cell_height };
-            wsl_helper::set_cell_size(&probe.distro, &probe.key, cell);
-        }
+        self.handle = Some(handle);
     }
 
     /// Mark whether this session's grid is the one being painted.  Output from
@@ -1336,19 +1142,21 @@ impl<R: Repaint> Session<R> {
     /// Only the session the user is typing into may be raised; see
     /// `app::process_session_events`.
     pub(crate) fn set_priority_boost(&self, boosted: bool) -> bool {
-        let Some(job) = &self.priority_job else {
-            return false;
-        };
-        job.set_boosted(boosted);
-        boosted
+        self.handle.as_ref().is_some_and(|handle| handle.set_focused(boosted))
     }
 
     pub(crate) fn write(&mut self, bytes: Vec<u8>) {
-        if let Some(notifier) = &self.notifier {
-            notifier.notify(bytes);
+        if let Some(handle) = &self.handle {
+            handle.write(bytes);
         } else if let Some(pending) = self.pending_writes.as_mut() {
             pending.extend(bytes);
         }
+    }
+
+    /// What the backend's probe says, or nothing for a session that has no
+    /// terminal yet.
+    fn signals(&self) -> Signals {
+        self.handle.as_ref().map(SessionHandle::signals).unwrap_or_default()
     }
 
     /// Whether this session is waiting for a PTY that is on its way.
@@ -1448,7 +1256,6 @@ impl<R: Repaint> Session<R> {
         {
             return;
         }
-        let cell_changed = cell_size != self.cell_size;
         self.size = size;
         self.cell_size = cell_size;
         // Upstream resizes the PTY first and the terminal second; here the
@@ -1459,13 +1266,8 @@ impl<R: Repaint> Session<R> {
         let (width, height) = cell_pixels(cell_size);
         term.graphics_mut().set_cell_pixels(width, height);
         drop(term);
-        let Some(sender) = &self.sender else {
-            return;
-        };
-        let ws = window_size(size, cell_size);
-        let _ = sender.send(Msg::Resize(ws));
-        if cell_changed {
-            self.send_wsl_cell_size();
+        if let Some(handle) = &mut self.handle {
+            handle.resize(window_size(size, cell_size));
         }
     }
 
@@ -1509,7 +1311,7 @@ impl<R: Repaint> Session<R> {
     /// The distro a shimmed WSL session runs in.  Dropped paths need it to
     /// decide whether a `C:\` path has to be rewritten before a shell sees it.
     pub(crate) fn wsl_distro(&self) -> Option<&str> {
-        self.wsl_probe.as_ref().map(|probe| probe.distro.as_str())
+        self.wsl_distro.as_deref()
     }
 
     /// Semantic sidebar state for this session. Process probing identifies a
@@ -1519,7 +1321,7 @@ impl<R: Repaint> Session<R> {
         if self.scratchpad.is_some() || self.tasks.is_some() {
             return SessionActivity::Shell;
         }
-        let signals = self.probe.signals();
+        let signals = self.signals();
         session_activity(signals.agent, &self.title, signals.answered)
     }
 
@@ -1543,12 +1345,6 @@ impl<R: Repaint> Session<R> {
         self.program_status_seen = true;
     }
 
-    /// Pretend the probe just recognized `agent` in the foreground.
-    #[cfg(test)]
-    pub(crate) fn force_agent_for_test(&self, agent: &'static str) {
-        self.probe.force_agent_for_test(agent);
-    }
-
     /// A session "looks busy" when a process is running in the terminal
     /// (a foreground job on Linux/macOS, any descendant of the shell on
     /// Windows, the helper's foreground probe for shimmed WSL sessions), its
@@ -1558,7 +1354,7 @@ impl<R: Repaint> Session<R> {
         if self.scratchpad.is_some() || self.tasks.is_some() {
             return false;
         }
-        let signals = self.probe.signals();
+        let signals = self.signals();
         signals.foreground_job || looks_busy(signals.agent, &self.title)
     }
 
@@ -1577,14 +1373,7 @@ impl<R: Repaint> Session<R> {
         {
             return false;
         }
-        self.probe.signals().nav_tui
-    }
-
-    /// The shell this session's probe reads, for a test that drives a real
-    /// one through the PTY.
-    #[cfg(all(test, target_os = "macos"))]
-    pub(crate) fn shell_pid(&self) -> Option<u32> {
-        self.probe.shell_pid()
+        self.signals().nav_tui
     }
 
     /// Text dump of the visible screen plus up to `scrollback_lines` of
@@ -1647,20 +1436,14 @@ impl<R: Repaint> Session<R> {
             history_size,
         }
     }
-
-    pub(crate) fn shutdown(&self) {
-        if let Some(sender) = &self.sender {
-            let _ = sender.send(Msg::Shutdown);
-        }
-    }
 }
 
+/// A session leaves only by closing, and closing ends its program.
 impl<R: Repaint> Drop for Session<R> {
     fn drop(&mut self) {
-        if let Some(probe) = &self.wsl_probe {
-            wsl_helper::unregister_probe(&probe.distro, &probe.key);
+        if let Some(handle) = &mut self.handle {
+            handle.kill();
         }
-        self.shutdown();
     }
 }
 
@@ -1733,19 +1516,6 @@ fn clipboard_target(ty: ClipboardType) -> Target {
     }
 }
 
-/// What `attach` replays into a PTY that was opened at an older size.  The
-/// resize leads so that input typed while the PTY was opening is answered at
-/// the size the pane ended up at rather than the one the PTY was born with;
-/// an empty buffer sends nothing, because a zero-byte write hangs the
-/// terminal.
-fn attach_replay(size: TermSize, cell_size: (f32, f32), pending: Option<Vec<u8>>) -> Vec<Msg> {
-    let mut replay = vec![Msg::Resize(window_size(size, cell_size))];
-    if let Some(input) = pending.filter(|bytes| !bytes.is_empty()) {
-        replay.push(Msg::Input(input.into()));
-    }
-    replay
-}
-
 fn window_size(size: TermSize, cell_size: (f32, f32)) -> WindowSize {
     WindowSize {
         num_lines: size.screen_lines as u16,
@@ -1753,12 +1523,6 @@ fn window_size(size: TermSize, cell_size: (f32, f32)) -> WindowSize {
         cell_width: cell_size.0.max(1.0) as u16,
         cell_height: cell_size.1.max(1.0) as u16,
     }
-}
-
-fn next_window_id() -> u64 {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static NEXT: AtomicU64 = AtomicU64::new(1);
-    NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
 fn next_session_id() -> SessionId {
@@ -1778,7 +1542,9 @@ pub(crate) mod tests {
 
     use super::*;
     use crate::repaint::Recorder;
+    use crate::session_backend::Backend;
     use alacritree_common::side::Side;
+    use alacritree_session_backend::{Call, Scripted, SessionBackend};
 
     /// A repainted frame costs a full grid paint of whatever session is on
     /// screen — milliseconds, at a maximized window.  Output from a session
@@ -2111,7 +1877,7 @@ pub(crate) mod tests {
             config.vt.report_cwd = report_cwd;
             let probe = (!report_cwd)
                 .then(|| WslProbe { distro: "Ubuntu".into(), key: "test-probe".into() });
-            let (session, _) = Session::pending_shell(
+            let (session, request) = Session::pending_shell(
                 Recorder::default(),
                 &config,
                 Some(PathBuf::from(r"C:\workspace")),
@@ -2124,7 +1890,7 @@ pub(crate) mod tests {
 
             assert_eq!(session.wsl_distro(), expected_shell);
             assert_eq!(session.reported_cwd_distro.as_deref(), expected_report);
-            assert_eq!(session.wsl_probe.is_some(), !report_cwd);
+            assert_eq!(request.wsl_probe.is_some(), !report_cwd);
         }
     }
 
@@ -2370,7 +2136,7 @@ pub(crate) mod tests {
         let mut config = Config::default();
         config.vt.report_cwd = true;
         let workspace = Some(PathBuf::from("C:/workspace"));
-        let (mut session, _) = Session::pending_shell(
+        let (mut session, request) = Session::pending_shell(
             Recorder::default(),
             &config,
             workspace.clone(),
@@ -2382,7 +2148,7 @@ pub(crate) mod tests {
         );
         assert_eq!(session.reported_cwd_distro.as_deref(), Some("Ubuntu"));
         assert_eq!(session.wsl_distro(), None);
-        assert!(session.wsl_probe.is_none());
+        assert!(request.wsl_probe.is_none());
 
         for (bytes, expected) in [
             ("\x1b]7;file://localhost/home/dev/src\x07", Some("/home/dev/src")),
@@ -2418,8 +2184,8 @@ pub(crate) mod tests {
             probe,
         );
         assert_eq!(
-            request.pty_options.shell,
-            Some(Shell::new("wsl.exe".into(), expected_args.to_vec())),
+            request.shell,
+            Some(ShellCommand::new("wsl.exe".into(), expected_args.to_vec())),
         );
         for (bytes, expected) in [
             (
@@ -2524,12 +2290,9 @@ pub(crate) mod tests {
             accumulated_scroll: (0.0, 0.0),
             last_report_cell: None,
             cursor: Default::default(),
-            probe: ProbeHandle::new(None, None),
             reported_cwd_distro: None,
-            wsl_probe: None,
-            priority_job: None,
-            notifier: None,
-            sender: None,
+            wsl_distro: None,
+            handle: None,
             pending_writes: None,
             proxy,
             exit_status: None,
@@ -2959,7 +2722,7 @@ pub(crate) mod tests {
         use windows_sys::Win32::System::LibraryLoader::LoadLibraryW;
 
         if std::env::var_os("ALACRITREE_PROBE_HARDEN").is_some() {
-            crate::dll_search::harden_dll_search_path();
+            alacritree_common::dll_search::harden_dll_search_path();
         }
 
         let name: Vec<u16> = "conpty.dll\0".encode_utf16().collect();
@@ -3415,22 +3178,6 @@ pub(crate) mod tests {
         );
     }
 
-    #[test]
-    fn missing_dir_is_a_readable_error() {
-        let tmp = tempfile::tempdir().unwrap();
-        let gone = tmp.path().join("gone");
-        let err = ensure_working_directory(Some(&gone)).unwrap_err();
-        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
-        assert!(err.to_string().contains("no longer exists"));
-    }
-
-    #[test]
-    fn none_and_existing_dirs_pass() {
-        let tmp = tempfile::tempdir().unwrap();
-        assert!(ensure_working_directory(None).is_ok());
-        assert!(ensure_working_directory(Some(tmp.path())).is_ok());
-    }
-
     /// A WSL attach runs herdr inside the distro, out of reach of the Windows
     /// descendant walk, so without the helper's foreground probe the session
     /// reads as idle for its whole life and never forwards a focus key.
@@ -3629,7 +3376,7 @@ pub(crate) mod tests {
         );
 
         session.write(b"echo alpha\r\n".to_vec());
-        session.attach(open(request).expect("open the pty"));
+        session.attach(Backend::native().open(request).expect("open the pty"));
         session.write(b"echo beta\r\n".to_vec());
 
         assert!(
@@ -3640,32 +3387,6 @@ pub(crate) mod tests {
         let alpha = text.find("alpha").expect("the write made before attach was dropped");
         let beta = text.find("beta").expect("the write made after attach was dropped");
         assert!(alpha < beta, "buffered input was replayed out of order");
-    }
-
-    /// A WSL launch opens cold while its distro has no spare ready, so a
-    /// spare that is still starting never holds a tab up.
-    #[cfg(windows)]
-    #[test]
-    fn a_launch_with_no_spare_ready_opens_cold() {
-        let (mut session, mut request) = Session::pending_command(
-            Recorder::default(),
-            &Config::default(),
-            std::env::current_dir().ok(),
-            TermSize::new(80, 24),
-            (8.0, 16.0),
-            "cmd.exe".to_string(),
-            vec!["/q".to_string(), "/k".to_string(), "echo opened cold".to_string()],
-            "probe".to_string(),
-            SessionKind::Shell,
-        );
-        request.spare = Some(wsl_spare::launch_with_no_spare_ready("spare-less"));
-
-        session.attach(open(request).expect("open the pty"));
-
-        assert!(
-            grid_contains(&session, "opened cold", Duration::from_secs(20)),
-            "the cold launch never ran"
-        );
     }
 
     /// A pending session's grid tracks the pane it is drawn in.  Without
@@ -3691,29 +3412,12 @@ pub(crate) mod tests {
         assert_eq!(session.term.lock().columns(), 120);
     }
 
-    /// The size the PTY is opened at is the size the request carried, so a
-    /// pane resized while it was opening has to be replayed — and replayed
-    /// before any buffered input, or the shell answers at the old width.
-    #[test]
-    fn a_resize_before_attach_leads_the_buffered_input() {
-        let input = b"typed while opening\r\n".to_vec();
-        let replay = attach_replay(TermSize::new(120, 40), (8.0, 16.0), Some(input.clone()));
-
-        match replay.as_slice() {
-            [Msg::Resize(size), Msg::Input(replayed)] => {
-                assert_eq!((size.num_cols, size.num_lines), (120, 40));
-                assert_eq!(replayed.as_ref(), input.as_slice());
-            },
-            other => panic!("expected the resize then the buffered input, got {other:?}"),
-        }
-    }
-
-    /// A zero-byte write hangs the terminal, so a session that buffered
-    /// nothing replays only its size.
     #[test]
     fn a_direct_herdr_attach_never_takes_the_focus_keys() {
-        let mut session = pty_less_probe(SessionKind::Shell, "shell");
-        session.probe.force_nav_tui_for_test();
+        let (mut session, request) = pending(None);
+        let (backend, handle) = scripted(request);
+        session.attach(handle);
+        backend.set_signals(session.id, Signals { nav_tui: true, ..Signals::default() });
         let key = alacritree_herdr::pane_key(Side::Native, "t1".into());
 
         session.bind_pane(key.clone(), false);
@@ -3723,11 +3427,81 @@ pub(crate) mod tests {
         assert!(session.nav_tui_running(), "a shared view shows herdr's own splits");
     }
 
-    #[test]
-    fn attach_replays_no_input_when_nothing_was_buffered() {
-        for pending in [None, Some(Vec::new())] {
-            let replay = attach_replay(TermSize::new(80, 24), (8.0, 16.0), pending);
-            assert!(matches!(replay.as_slice(), [Msg::Resize(_)]), "{replay:?}");
+    fn pending(input: Option<&[u8]>) -> (Session<Recorder>, OpenRequest<Recorder>) {
+        let (mut session, request) = Session::pending_command(
+            Recorder::default(),
+            &Config::default(),
+            None,
+            TermSize::new(80, 24),
+            (8.0, 16.0),
+            "cmd.exe".to_string(),
+            vec![],
+            "probe".to_string(),
+            SessionKind::Shell,
+        );
+        if let Some(input) = input {
+            session.write(input.to_vec());
         }
+        (session, request)
+    }
+
+    /// Open `request` on a scripted backend, which records what the session
+    /// sends its terminal.
+    fn scripted(request: OpenRequest<Recorder>) -> (Scripted, Handle) {
+        let backend = Scripted::default();
+        let handle = backend.open(request).expect("a scripted open");
+        (backend, handle)
+    }
+
+    /// The size the terminal is opened at is the size the request carried,
+    /// so a pane resized while it was opening has to be replayed, and
+    /// replayed before any buffered input, or the shell answers at the old
+    /// width.
+    #[test]
+    fn a_resize_before_attach_leads_the_buffered_input() {
+        let input = b"typed while opening
+";
+        let (mut session, request) = pending(Some(input));
+        session.resize(TermSize::new(120, 40), (8.0, 16.0));
+        let (backend, handle) = scripted(request);
+
+        session.attach(handle);
+
+        let record = backend.session(session.id).expect("the session opened a terminal");
+        assert_eq!(record.opened_at, Some((80, 24)));
+        assert_eq!(record.calls, [
+            Call::Resize { columns: 120, lines: 40 },
+            Call::Input(input.to_vec())
+        ]);
+    }
+
+    /// A zero-byte write hangs the terminal, so a session that buffered
+    /// nothing sends only its size.
+    #[test]
+    fn attach_sends_no_input_when_nothing_was_buffered() {
+        for input in [None, Some(&b""[..])] {
+            let (mut session, request) = pending(input);
+            let (backend, handle) = scripted(request);
+
+            session.attach(handle);
+
+            let record = backend.session(session.id).expect("the session opened a terminal");
+            assert_eq!(record.calls, [Call::Resize { columns: 80, lines: 24 }], "{input:?}");
+        }
+    }
+
+    /// A closing session ends its terminal rather than only letting go of
+    /// it, so a backend that keeps terminals alive does not leak one per tab.
+    #[test]
+    fn dropping_a_session_kills_its_terminal() {
+        let (mut session, request) = pending(None);
+        let (backend, handle) = scripted(request);
+        session.attach(handle);
+        let id = session.id;
+
+        drop(session);
+
+        let record = backend.session(id).expect("the session opened a terminal");
+        assert!(record.killed && record.dropped && !record.detached);
     }
 }

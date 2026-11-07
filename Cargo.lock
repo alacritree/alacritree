@@ -72,6 +72,8 @@ dependencies = [
  "alacritree_graphics",
  "alacritree_herdr",
  "alacritree_multiplexer",
+ "alacritree_native",
+ "alacritree_session_backend",
  "alacritree_tasks",
  "alacritree_taskwarrior",
  "alacritree_vcs",
@@ -103,7 +105,6 @@ dependencies = [
  "objc2-user-notifications 0.3.2",
  "pabal",
  "png 0.17.16",
- "polling",
  "raw-window-handle",
  "rayon",
  "rfd",
@@ -258,6 +259,32 @@ dependencies = [
  "alacritree_common",
  "ambassador",
  "serde_json",
+ "strum 0.28.0",
+ "thiserror 2.0.17",
+]
+
+[[package]]
+name = "alacritree_native"
+version = "0.0.0"
+dependencies = [
+ "alacritree_common",
+ "alacritree_session_backend",
+ "alacritty_terminal",
+ "libc",
+ "log",
+ "polling",
+ "sysinfo",
+ "tempfile",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "alacritree_session_backend"
+version = "0.0.0"
+dependencies = [
+ "alacritree_common",
+ "alacritty_terminal",
+ "ambassador",
  "strum 0.28.0",
  "thiserror 2.0.17",
 ]
