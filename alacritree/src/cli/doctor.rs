@@ -118,7 +118,7 @@ fn report(
     checks.extend(gh_auth_check());
     checks.extend(diff_viewer_check(&config.integrations.diff_viewer.viewer));
     checks.push(shell_check(config.shell.as_ref()));
-    checks.extend(wsl_checks(&wsl::distros()));
+    checks.extend(wsl_checks(&wsl::distros(), wsl::idle_shutdown()));
     if config.integrations.taskwarrior.enabled {
         checks.extend(taskwarrior_checks(&wsl::distros()));
     }
@@ -260,7 +260,7 @@ enum ProbeError {
 /// silently, and their absence looks exactly like a repository with nothing
 /// to say. Empty when WSL is not installed, which is also every non-Windows
 /// machine.
-fn wsl_checks(distros: &[wsl::WslDistro]) -> Vec<Check> {
+fn wsl_checks(distros: &[wsl::WslDistro], idle_shutdown: Option<wsl::IdleShutdown>) -> Vec<Check> {
     if distros.is_empty() {
         return Vec::new();
     }
@@ -272,7 +272,32 @@ fn wsl_checks(distros: &[wsl::WslDistro]) -> Vec<Check> {
     let probes = probe_distros(distros);
     let mut checks = vec![check("wsl", "distros", Status::Ok, names.join(", "))];
     checks.extend(probes.iter().map(|(name, probe)| wsl_distro_check(name, probe)));
+    checks.push(idle_shutdown_check(idle_shutdown));
     checks
+}
+
+/// WSL stops an idle distro, and every terminal its herdr-core core runs
+/// with it. Nothing in the app shows when that happens or why its terminals
+/// outlive a quit. The setting is global and the user's choice, so the row
+/// explains and never warns.
+fn idle_shutdown_check(idle_shutdown: Option<wsl::IdleShutdown>) -> Check {
+    let setting = "`[general] instanceIdleTimeout` in %UserProfile%\\.wslconfig";
+    let detail = match idle_shutdown.unwrap_or(wsl::IdleShutdown::DEFAULT) {
+        wsl::IdleShutdown::Never => {
+            format!("{setting} is negative, so WSL never stops an idle distro")
+        },
+        wsl::IdleShutdown::After(timeout) => {
+            let source = if idle_shutdown.is_some() { "as set by" } else { "the default of" };
+            format!(
+                "WSL stops a distro {} s after its last wsl.exe client exits, {source} {setting} \
+                 (-1 never stops it). On quit, alacritree leaves a hidden wsl.exe keeper for each \
+                 distro whose herdr-core terminals are live, and the keeper exits with the last \
+                 one",
+                timeout.as_secs_f64()
+            )
+        },
+    };
+    check("wsl", "idle shutdown", Status::Ok, detail)
 }
 
 /// Probes every registry tool, since each is one alacritree runs for a project
@@ -801,7 +826,25 @@ mod tests {
     /// in the report that has to stay readable.
     #[test]
     fn no_distros_means_no_wsl_section() {
-        assert!(wsl_checks(&[]).is_empty());
+        assert!(wsl_checks(&[], None).is_empty());
+    }
+
+    /// WSL stops an idle distro and every terminal in it. The note says
+    /// when, by which setting, and what alacritree does about it, and never
+    /// warns, since the setting is the user's choice.
+    #[test]
+    fn the_idle_shutdown_note_names_the_setting_and_its_value() {
+        let unset = idle_shutdown_check(None);
+        assert_eq!(unset.status, Status::Ok);
+        for said in ["15 s", "instanceIdleTimeout", "keeper"] {
+            assert!(unset.detail.contains(said), "{:?} does not say {said:?}", unset.detail);
+        }
+        let set =
+            idle_shutdown_check(Some(wsl::IdleShutdown::After(Duration::from_secs(60)))).detail;
+        assert!(set.contains("60 s"), "{set:?}");
+        let never = idle_shutdown_check(Some(wsl::IdleShutdown::Never));
+        assert_eq!(never.status, Status::Ok);
+        assert!(never.detail.contains("never stops"), "{:?}", never.detail);
     }
 
     /// The whole point of the section: git, gh and delta are resolved inside
