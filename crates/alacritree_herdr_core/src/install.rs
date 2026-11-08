@@ -141,16 +141,19 @@ mod tests {
     fn the_native_command_line_is_what_runs() {
         let installer = Installer::on(Side::Native);
         let command = installer.command();
-        let mut shown = vec![command.get_program().to_string_lossy().into_owned()];
-        shown.extend(command.get_args().map(|arg| {
-            let arg = arg.to_string_lossy();
-            if arg.contains(' ') { format!("\"{arg}\"") } else { arg.into_owned() }
-        }));
+        let mut argv = vec![command.get_program().to_string_lossy().into_owned()];
+        argv.extend(command.get_args().map(|arg| arg.to_string_lossy().into_owned()));
 
         if cfg!(windows) {
-            assert_eq!(shown.join(" "), POWERSHELL);
+            // Windows joins argv into one command line, quoting each
+            // argument that holds a space.
+            let quoted: Vec<String> = argv
+                .iter()
+                .map(|arg| if arg.contains(' ') { format!("\"{arg}\"") } else { arg.clone() })
+                .collect();
+            assert_eq!(quoted.join(" "), POWERSHELL);
         } else {
-            assert_eq!(shown, ["sh", "-c", SHELL]);
+            assert_eq!(argv, ["sh", "-c", SHELL]);
         }
     }
 }
