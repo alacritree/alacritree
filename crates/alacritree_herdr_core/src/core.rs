@@ -19,7 +19,7 @@ use serde_json::Value;
 
 use crate::connection::{Connection, Waker};
 use crate::elsewhere::{self, HcPaths};
-use crate::{CoreError, one_shot};
+use crate::{CoreError, keeper, one_shot};
 
 /// How long a session waits between attempts to attach while its side has
 /// no connection.
@@ -56,6 +56,11 @@ impl Slot {
     fn live(&self) -> Option<Arc<Connection>> {
         self.connection.as_ref().filter(|connection| connection.alive()).cloned()
     }
+}
+
+/// The `hc` a distro runs: the configured `wsl_path`, else the bare name.
+fn distro_hc(program: Option<&str>) -> &str {
+    program.unwrap_or(Tool::Hc.name())
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -189,11 +194,23 @@ impl SideCore {
                 Ok((command, format!("{program} connect")))
             },
             Launch::Wsl { distro, program } => {
-                let hc = program.as_deref().unwrap_or(Tool::Hc.name());
+                let hc = distro_hc(program.as_deref());
                 let command = side::wsl_command_with_clean_stdout(distro, hc, &["connect"]);
                 Ok((command, format!("wsl.exe -d {distro} -- {hc} connect")))
             },
         }
+    }
+
+    /// Leave a keeper that holds the distro up after alacritree quits, and
+    /// answer its pid. A core whose connection reports no running terminal,
+    /// and the native core, get none. A core with no connection up may still
+    /// have terminals, so its keeper looks for itself.
+    pub(crate) fn leave_keeper(&self) -> Option<u32> {
+        let Launch::Wsl { distro, program } = &self.launch else { return None };
+        if self.live().is_some_and(|connection| !connection.has_running_terminal()) {
+            return None;
+        }
+        keeper::leave(distro, distro_hc(program.as_deref()))
     }
 
     /// Answers whether the native core already serves, without starting one.

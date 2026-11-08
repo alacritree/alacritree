@@ -3,7 +3,8 @@
 //!
 //! Terminals start with `keep`. Closing a session kills a terminal that
 //! `labels` marks as alacritree's, and only detaches from any other.
-//! Quitting detaches, and the next launch adopts alacritree's own. A
+//! Quitting detaches and leaves a keeper for each distro whose core may
+//! have live terminals, and the next launch adopts alacritree's own. A
 //! session's parser attaches its stream once the side's connection is up,
 //! and again after a drop or a loss.
 
@@ -11,6 +12,7 @@ mod connection;
 mod core;
 mod elsewhere;
 mod install;
+mod keeper;
 mod labels;
 mod one_shot;
 mod panes;
@@ -388,6 +390,13 @@ impl HerdrCores {
     /// adoptable. Only the first call counts.
     pub fn set_waker(&self, wake: impl Fn() + Send + Sync + 'static) {
         let _ = self.waker.set(Box::new(wake));
+    }
+
+    /// Leave a keeper for each distro this run used whose core may still
+    /// have a live terminal, so quitting does not let WSL stop the distro
+    /// under it. Answers each keeper's pid.
+    pub fn leave_keepers(&self) -> Vec<u32> {
+        lock(&self.distros).values().filter_map(|core| core.core.leave_keeper()).collect()
     }
 
     /// Open a distro's resident connection whenever its WSL helper starts,

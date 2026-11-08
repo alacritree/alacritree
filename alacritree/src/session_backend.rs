@@ -115,6 +115,15 @@ impl Cores {
         }
     }
 
+    /// Leave a keeper for each distro whose core may outlive the quit.
+    pub(crate) fn leave_keepers(&self) {
+        match self {
+            Self::HerdrCore(cores) => drop(cores.leave_keepers()),
+            #[cfg(test)]
+            Self::Scripted(..) => {},
+        }
+    }
+
     /// Every side's core that this run has used so far, with its side.
     pub(crate) fn all(&self) -> Vec<(Side, Backend)> {
         match self {

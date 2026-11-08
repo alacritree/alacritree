@@ -886,6 +886,51 @@ fn distro_sessions_share_one_resident_connection() {
     assert_eq!(core.live_terminals(), 2, "both sessions run in the distro's core");
 }
 
+#[cfg(windows)]
+fn running(pid: u32) -> bool {
+    let probe = format!("[bool](Get-Process -Id {pid} -ErrorAction SilentlyContinue)");
+    let out = Command::new("powershell.exe")
+        .args(["-NoProfile", "-Command", &probe])
+        .output()
+        .expect("powershell runs");
+    String::from_utf8_lossy(&out.stdout).trim() == "True"
+}
+
+/// A quit leaves one keeper per distro core. It outlasts its status polls
+/// while the core has a live terminal, a second keeper for the same core
+/// exits at once, and the keeper exits once the last terminal ends.
+#[cfg(windows)]
+#[test]
+#[ignore = "needs a WSL distro with hc"]
+fn a_quit_leaves_one_keeper_that_exits_with_the_last_terminal() {
+    use alacritree_herdr_core::HerdrCores;
+    use alacritree_session_backend::Side;
+
+    let Some(core) = DistroCore::start() else {
+        eprintln!("skip: this machine has no WSL distro");
+        return;
+    };
+    let cores = HerdrCores::new(&HerdrCoreConfig::default());
+    let backend = cores.on(&Side::Wsl(core.distro.clone()));
+    let mut opened = open(&backend, shell(), &core.windows_dir());
+    opened.handle.write(b"echo kept-in-distro\r".to_vec());
+    shows(&opened, "kept-in-distro");
+    let terminal = opened.handle.terminal().to_string();
+    opened.handle.detach().expect("a detach");
+
+    let [keeper] = cores.leave_keepers()[..] else { panic!("one keeper for the one distro") };
+    let [second] = cores.leave_keepers()[..] else { panic!("a second keeper to turn away") };
+    wait_until("the second keeper to find the lock held", PATIENCE, || !running(second));
+    std::thread::sleep(Duration::from_secs(15));
+    assert!(running(keeper), "the keeper outlasts a status poll while a terminal lives");
+
+    let killed = core.hc(&["kill", &terminal]);
+    assert!(killed.status.success(), "the terminal ends: {killed:?}");
+    wait_until("the keeper to exit after the last terminal", Duration::from_secs(30), || {
+        !running(keeper)
+    });
+}
+
 /// Start `argv` the way another client does: kept, and with no alacritree
 /// label. Answers its address.
 fn run_foreign(argv: &[&str]) -> String {

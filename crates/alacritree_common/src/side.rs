@@ -166,11 +166,20 @@ pub fn login_shell_script(inner: &str) -> String {
 /// outside that shell. A program that speaks a protocol on stdout needs this
 /// rather than [`login_shell_script`].
 pub fn wsl_command_with_clean_stdout(distro: &str, program: &str, args: &[&str]) -> Command {
+    let mut command = wsl_script_with_program(distro, program, r#"exec "$p" "$@""#);
+    command.args(args);
+    command
+}
+
+/// A command that runs the `sh` code `script` in `distro` with `$p` set to
+/// `program`, found as [`wsl_command_with_clean_stdout`] finds it. Arguments
+/// added to the command reach `script` as its positional parameters.
+pub fn wsl_script_with_program(distro: &str, program: &str, script: &str) -> Command {
     let script = format!(
-        r#"n=$1; shift; case $n in */*) p=$n ;; *) {LOGIN_SHELL}; p=$("$s" -lc 'command -v "$1"' "$s" "$n" </dev/null 2>/dev/null | tail -n 1) ;; esac; exec "${{p:-$n}}" "$@""#
+        r#"n=$1; shift; case $n in */*) p=$n ;; *) {LOGIN_SHELL}; p=$("$s" -lc 'command -v "$1"' "$s" "$n" </dev/null 2>/dev/null | tail -n 1) ;; esac; p=${{p:-$n}}; {script}"#
     );
     let mut command = wsl::command(distro, None);
-    command.args(["sh", "-c", &script, "sh", program]).args(args);
+    command.args(["sh", "-c", &script, "sh", program]);
     command
 }
 

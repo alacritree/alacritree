@@ -339,6 +339,12 @@ impl Connection {
         self.shared.changed.notify_all();
     }
 
+    /// Answers whether the core last reported a terminal that has not
+    /// finished. A lost program counts, since the core starts its new shell.
+    pub(crate) fn has_running_terminal(&self) -> bool {
+        self.shared.routes().terminals.values().any(|facts| facts.state != State::Finished)
+    }
+
     /// What `pick` takes from each terminal the core last reported.
     pub(crate) fn pick_terminals<T>(
         &self,
