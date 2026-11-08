@@ -66,6 +66,12 @@
   },
   "integrations": {
     "checkout_hooks": [],
+    "claude": {
+      "subagents": true
+    },
+    "codex": {
+      "subagents": true
+    },
     "delta": {
       "path": "delta",
       "wsl_path": null

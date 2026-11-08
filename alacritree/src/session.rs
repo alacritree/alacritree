@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use alacritree_common::wsl_helper::WslProbe;
 use alacritree_multiplexer::{AgentStatus, PaneKey};
 use alacritree_session_backend::{
-    Placement, ProcessTree, Screen, SessionHandle, Signals, TerminalColors,
+    ForegroundProgram, Placement, ProcessTree, Screen, SessionHandle, Signals, TerminalColors,
 };
 pub(crate) use alacritree_session_backend::{SESSION_ID_ENV, ShellCommand};
 use alacritty_terminal::event::{Event as TermEvent, EventListener, WindowSize};
@@ -1262,6 +1262,11 @@ impl<R: Repaint> Session<R> {
     /// else what the backend tracks.
     pub(crate) fn cwd(&self) -> Option<PathBuf> {
         self.reported_cwd.clone().or_else(|| self.handle.as_ref().and_then(SessionHandle::cwd))
+    }
+
+    /// The program that holds the terminal, as the backend reports it.
+    pub(crate) fn foreground(&self) -> Option<ForegroundProgram> {
+        self.handle.as_ref().and_then(SessionHandle::foreground)
     }
 
     /// What the backend's probe says, or nothing for a session that has no
