@@ -20,7 +20,7 @@ pub(super) struct SessionList {
     returns_to: HashMap<SessionId, SessionId>,
 }
 
-/// Read and per-session access.  A slice has no way to add or drop an element,
+/// Read and per-session access. A slice has no way to add or drop an element,
 /// so both stay behind `push` and `remove`.
 impl Deref for SessionList {
     type Target = [AppSession];
@@ -144,7 +144,7 @@ impl SessionList {
     }
 
     /// Re-home the session at `idx` to `target` and repair both workspaces'
-    /// active entries.  True means the user was watching it, so the view
+    /// active entries. True means the user was watching it, so the view
     /// should follow it there.
     pub(super) fn move_to(
         &mut self,

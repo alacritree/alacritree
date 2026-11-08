@@ -1,4 +1,4 @@
-//! IME composition state.  Mirrors alacritty's `display::Ime`
+//! IME composition state. Mirrors alacritty's `display::Ime`
 //! (alacritty/src/display/mod.rs) minus what egui makes unreachable:
 //! enablement is output-driven (`PlatformOutput::ime`), and egui-winit
 //! drops winit's preedit cursor offset, so the caret is always at the
@@ -13,7 +13,7 @@ use crate::session::SessionId;
 pub(crate) struct Ime {
     /// In-progress composition; `Some` suppresses key input to the PTY.
     preedit: Option<String>,
-    /// Session the composition targets.  Composition belongs to the
+    /// Session the composition targets. Composition belongs to the
     /// window's focused terminal, so a session switch orphans it.
     owner: Option<SessionId>,
 }
@@ -60,7 +60,7 @@ impl Ime {
     }
 }
 
-/// Terminal cell width of one char.  Control/zero-width chars count 1 so a
+/// Terminal cell width of one char. Control/zero-width chars count 1 so a
 /// malformed preedit still advances and stays visible.
 pub(crate) fn char_cells(c: char) -> usize {
     c.width().unwrap_or(1).max(1)
@@ -72,7 +72,7 @@ pub(crate) struct PreeditLayout<'a> {
     pub width: usize,
 }
 
-/// Where the preedit overlay sits on the grid.  Mirrors alacritty's
+/// Where the preedit overlay sits on the grid. Mirrors alacritty's
 /// `draw_ime_preview` placement rule: the *end* of the composition (where
 /// the caret is) stays visible — right-aligned against the grid edge when
 /// the cursor is too far right, truncated from the left (whole chars) when

@@ -2,9 +2,9 @@
 //!
 //! Drawing a decoration as a shape means the shader can only draw shapes it
 //! knows how to describe, which is why a straight rule is all the arithmetic
-//! ever produced.  Rasterizing the styles instead puts curls, dots and dashes
+//! ever produced. Rasterizing the styles instead puts curls, dots and dashes
 //! within reach at the same per-cell cost: the cell record carries a tile
-//! index, and the fragment shader samples it.  Ghostty and kitty both take
+//! index, and the fragment shader samples it. Ghostty and kitty both take
 //! this route, ghostty as sprite codepoints past the Unicode range and kitty
 //! as its own sprite map.
 //!
@@ -16,7 +16,7 @@ use egui::{Color32, ColorImage, Context, TextureHandle, TextureId, TextureOption
 use crate::config::Decorations;
 use crate::fonts::FaceMetrics;
 
-/// Underline styles, in the order their tiles sit in the strip.  Zero is the
+/// Underline styles, in the order their tiles sit in the strip. Zero is the
 /// undecorated cell, whose tile is never sampled: the vertex shader collapses
 /// that quad rather than reading it.
 const UNDERLINE_KINDS: u16 = 6;
@@ -29,7 +29,7 @@ pub(crate) const DOTTED: u16 = 4;
 pub(crate) const DASHED: u16 = 5;
 
 /// Tiles in the strip: every underline style, once plain and once struck
-/// through.  A cell carries at most one of each, so the pair fits in one tile
+/// through. A cell carries at most one of each, so the pair fits in one tile
 /// and a cell with both still costs a single sample.
 pub(crate) const TILES: u16 = UNDERLINE_KINDS * 2;
 
@@ -38,18 +38,18 @@ pub(crate) fn tile(underline: u16, strikeout: bool) -> u16 {
     underline + if strikeout { UNDERLINE_KINDS } else { 0 }
 }
 
-/// Where the lines sit and how thick they are, in physical pixels.  The `y`
+/// Where the lines sit and how thick they are, in physical pixels. The `y`
 /// values and `baseline` are measured down from the cell's top edge;
 /// `descent` is a length.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) struct Geometry {
     pub cell: [usize; 2],
-    /// Where epaint puts the glyph baseline inside the cell.  The descent area
+    /// Where epaint puts the glyph baseline inside the cell. The descent area
     /// hangs from here rather than from the cell's bottom edge: `cell_h` is a
     /// floored row height plus `font.offset.y`, so the two are different places
     /// and only this one tracks where glyphs actually sit.
     pub baseline: f32,
-    /// Height of the descent area below the baseline.  It is the vertical room
+    /// Height of the descent area below the baseline. It is the vertical room
     /// the double and curly styles divide up, which is what keeps them legible
     /// on a face whose strokes are fine.
     pub descent: f32,
@@ -133,7 +133,7 @@ impl DecorationAtlas {
     }
 }
 
-/// Vertical subsamples per pixel.  The curl is the only shape whose edge is
+/// Vertical subsamples per pixel. The curl is the only shape whose edge is
 /// not axis-aligned, and four steps is where its stems stop looking ragged.
 const SUBSAMPLES: usize = 4;
 
@@ -178,12 +178,12 @@ fn draw_underline(buf: &mut [f32], stride: usize, x0: usize, kind: u16, geometry
     let fit = |extent: f32| geometry.underline_y.min(h as f32 - extent);
     match kind {
         STRAIGHT => rect(buf, stride, x0, w, fit(t / 2.0) - t / 2.0, t),
-        // One stem in each half of the descent area.  Deriving the gap from
+        // One stem in each half of the descent area. Deriving the gap from
         // the stroke instead would merge the pair on a face with fine strokes,
-        // leaving the style indistinguishable from a straight rule.  The band
+        // leaving the style indistinguishable from a straight rule. The band
         // is a floor and not the whole story: a stroke thick enough to close
         // the room it opened pushes the stems apart to keep a stroke's worth
-        // of blank between them.  Both move together when the lower one would
+        // of blank between them. Both move together when the lower one would
         // fall off the cell, so the pair survives rather than the spacing.
         DOUBLE => {
             let spacing = (0.5 * geometry.descent).max(2.0 * t);
@@ -244,7 +244,7 @@ fn curl(buf: &mut [f32], stride: usize, x0: usize, geometry: Geometry) {
     let t = geometry.underline_thickness;
     // The wave's ink fills the descent area, so the amplitude comes from the
     // room the band leaves rather than from the stroke: a face with fine
-    // strokes would otherwise get a curl too shallow to read as one.  Pulled
+    // strokes would otherwise get a curl too shallow to read as one. Pulled
     // up whole when the band runs past the cell, so the shape survives instead
     // of losing its lower lobe to the edge.
     let bottom = (geometry.baseline + geometry.descent).min(h as f32);
@@ -397,7 +397,7 @@ mod tests {
     }
 
     /// The descent area hangs from the baseline, not from the cell's bottom
-    /// edge.  `cell_h` is a floored row height plus `font.offset.y`, so an
+    /// edge. `cell_h` is a floored row height plus `font.offset.y`, so an
     /// anchor read off the bottom drifts by the line gap and by the offset,
     /// and this is the assertion that catches it.
     #[test]
@@ -415,7 +415,7 @@ mod tests {
         }
     }
 
-    /// One stem in each half of the descent area.  Both above or both below
+    /// One stem in each half of the descent area. Both above or both below
     /// its midpoint would mean the stems were placed from a single position
     /// rather than from the band.
     #[test]
@@ -482,7 +482,7 @@ mod tests {
         let metrics = crate::fonts::FaceMetrics::default();
         // An ascent of 22.4 puts 28 pixels in the em, so the face's stroke
         // resolves to a fractional 1.4: rounding first would answer 2.0 where
-        // scaling first answers 3.0.  A whole-pixel stroke leaves the two
+        // scaling first answers 3.0. A whole-pixel stroke leaves the two
         // orderings agreeing and the assertion proving nothing.
         let doubled = Geometry::resolve([10, 24], 22.4, 1.0, &metrics, &Decorations {
             underline_thickness: Adjust::Scale(2.0),
@@ -530,7 +530,7 @@ mod tests {
     }
 
     /// A stroke thick enough to span the room the descent left has to push the
-    /// stems apart rather than fill the gap between them.  Splitting the band
+    /// stems apart rather than fill the gap between them. Splitting the band
     /// alone puts the two stems `descent / 2` apart, so anything from a
     /// compressed face to a thickness knob turned up closes the pair into the
     /// single rule the style exists to be distinguishable from.

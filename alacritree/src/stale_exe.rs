@@ -2,7 +2,7 @@
 //
 // A running process's exe image cannot be overwritten or deleted on Windows,
 // but it can be renamed: the directory entry changes while the process keeps
-// its mapped image.  Renaming a pinned exe aside frees its name for a fresh
+// its mapped image. Renaming a pinned exe aside frees its name for a fresh
 // binary; the leftover is deleted by a later sweep, once its process exits.
 //
 // build.rs pastes this file in with `include!`, so it must stay std-only and
@@ -12,7 +12,7 @@
 use std::path::{Path, PathBuf};
 use std::{fs, io};
 
-/// Marks a renamed-aside file.  Changing the extension also keeps leftovers
+/// Marks a renamed-aside file. Changing the extension also keeps leftovers
 /// out of PATH lookups and cargo's uplift.
 pub(crate) const STALE_MARKER: &str = ".stale-";
 /// Marks a not-yet-renamed install copy, so an interrupted install is swept

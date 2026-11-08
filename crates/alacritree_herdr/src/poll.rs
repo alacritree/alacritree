@@ -1,4 +1,4 @@
-//! What each reachable herdr server has.  An event stream says when a side
+//! What each reachable herdr server has. An event stream says when a side
 //! changed, a listing says what it now holds, and a side whose stream drops
 //! is reconnected on a backoff until its herdr comes back.
 
@@ -12,7 +12,7 @@ use super::events::{self, Event, Message, Stream};
 use super::{Listing, PollError, Settings, running_session_name, settings};
 
 /// How long a side with no stream waits before each reconnect in a run of
-/// failures.  The last step repeats, so a herdr started after alacritree is
+/// failures. The last step repeats, so a herdr started after alacritree is
 /// found within that long.
 const RECONNECT_BACKOFF: [Duration; 4] = [
     Duration::from_millis(500),
@@ -21,7 +21,7 @@ const RECONNECT_BACKOFF: [Duration; 4] = [
     Duration::from_secs(5),
 ];
 
-/// How long rows outlive the side that reported them.  Long enough to ride
+/// How long rows outlive the side that reported them. Long enough to ride
 /// out a herdr restart without the sidebar blanking, short enough that a
 /// herdr that stayed down stops showing a status nobody refreshes.
 const LISTING_GRACE: Duration = Duration::from_secs(6);
@@ -30,7 +30,7 @@ const LISTING_GRACE: Duration = Duration::from_secs(6);
 /// running again.
 const LISTING_RETRY: Duration = Duration::from_secs(2);
 
-/// Whether an endpoint is worth talking to.  A side with no herdr on it is
+/// Whether an endpoint is worth talking to. A side with no herdr on it is
 /// abandoned, so a machine with none pays one failed spawn; a side that has a
 /// herdr is retried forever, because starting the server is the ordinary
 /// thing to do after alacritree is already open.
@@ -130,13 +130,13 @@ pub struct PaneMetadata {
 
 /// The subscription that says when a side changed.
 enum Link {
-    /// No stream.  A reconnect is due at `retry_at`, the `failures`th in a
+    /// No stream. A reconnect is due at `retry_at`, the `failures`th in a
     /// row.
     Down {
         failures: usize,
         retry_at: Instant,
     },
-    /// Spawned, and waiting for herdr to accept the subscription.  Carries
+    /// Spawned, and waiting for herdr to accept the subscription. Carries
     /// the run of failures this attempt would extend.
     Connecting {
         stream: Stream,
@@ -147,10 +147,10 @@ enum Link {
     Abandoned,
 }
 
-/// A focus move alacritree made itself.  herdr delivers focus events in
+/// A focus move alacritree made itself. herdr delivers focus events in
 /// order, so one arriving before herdr's echo of this move predates it.
 struct OwnFocus {
-    /// The pane herdr will echo.  A move made through a tab may echo another
+    /// The pane herdr will echo. A move made through a tab may echo another
     /// pane of it, which reads as stale until a listing settles it.
     pane_id: String,
     at: Instant,
@@ -162,12 +162,12 @@ struct StatusLink {
     stream: Stream,
 }
 
-/// Starts a subscription on a side.  A test build never starts a real bridge.
+/// Starts a subscription on a side. A test build never starts a real bridge.
 fn open_stream(side: &Side, request: String) -> Stream {
     if cfg!(test) { Stream::unreachable() } else { Stream::open(side, request) }
 }
 
-/// Starts a listing on a side.  In a test build it never lands, and the test
+/// Starts a listing on a side. In a test build it never lands, and the test
 /// replaces it with the reply it wants.
 fn start_listing(
     side: &Side,
@@ -195,17 +195,17 @@ pub struct EndpointCache {
     /// The pane ids herdr last refused a status subscription for, so the same
     /// refusal is not asked for again until a listing names other panes.
     status_refused: Option<Vec<String>>,
-    /// When the next listing has to start.  `None` while nothing has changed
+    /// When the next listing has to start. `None` while nothing has changed
     /// since the last one.
     listing_due: Option<Instant>,
     /// What the last listing was asked for, since a change in what the sidebar
     /// wants is itself a reason to list again.
     listed_for: Option<(Listing, bool)>,
-    /// Patches that landed while a listing was in flight.  They are newer than
+    /// Patches that landed while a listing was in flight. They are newer than
     /// that listing, so they go on top of it once it lands.
     held: Vec<Event>,
     own_focus: Option<OwnFocus>,
-    /// When a run of failed listings stops being worth waiting out.  Set on
+    /// When a run of failed listings stops being worth waiting out. Set on
     /// the first failure of the run and cleared by the next answer.
     blank_at: Option<Instant>,
     sampled_at: Option<Instant>,
@@ -410,7 +410,7 @@ impl EndpointCache {
         self.agents = agents;
     }
 
-    /// What herdr's config here says, once the read has landed.  Before that
+    /// What herdr's config here says, once the read has landed. Before that
     /// it is herdr's own defaults, which is what herdr would be running on if
     /// its config said nothing — except for the chord, which stays `None`
     /// until it is known, since naming one the user has rebound would be
@@ -422,7 +422,7 @@ impl EndpointCache {
         }
     }
 
-    /// The running session's name here, once the read has landed.  `None`
+    /// The running session's name here, once the read has landed. `None`
     /// means the attach has to ask herdr itself.
     pub fn session_name(&self) -> Option<String> {
         match &self.session_name {
@@ -431,7 +431,7 @@ impl EndpointCache {
         }
     }
 
-    /// Adopt a landed session-name read.  A read that answered nothing goes
+    /// Adopt a landed session-name read. A read that answered nothing goes
     /// back to unread rather than to a guess: the name is what an attach
     /// targets, so asking again next tick beats attaching to a name herdr
     /// never gave.
@@ -445,7 +445,7 @@ impl EndpointCache {
         }
     }
 
-    /// Learn the session name in the background.  The attach gesture runs on
+    /// Learn the session name in the background. The attach gesture runs on
     /// the UI thread, and on a side where herdr cannot attach one agent it
     /// already spends a spawn focusing the pane; asking for a name that is
     /// the same on every click would double that wait.
@@ -460,9 +460,9 @@ impl EndpointCache {
             }));
     }
 
-    /// Adopt a landed config read.  Both halves are part of what a row
+    /// Adopt a landed config read. Both halves are part of what a row
     /// renders, so arriving late still has to invalidate the sidebar's
-    /// comparison.  A side that could not be read falls back to herdr's own
+    /// comparison. A side that could not be read falls back to herdr's own
     /// defaults rather than to nothing.
     fn advance_settings(&mut self) {
         let Read::Pending(job) = &self.settings else { return };
@@ -489,7 +489,7 @@ impl EndpointCache {
     }
 
     /// Reads what the streams said, adopts a landed listing, and starts
-    /// whatever is due.  Never blocks.
+    /// whatever is due. Never blocks.
     pub fn poll(&mut self, listing: Listing, attached: bool) {
         let now = Instant::now();
         if attached && self.attachment_panes.is_empty() {
@@ -556,7 +556,7 @@ impl EndpointCache {
     }
 
     /// Records that alacritree moved herdr's focus to `pane_id`, which landed
-    /// at `at`.  Focus events stay distrusted until herdr echoes that move or
+    /// at `at`. Focus events stay distrusted until herdr echoes that move or
     /// a listing sampled after it lands, which stands in for an echo herdr
     /// sends none of when the pane was already focused.
     pub fn focus_moved(&mut self, pane_id: String, at: Instant) {
@@ -614,7 +614,7 @@ impl EndpointCache {
         }
     }
 
-    /// A lifecycle stream ending.  A stream herdr had accepted ended because
+    /// A lifecycle stream ending. A stream herdr had accepted ended because
     /// herdr went away, so the reconnect starts at once; one that never
     /// started backs off, or gives the side up when nothing herdr-shaped
     /// answered there.
@@ -648,7 +648,7 @@ impl EndpointCache {
         events::wake_after(delay);
     }
 
-    /// Reads the status stream.  A refusal is remembered against the panes it
+    /// Reads the status stream. A refusal is remembered against the panes it
     /// named, and a stream that ends is dropped; the next listing decides
     /// whether another is worth opening.
     fn advance_status(&mut self, now: Instant) {
@@ -707,14 +707,14 @@ impl EndpointCache {
         });
     }
 
-    /// An event from either stream.  A patch lands at once, and is held as
+    /// An event from either stream. A patch lands at once, and is held as
     /// well when a listing is in flight, since that listing may have sampled
     /// herdr before the change and would otherwise undo it.
     fn receive(&mut self, event: Event, now: Instant) {
         if let (Event::Focused { pane_id }, Some(own)) = (&event, &self.own_focus) {
             if &own.pane_id != pane_id {
                 // Older than our own move, so only a listing can say what
-                // herdr shows now.  Never held, or landing that listing would
+                // herdr shows now. Never held, or landing that listing would
                 // replay it.
                 self.listing_due = Some(now);
                 return;
@@ -764,7 +764,7 @@ impl EndpointCache {
         }
     }
 
-    /// A pane herdr re-described.  A pane this side does not show is left
+    /// A pane herdr re-described. A pane this side does not show is left
     /// alone, since a shell's title churns and a new row arrives on its own
     /// event; an agent that left its pane changes which rows exist, which
     /// only a listing can say.
@@ -813,7 +813,7 @@ impl EndpointCache {
         }
     }
 
-    /// Records a reply that landed but could not be read.  Something did
+    /// Records a reply that landed but could not be read. Something did
     /// answer here, so it is evidence about this side, and what it displaces
     /// goes at once.
     fn note_failure(&mut self, error: &PollError) {
@@ -822,10 +822,10 @@ impl EndpointCache {
         self.log_failure(error);
     }
 
-    /// Records a listing that never answered.  A listing that could not run is
+    /// Records a listing that never answered. A listing that could not run is
     /// no evidence about the agents, since herdr's own state is untouched by a
     /// process that failed to spawn, so what it last said stands until the
-    /// failures outlast [`LISTING_GRACE`].  Giving the rows up on the first
+    /// failures outlast [`LISTING_GRACE`]. Giving the rows up on the first
     /// trades a rare stale status for a certain blank whenever a spawn
     /// hiccups, which on a loaded machine is the common case.
     fn note_missing_listing(&mut self, error: &PollError, now: Instant) {
@@ -851,7 +851,7 @@ impl EndpointCache {
 
     /// Drops the live half of what herdr last said about this side's panes.
     /// A status nothing is refreshing still reads as current, which is worse
-    /// than showing none at all.  The sample time goes with it, since a
+    /// than showing none at all. The sample time goes with it, since a
     /// reader takes one as proof the side is answering.
     fn forget_listing(&mut self) {
         self.sampled_at = None;
@@ -867,7 +867,7 @@ impl EndpointCache {
         self.blank_at = None;
     }
 
-    /// Says a poll produced no agents, once per run of the same code.  "No
+    /// Says a poll produced no agents, once per run of the same code. "No
     /// server here" is ordinary only on a side where herdr never answered;
     /// anywhere else it is the outage a log has to show.
     fn log_failure(&mut self, error: &PollError) {
@@ -895,7 +895,7 @@ const DISTRO_REFRESH: Duration = Duration::from_secs(10);
 /// clear of the per-endpoint generation steps it is summed with.
 const MEMBERSHIP_SCALE: u64 = 0x9E37_79B9_7F4A_7C15;
 
-/// Every herdr server alacritree talks to.  The native side is permanent; a
+/// Every herdr server alacritree talks to. The native side is permanent; a
 /// WSL side exists only while its distro's VM is up, because reaching into a
 /// stopped distro boots it — seconds of disk I/O and a VM's worth of memory —
 /// only to find that nothing is listening there.
@@ -945,7 +945,7 @@ impl Endpoints {
         self.caches.iter().map(EndpointCache::generation).fold(membership, u64::wrapping_add)
     }
 
-    /// Refreshes the endpoint set and each endpoint's agents.  Never blocks.
+    /// Refreshes the endpoint set and each endpoint's agents. Never blocks.
     pub fn poll(&mut self, listing: Listing, attached: impl Fn(&Side) -> bool) {
         self.refresh_running();
         for cache in &mut self.caches {
@@ -958,7 +958,7 @@ impl Endpoints {
         self.caches.iter_mut().find(|cache| cache.side() == side)
     }
 
-    /// Keeps the endpoint set in step with which distros are running.  The
+    /// Keeps the endpoint set in step with which distros are running. The
     /// listing itself spawns `wsl.exe`, so it goes through the pool.
     fn refresh_running(&mut self) {
         if let Some(job) = &self.running {
@@ -986,10 +986,10 @@ impl Endpoints {
         self.running = Some(jobs::pool().spawn(jobs::Priority::Background, wsl::running_distros));
     }
 
-    /// Takes what the listing job answered.  A listing that failed is not
+    /// Takes what the listing job answered. A listing that failed is not
     /// evidence that nothing is running, so it leaves the endpoint set — and
     /// every endpoint's cached agents and backoff state — exactly as it is;
-    /// only an answer may remove an endpoint.  The failure is logged once per
+    /// only an answer may remove an endpoint. The failure is logged once per
     /// run of failures, so a `wsl.exe` that cannot list at all says so without
     /// writing a line every refresh.
     fn adopt_listing(&mut self, listing: Option<Vec<String>>) {
@@ -1014,7 +1014,7 @@ impl Endpoints {
 
     /// Adopts a listing of running distros: an endpoint appears when its
     /// distro starts and goes when it stops, since a stopped distro's agents
-    /// went down with its VM.  The native endpoint is never one of them.
+    /// went down with its VM. The native endpoint is never one of them.
     fn adopt_running(&mut self, running: &[String]) {
         let before = self.caches.len();
         self.caches.retain(|cache| match cache.side() {
@@ -1042,7 +1042,7 @@ impl Endpoints {
     }
 }
 
-/// Whether anything the sidebar draws changed.  Named field by field rather
+/// Whether anything the sidebar draws changed. Named field by field rather
 /// than a whole-struct compare, so a field herdr reports that no row shows
 /// cannot force the tree to rebuild.
 fn rendered_differs(was: &[Pane], now: &[Pane]) -> bool {
@@ -1112,7 +1112,7 @@ mod tests {
     }
 
     /// A spawn that could not run is not evidence that the agents went away,
-    /// and the poll two seconds behind it usually answers.  Blanking on the
+    /// and the poll two seconds behind it usually answers. Blanking on the
     /// first failure is what a loaded machine shows: every status on the side
     /// goes at once, and comes back a poll or two later.
     #[test]
@@ -1315,7 +1315,7 @@ mod tests {
 
     /// herdr delivers focus events in order, so one that arrives after
     /// alacritree moved herdr's focus but before herdr's echo of that move
-    /// happened before it.  Applying it would follow the user off the pane
+    /// happened before it. Applying it would follow the user off the pane
     /// alacritree just chose.
     #[test]
     fn a_focus_event_older_than_our_own_move_is_not_applied() {

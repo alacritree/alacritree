@@ -1,7 +1,7 @@
 //! Hand-rolled drawing of unicode characters that need to fully cover their
 //! character area.
 //!
-//! Faithful port of `alacritty/src/renderer/text/builtin_font.rs`.  We keep
+//! Faithful port of `alacritty/src/renderer/text/builtin_font.rs`. We keep
 //! the bitmap-canvas pipeline intact (instead of reimplementing each glyph as
 //! egui shapes) so the pixel output matches alacritty cell-for-cell — that's
 //! the point of `font.builtin_box_drawing`: identical, gap-free renderings of
@@ -20,9 +20,9 @@ use egui::{Color32, ColorImage, Context, TextureHandle, TextureOptions};
 
 use crate::config::FontDelta;
 
-/// GPU-resident cache of built-in glyphs for one cell size.  Lives at the app
+/// GPU-resident cache of built-in glyphs for one cell size. Lives at the app
 /// level so it persists across frames and across sessions; rebuilt lazily on
-/// the first draw at a new cell size.  Keyed by `char` because (cell_w_px,
+/// the first draw at a new cell size. Keyed by `char` because (cell_w_px,
 /// cell_h_px) are an invariant of the cache instance — a size change wipes
 /// every entry rather than tagging keys with the size.
 pub(crate) struct BuiltinGlyphCache {
@@ -45,7 +45,7 @@ impl BuiltinGlyphCache {
         Self { cell_size: (0, 0), entries: HashMap::new() }
     }
 
-    /// Get or rasterize the glyph for `c` at `metrics`.  Returns `None` for
+    /// Get or rasterize the glyph for `c` at `metrics`. Returns `None` for
     /// characters outside the built-in coverage range, or when the renderer
     /// declines (e.g. powerline arrows in too-narrow cells).
     pub(crate) fn get(
@@ -110,7 +110,7 @@ const POWERLINE_FORWARD_SLASH_SEPARATOR_ALT: char = '\u{e0bd}';
 const POWERLINE_UPPER_RIGHT_TRIANGLE: char = '\u{e0be}';
 const POWERLINE_BACKSLASH_SEPARATOR_ALT: char = '\u{e0bf}';
 
-/// Subset of `crossfont::Metrics` consumed by the built-in renderer.  Only
+/// Subset of `crossfont::Metrics` consumed by the built-in renderer. Only
 /// the three fields actually referenced inside `box_drawing` /
 /// `powerline_drawing` are kept, so callers don't need a full font shaper.
 #[derive(Clone, Copy, Debug)]
@@ -120,9 +120,9 @@ pub(crate) struct Metrics {
     pub descent: f32,
 }
 
-/// Output of the built-in renderer.  `image` is in egui's premultiplied
+/// Output of the built-in renderer. `image` is in egui's premultiplied
 /// `Color32` format with `(r,g,b,a) = (src,src,src,src)` so tinting at paint
-/// time multiplies cleanly into the foreground color.  `top`/`left` mirror
+/// time multiplies cleanly into the foreground color. `top`/`left` mirror
 /// crossfont's `RasterizedGlyph` positioning relative to the baseline; the
 /// caller converts those to a screen rect.
 pub(crate) struct BuiltinGlyph {
@@ -138,7 +138,7 @@ pub(crate) struct BuiltinGlyph {
     pub advance: (i32, i32),
 }
 
-/// True iff `builtin_glyph` would return `Some` for `c`.  Used by the painter
+/// True iff `builtin_glyph` would return `Some` for `c`. Used by the painter
 /// to decide whether to detour through the bitmap cache before laying down
 /// text shapes — avoids the cost of a full attempt for every cell.
 pub(crate) fn is_builtin_glyph(c: char) -> bool {
@@ -738,9 +738,9 @@ fn box_drawing(character: char, metrics: &Metrics, offset: &FontDelta) -> Builti
 /// outright when that would put the tip outside the cell — a font whose cell is
 /// much taller than it is wide, as a CJK-derived face's half-width cell is.
 /// Declining hands the separator to a fallback face, which sizes it to its own
-/// em rather than the cell and overruns the neighbouring column.  The edges
+/// em rather than the cell and overruns the neighbouring column. The edges
 /// here converge on the cell's far edge instead, so the tip lands inside the
-/// cell at any aspect ratio and there is no case left to decline.  Windows
+/// cell at any aspect ratio and there is no case left to decline. Windows
 /// Terminal and kitty both build these from cell proportions for the same
 /// reason.
 fn powerline_drawing(character: char, metrics: &Metrics, offset: &FontDelta) -> BuiltinGlyph {
@@ -749,7 +749,7 @@ fn powerline_drawing(character: char, metrics: &Metrics, offset: &FontDelta) -> 
 
     let mut canvas = Canvas::new(width, height);
     let tip_x = width as f32 - 1.;
-    // Half the cell's height, which is also the row the tip sits on.  Clamped
+    // Half the cell's height, which is also the row the tip sits on. Clamped
     // so a one-row cell still has something to divide by.
     let half_height = ((height as f32 - 1.) / 2.).max(1.);
     let filled = !matches!(character, POWERLINE_ARROW_LTR | POWERLINE_ARROW_RTL);
@@ -780,7 +780,7 @@ fn powerline_drawing(character: char, metrics: &Metrics, offset: &FontDelta) -> 
     }
 }
 
-/// Fill the half of the cell lying on one side of a diagonal.  `backslash`
+/// Fill the half of the cell lying on one side of a diagonal. `backslash`
 /// picks the top-left-to-bottom-right diagonal over the other one, `fill_left`
 /// which side of it is solid.
 fn fill_diagonal_half(canvas: &mut Canvas, backslash: bool, fill_left: bool) {
@@ -794,10 +794,10 @@ fn fill_diagonal_half(canvas: &mut Canvas, backslash: bool, fill_left: bool) {
     }
 }
 
-/// Corner triangles and diagonal separators (U+E0B8..=U+E0BF).  Upstream
+/// Corner triangles and diagonal separators (U+E0B8..=U+E0BF). Upstream
 /// alacritty leaves these to the font, where the same em-versus-cell mismatch
 /// that afflicts the pointed separators applies; Windows Terminal and kitty
-/// both draw them.  The block repeats two of its glyphs — U+E0BD is U+E0BB
+/// both draw them. The block repeats two of its glyphs — U+E0BD is U+E0BB
 /// again and U+E0BF is U+E0B9 again — which is what the block contains, not an
 /// oversight here.
 fn powerline_corner_drawing(
@@ -837,11 +837,11 @@ fn powerline_corner_drawing(
     }
 }
 
-/// Rounded powerline caps (U+E0B4..=U+E0B7).  Upstream alacritty leaves these
+/// Rounded powerline caps (U+E0B4..=U+E0B7). Upstream alacritty leaves these
 /// to the font, but a font glyph is sized to the font's line box rather than
 /// the pixel-floored cell, so it pokes out of the colored segment background
 /// it is supposed to cap — kitty and wezterm draw them built-in for the same
-/// reason.  The cap is the right half of an ellipse spanning the full cell
+/// reason. The cap is the right half of an ellipse spanning the full cell
 /// (half circle in the common 1:2 cell, gracefully squashed elsewhere).
 fn powerline_round_drawing(character: char, metrics: &Metrics, offset: &FontDelta) -> BuiltinGlyph {
     let height = (metrics.line_height as i32 + offset.y as i32).max(1) as usize;
@@ -1168,7 +1168,7 @@ impl Canvas {
     }
 
     /// Convert the gray-scale canvas to an egui-ready white image whose alpha
-    /// channel is the source intensity.  Painting via `painter.image(_, _, _,
+    /// channel is the source intensity. Painting via `painter.image(_, _, _,
     /// fg_tint)` then multiplies the white through the tint, producing the
     /// requested foreground color modulated by the glyph's coverage.
     fn into_color_image(self) -> Arc<ColorImage> {
@@ -1274,7 +1274,7 @@ mod tests {
         }
     }
 
-    /// A CJK-derived font's half-width cell is far taller than it is wide.  A
+    /// A CJK-derived font's half-width cell is far taller than it is wide. A
     /// separator drawn at a fixed 45° would put its tip outside such a cell, and
     /// declining to draw it hands the character to a fallback face that sizes it
     /// to its own em — twice the column, overrunning the neighbour.
@@ -1357,7 +1357,7 @@ mod tests {
         }
     }
 
-    /// The diagonal separators run corner to corner.  U+E0BD repeats U+E0BB and
+    /// The diagonal separators run corner to corner. U+E0BD repeats U+E0BB and
     /// U+E0BF repeats U+E0B9 — that is what the block contains.
     #[test]
     fn diagonal_separators_run_corner_to_corner() {

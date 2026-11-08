@@ -1,7 +1,7 @@
 //! Thin wrapper around `arboard` that distinguishes the two clipboards we
 //! actually care about: the regular system clipboard (Ctrl+V) and Linux's
 //! PRIMARY selection (middle-click paste, alacritty's default auto-copy
-//! target).  arboard's Linux backend supports both via the `SetExtLinux` /
+//! target). arboard's Linux backend supports both via the `SetExtLinux` /
 //! `GetExtLinux` extensions when built with `wayland-data-control`.
 
 use std::path::PathBuf;
@@ -15,7 +15,7 @@ use crate::config::PasteConfig;
 pub(crate) enum Target {
     /// `Ctrl+V` clipboard.
     Clipboard,
-    /// Linux PRIMARY selection (X11 / Wayland primary).  Falls back to the
+    /// Linux PRIMARY selection (X11 / Wayland primary). Falls back to the
     /// regular clipboard on platforms that don't have a separate PRIMARY.
     Primary,
 }
@@ -50,7 +50,7 @@ pub(crate) fn read(target: Target) -> Option<String> {
     }
 }
 
-/// What one clipboard probe found.  The distinction is load-bearing: `Absent`
+/// What one clipboard probe found. The distinction is load-bearing: `Absent`
 /// means "try the next format", while `Failed` must stop the paste, because a
 /// read that failed says nothing about whether the format was there.
 pub(crate) enum Probe<T> {
@@ -106,7 +106,7 @@ pub(crate) fn read_text(target: Target) -> Probe<String> {
     })
 }
 
-/// Paths a file manager put on the clipboard.  Explorer's Cut advertises a move
+/// Paths a file manager put on the clipboard. Explorer's Cut advertises a move
 /// effect alongside the same list; reading the paths neither performs nor
 /// completes that move, so Cut and Copy paste identically.
 pub(crate) fn read_files() -> Probe<Vec<PathBuf>> {
@@ -118,7 +118,7 @@ pub(crate) fn read_image() -> Probe<arboard::ImageData<'static>> {
 }
 
 /// Resolve the clipboard in priority order, probing lazily: text outright, then
-/// copied paths, then a bitmap.  Each probe runs only once every earlier one
+/// copied paths, then a bitmap. Each probe runs only once every earlier one
 /// came back absent, so an ordinary text paste never opens the image formats,
 /// and a format the config switched off is never probed at all.
 pub(crate) fn resolve(
@@ -194,7 +194,7 @@ mod tests {
         assert!(matches!(payload, Payload::Image(_)));
     }
 
-    /// A failed read is not evidence of an absent format.  Pasting the image
+    /// A failed read is not evidence of an absent format. Pasting the image
     /// because the *text* read failed would paste something the user never
     /// asked for.
     #[test]

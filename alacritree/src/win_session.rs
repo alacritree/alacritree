@@ -3,13 +3,13 @@
 //! winit handles neither `WM_QUERYENDSESSION` nor `WM_ENDSESSION`, so
 //! `DefWindowProc` acknowledges the session end and the `WM_CLOSE` that
 //! follows arrives as an ordinary `CloseRequested` — the same event the close
-//! box produces.  A logoff, a shutdown, and an installer's Restart Manager
+//! box produces. A logoff, a shutdown, and an installer's Restart Manager
 //! closing alacritree to replace a file it holds are therefore all recorded
 //! identically, and telling them apart afterwards means reading the Windows
-//! Event Log.  Reading the session-end message ourselves is what names which
+//! Event Log. Reading the session-end message ourselves is what names which
 //! one happened.
 //!
-//! The subclass only observes.  Every message, the two session-end ones
+//! The subclass only observes. Every message, the two session-end ones
 //! included, is chained to the procedure it displaced, so the answer this
 //! process gives Windows about whether it may shut down remains winit's and
 //! `DefWindowProc`'s, unchanged and undelayed.

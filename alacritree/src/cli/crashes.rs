@@ -6,7 +6,7 @@
 //! only what [`Verdict`] calls `Crashed` or `Indeterminate`; `--all` also
 //! shows clean exits and still-running sessions.
 //!
-//! Strictly read-only.  The artifacts are per-process files that nothing
+//! Strictly read-only. The artifacts are per-process files that nothing
 //! merges on disk; this derives the single view instead, so it can run at any
 //! time without coordinating with a live instance.
 

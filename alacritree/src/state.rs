@@ -2,7 +2,7 @@
 //! base or wherever `[general] state_dir` points.
 //!
 //! The file is shared by every running alacritree, so it is never written from a
-//! snapshot: [`mutate`] re-reads it, applies one change, and writes it back.  A
+//! snapshot: [`mutate`] re-reads it, applies one change, and writes it back. A
 //! window that dumped its whole in-memory state would republish a project list
 //! it read at startup, deleting whatever another window has added since.
 
@@ -33,7 +33,7 @@ pub struct PersistedState {
 }
 
 /// The `default_true` attributes above only speak for a file that omits the
-/// field.  A first run has no file at all and lands here instead, so deriving
+/// field. A first run has no file at all and lands here instead, so deriving
 /// this would open alacritree with both sidebars hidden.
 impl Default for PersistedState {
     fn default() -> Self {
@@ -58,7 +58,7 @@ pub struct PersistedProject {
     /// Absent = auto by project location.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shell: Option<String>,
-    /// Display label shown instead of the directory name.  Absent = derive
+    /// Display label shown instead of the directory name. Absent = derive
     /// the name from the root, as before the field existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
@@ -81,7 +81,7 @@ pub fn config_path() -> Option<PathBuf> {
 /// What `[general] state_dir` named, empty until an entry point reads it.
 static CONFIGURED: OnceLock<PathBuf> = OnceLock::new();
 
-/// Publish `[general] state_dir`.  The window and the CLI both call it: a
+/// Publish `[general] state_dir`. The window and the CLI both call it: a
 /// command that resolved the key differently would answer from a `state.toml`
 /// nothing is writing.
 pub fn set_dir(dir: PathBuf) {
@@ -117,19 +117,19 @@ fn default_config_dir() -> Option<PathBuf> {
         .map(|dir| dir.join("alacritree"))
 }
 
-/// Reorder `state.projects` to follow `order` (a list of roots).  Roots absent
+/// Reorder `state.projects` to follow `order` (a list of roots). Roots absent
 /// from `order` — a project another window added that this one never loaded —
 /// keep their existing relative order at the end, so a reorder here never drops
-/// them.  Stable, so equal keys (all the disk-only roots) hold their order.
+/// them. Stable, so equal keys (all the disk-only roots) hold their order.
 pub fn reorder_projects(state: &mut PersistedState, order: &[PathBuf]) {
     state.projects.sort_by_key(|p| order.iter().position(|r| *r == p.root).unwrap_or(usize::MAX));
 }
 
-/// Set or clear one worktree's base-branch override.  Entries are pruned in
+/// Set or clear one worktree's base-branch override. Entries are pruned in
 /// the same pass, but only when the filesystem definitively says the
 /// worktree is gone — the filesystem is the truth every window shares, so
 /// pruning here can't delete another window's live entry the way pruning
-/// against one window's project list could.  A metadata error that isn't
+/// against one window's project list could. A metadata error that isn't
 /// "not found" (permission denied, an unreachable network or WSL mount with
 /// its distro asleep) is not proof the worktree is gone, so those entries
 /// are kept rather than silently dropped.
@@ -141,7 +141,7 @@ pub fn set_base_branch(state: &mut PersistedState, worktree: &Path, branch: Opti
 }
 
 /// True only when the filesystem gives a conclusive answer that `path` is
-/// not a live worktree directory.  Any other metadata error (permission,
+/// not a live worktree directory. Any other metadata error (permission,
 /// an unreachable mount) is inconclusive, not a "gone" verdict.
 fn definitely_gone(path: &Path) -> bool {
     match std::fs::metadata(path) {
@@ -186,7 +186,7 @@ pub fn load_from(path: &Path) -> PersistedState {
 ///
 /// A corrupt file is never allowed to stop alacritree from starting, so
 /// `load_from` logs it and hands back the default — which makes a lost project
-/// list indistinguishable from a fresh install.  A file that isn't there yet is
+/// list indistinguishable from a fresh install. A file that isn't there yet is
 /// a fresh install, and reports no error.
 pub fn parse_error(path: &Path) -> Option<String> {
     let contents = std::fs::read_to_string(path).ok()?;
@@ -215,7 +215,7 @@ pub fn save_to(path: &Path, state: &PersistedState) {
     };
 
     // Another window may be reading the file right now, and `fs::write`
-    // truncates before it writes.  Renaming a fully-written sibling into place
+    // truncates before it writes. Renaming a fully-written sibling into place
     // is atomic, so a reader sees either the old file or the new one.
     let tmp = path.with_extension("toml.tmp");
     if let Err(e) = std::fs::write(&tmp, body) {
@@ -265,7 +265,7 @@ mod tests {
         state.projects.iter().map(|p| p.root.clone()).collect()
     }
 
-    /// Two windows share one state file.  The window that hides a sidebar took
+    /// Two windows share one state file. The window that hides a sidebar took
     /// its copy of the project list at startup, so writing that copy back would
     /// delete every project the other window has added since — with Ctrl+B, an
     /// action that has nothing to do with projects.
@@ -339,7 +339,7 @@ mod tests {
     }
 
     /// A first run has no state file at all, and must not come up with both
-    /// sidebars hidden.  The `default_true` attributes only speak for a file
+    /// sidebars hidden. The `default_true` attributes only speak for a file
     /// that omits the field; an absent file goes through `Default`.
     #[test]
     fn a_first_run_shows_both_sidebars() {

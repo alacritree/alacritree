@@ -1,7 +1,7 @@
 //! Interactive inventory of Alacritree's production UI painters.
 //!
 //! Stories use fixed in-memory display data: opening the catalog never starts
-//! a PTY, probes a repository, or reads persisted application state.  The
+//! a PTY, probes a repository, or reads persisted application state. The
 //! controls and rows themselves are the same functions the main window calls.
 
 mod dialogs;

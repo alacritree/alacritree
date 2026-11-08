@@ -1,7 +1,7 @@
 //! herdr's event stream, read through `herdr remote-api-bridge`.
 //!
 //! The bridge relays stdio to the API socket herdr itself would use, so one
-//! child process reaches a native server and a WSL one alike.  herdr serves
+//! child process reaches a native server and a WSL one alike. herdr serves
 //! one request per connection and a subscription keeps its connection for
 //! life, so every stream is its own bridge.
 
@@ -39,7 +39,7 @@ pub(super) enum Message {
     /// herdr accepted the subscription, and events follow.
     Started,
     Event(Event),
-    /// The stream is over.  A stream that never started says why, and
+    /// The stream is over. A stream that never started says why, and
     /// `stderr` is whatever the bridge printed before it exited.
     Ended {
         reason: Option<PollError>,
@@ -73,7 +73,7 @@ pub(super) fn lifecycle_request() -> String {
     request(LIFECYCLE.iter().map(|kind| json!({ "type": kind })).collect())
 }
 
-/// Agent status for each of `pane_ids`.  herdr refuses the whole request when
+/// Agent status for each of `pane_ids`. herdr refuses the whole request when
 /// one of them is unknown to it.
 pub(super) fn status_request(pane_ids: &[String]) -> String {
     request(
@@ -116,7 +116,7 @@ fn decode_reply(line: &str) -> Result<(), PollError> {
     }
 }
 
-/// One streamed event.  A line that is not an event is dropped rather than
+/// One streamed event. A line that is not an event is dropped rather than
 /// guessed at.
 fn decode_event(line: &str) -> Option<Event> {
     #[derive(Deserialize)]
@@ -138,7 +138,7 @@ fn decode_event(line: &str) -> Option<Event> {
     })
 }
 
-/// Why a bridge that never started a stream exited.  The bridge prints its
+/// Why a bridge that never started a stream exited. The bridge prints its
 /// connect failure in prose, and a herdr with no server running is the one
 /// case worth waiting out.
 fn classify_exit(stderr: &str) -> PollError {
@@ -159,7 +159,7 @@ pub(super) fn wake_after(delay: Duration) {
 }
 
 /// One subscription, from the spawn that starts its bridge to the bridge's
-/// exit.  Dropping it kills the bridge, which is also how a subscription
+/// exit. Dropping it kills the bridge, which is also how a subscription
 /// ends, since herdr reads any byte or EOF on it as a close.
 pub(super) enum Stream {
     /// The bridge is being spawned on the pool, since a `wsl.exe` start can
@@ -192,9 +192,9 @@ impl Stream {
         (tx, Self::Open(Bridge { rx, child: None }))
     }
 
-    /// Everything the stream has said since the last call.  A bridge that
+    /// Everything the stream has said since the last call. A bridge that
     /// could not start reads as a stream that ended, so its owner has one
-    /// exit path to handle.  Never blocks.
+    /// exit path to handle. Never blocks.
     pub(super) fn messages(&mut self) -> Vec<Message> {
         if let Self::Opening(job) = self {
             let ended = |error| vec![Message::ended(error)];
@@ -225,7 +225,7 @@ pub(super) struct Bridge {
 }
 
 impl Bridge {
-    /// Starts a bridge on `side` and sends `request` down it.  Runs on the
+    /// Starts a bridge on `side` and sends `request` down it. Runs on the
     /// pool, which is where [`Stream::open`] submits it.
     fn spawn(side: &Side, request: &str) -> Result<Self, PollError> {
         let spawn_failed = || PollError::Absent("spawn_failed");

@@ -3,13 +3,13 @@
 //!
 //! The paint harnesses time the grid alone in a headless context, which says
 //! nothing about the sidebars, event draining, or git status that share the
-//! same frame.  This measures whole frames in the app that is actually
+//! same frame. This measures whole frames in the app that is actually
 //! lagging, and splits off the grid so the two can be compared.
 //!
 //! `update` is only part of a frame: eframe tessellates, uploads and presents
-//! after it returns.  So the period between two frame starts is recorded
+//! after it returns. So the period between two frame starts is recorded
 //! alongside eframe's own `cpu_usage`, which covers rendering but stops short
-//! of the vsync wait.  A period far above the CPU time, while frames are being
+//! of the vsync wait. A period far above the CPU time, while frames are being
 //! produced at the display's cap, is time blocked on present rather than time
 //! spent working.
 //!
@@ -24,18 +24,18 @@ use std::time::{Duration, Instant};
 /// How often the accumulated frames are summarized.
 const REPORT_EVERY: Duration = Duration::from_secs(5);
 
-/// Whether measurements were asked for.  Process-wide because the PTY threads
+/// Whether measurements were asked for. Process-wide because the PTY threads
 /// read it and have no handle on the `FrameLog` the UI thread owns.
 static ENABLED: AtomicBool = AtomicBool::new(false);
 
-/// What `ALACRITREE_FRAME_LOG` says, or `None` when it is unset.  It wins over
+/// What `ALACRITREE_FRAME_LOG` says, or `None` when it is unset. It wins over
 /// `[debug] frame_log`: the variable is the only switch available before the
 /// config parses.
 fn env_override(raw: Option<&OsStr>) -> Option<bool> {
     raw.map(|v| !matches!(v.to_str(), Some("0") | Some("")))
 }
 
-/// Publish the config's answer.  Run this before the first session spawns: the
+/// Publish the config's answer. Run this before the first session spawns: the
 /// PTY threads read the flag without synchronizing against startup, so a value
 /// stored after they start is ignored rather than refused.
 pub fn set_enabled(from_config: bool) {
@@ -94,8 +94,8 @@ pub fn echo() -> Option<Duration> {
 /// Close the round trip of the keystroke still outstanding, if any.
 ///
 /// Everything between the write and here is outside this process: the ConPTY
-/// round trip, the child's own redraw, and alacritty's parse.  It is the one
-/// segment of a keystroke's journey the frame timings cannot see.  Output the
+/// round trip, the child's own redraw, and alacritty's parse. It is the one
+/// segment of a keystroke's journey the frame timings cannot see. Output the
 /// keystroke did not cause closes the trip early, so this bounds the segment
 /// from below.
 fn close_echo(sent_at: &AtomicU64, echo: &AtomicU64, arrived: u64) {
@@ -126,7 +126,7 @@ fn now() -> u64 {
 }
 
 /// Only the oldest pending output is kept, so what a frame reports is the
-/// longest any of it waited, not the shortest.  Zero means nothing is pending,
+/// longest any of it waited, not the shortest. Zero means nothing is pending,
 /// so an arrival at that exact nanosecond is nudged forward by one.
 fn mark_pending(slot: &AtomicU64, arrived: u64) {
     let _ = slot.compare_exchange(0, arrived.max(1), Ordering::Relaxed, Ordering::Relaxed);
@@ -143,19 +143,19 @@ fn take_pending(slot: &AtomicU64, painted: u64) -> Option<Duration> {
 /// it is worth a line of its own naming what consumed it.
 const SLOW_FRAME: Duration = Duration::from_millis(15);
 
-/// One piece of work worth naming inside a slow frame.  Below the frame
+/// One piece of work worth naming inside a slow frame. Below the frame
 /// threshold, so the thing that caused a hitch is named even when it shared
 /// the frame with something bigger.
 const SLOW_PHASE: Duration = Duration::from_millis(10);
 
-/// Phases that fit in one frame's breakdown.  Marks past this are dropped:
+/// Phases that fit in one frame's breakdown. Marks past this are dropped:
 /// the breakdown is a debugging aid, not a reason to allocate mid-frame.
 const MAX_PHASES: usize = 16;
 
 /// Where one frame's time went.
 ///
 /// A stall that strikes once every few seconds does not move any percentile,
-/// so the summary cannot find it.  This names the phase it happened in.
+/// so the summary cannot find it. This names the phase it happened in.
 pub(crate) struct Phases {
     marks: [(&'static str, Duration); MAX_PHASES],
     len: usize,
@@ -219,7 +219,7 @@ pub fn note_if_slow(kind: &str, what: impl std::fmt::Debug, took: Duration) {
 ///
 /// Spawn cost is charged to whichever frame phase happened to be running when
 /// the click arrived, so without a marker of its own it reads as a sidebar or
-/// shortcut problem.  The session id is what pairs a phase with the tab it
+/// shortcut problem. The session id is what pairs a phase with the tab it
 /// belongs to when several are opening at once.
 pub fn spawn_phase(session: Option<u64>, phase: &str, elapsed: Duration) {
     if !enabled() {
@@ -261,7 +261,7 @@ pub struct FrameLog {
 
 impl FrameLog {
     /// A log if measurements were asked for, otherwise nothing, so a normal run
-    /// pays one `Option` check per frame.  Reads the flag `set_enabled` stores,
+    /// pays one `Option` check per frame. Reads the flag `set_enabled` stores,
     /// so a `FrameLog` built before that call measures nothing.
     pub fn start() -> Option<Self> {
         enabled().then(|| Self {

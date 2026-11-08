@@ -11,7 +11,7 @@ use crate::{
     Side, WorkspaceKey,
 };
 
-/// Identifies one pane across polls.  `terminal_id` is unique only within one
+/// Identifies one pane across polls. `terminal_id` is unique only within one
 /// server, which is why the side and the multiplexer are part of it.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PaneKey {
@@ -20,14 +20,14 @@ pub struct PaneKey {
     pub terminal_id: String,
 }
 
-/// One pane as its multiplexer reports it.  `terminal_id` is the identity
+/// One pane as its multiplexer reports it. `terminal_id` is the identity
 /// because `pane_id` is positional: a pane moved between workspaces gets a new
 /// one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pane {
     pub terminal_id: String,
     pub pane_id: String,
-    /// The tab holding this pane.  A pane with no agent in it is reached
+    /// The tab holding this pane. A pane with no agent in it is reached
     /// through its tab where the multiplexer resolves targets through an agent
     /// registry.
     pub tab_id: Option<String>,
@@ -37,10 +37,10 @@ pub struct Pane {
     /// nothing else.
     pub title: Option<String>,
     /// The multiplexer's word on the agent in this pane, and `None` when it
-    /// found no agent in it at all.  `Some(Unknown)` is the other half of that
+    /// found no agent in it at all. `Some(Unknown)` is the other half of that
     /// distinction: an agent is there and it cannot be classified.
     pub status: Option<AgentStatus>,
-    /// The pane the multiplexer's own window is showing.  A shared-view attach
+    /// The pane the multiplexer's own window is showing. A shared-view attach
     /// borrows that window rather than one pane, so this is what such a
     /// session has on screen.
     pub focused: bool,
@@ -84,7 +84,7 @@ impl Pane {
     }
 }
 
-/// Component-wise prefix test.  Case-insensitive on Windows, where a
+/// Component-wise prefix test. Case-insensitive on Windows, where a
 /// multiplexer reports the cwd as the shell spelled it and `Path::starts_with`
 /// would refuse `c:\users\dev` against `C:\Users\Dev`.
 fn starts_with(cwd: &Path, workspace: &Path) -> bool {
@@ -115,14 +115,14 @@ pub struct ListedPane<'a> {
     pub pane: &'a Pane,
 }
 
-/// The multiplexer a pane belongs to, as a row describes it.  Named rather
+/// The multiplexer a pane belongs to, as a row describes it. Named rather
 /// than flagged because what a row must say (whose mark to paint, how to get
 /// out, whether the attach is exclusive) varies by multiplexer rather than by
 /// row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Managed {
     pub multiplexer: MultiplexerKind,
-    /// The multiplexer's own detach chord, already rendered.  `None` when its
+    /// The multiplexer's own detach chord, already rendered. `None` when its
     /// config could not be read or binds detach to nothing, both of which are
     /// reasons to stay quiet rather than name a chord the user may not have.
     pub detach: Option<String>,
@@ -134,7 +134,7 @@ pub struct Managed {
     pub kind: Option<String>,
     /// The pane's own title, when it says something the kind does not.
     pub title: Option<String>,
-    /// The agent state the multiplexer reports.  `None` when it is not
+    /// The agent state the multiplexer reports. `None` when it is not
     /// reporting one: a multiplexer with no agent detection, or a pane
     /// alacritree still holds open after its multiplexer stopped listing it.
     pub status: Option<AgentStatus>,
@@ -174,15 +174,15 @@ impl AttachFocus {
 }
 
 /// The side of an attach the app keeps: where its session opens, where a
-/// refusal hands the user back to, and the clients waiting on it.  A queued
+/// refusal hands the user back to, and the clients waiting on it. A queued
 /// attach carries it unread and hands it back with the answer.
 pub struct AttachRequest {
     pub workspace: WorkspaceKey,
-    /// Where to hand the user back when the attach fails.  A queued attach
+    /// Where to hand the user back when the attach fails. A queued attach
     /// answers frames after the switch, so the caller cannot restore the
     /// workspace itself the way a direct attach lets it.
     pub previous: WorkspaceKey,
-    /// Clients parked on this attach.  There is nothing to answer them with
+    /// Clients parked on this attach. There is nothing to answer them with
     /// until the queued attach resolves.
     pub waiters: Vec<Sender<Reply>>,
     /// Taken when any request merged into this one asked for it.
@@ -197,7 +197,7 @@ pub struct AttachAnswer {
     pub launch: Result<Launch, PaneError>,
 }
 
-/// The app's side of a pane create.  One waiter, not a list: nothing merges
+/// The app's side of a pane create. One waiter, not a list: nothing merges
 /// two creates, since the pane they would be merged on has no identity until
 /// the multiplexer answers.
 pub struct CreateRequest {
@@ -206,7 +206,7 @@ pub struct CreateRequest {
     pub focus: AttachFocus,
 }
 
-/// A create the multiplexer has answered.  The attach it turns into is the
+/// A create the multiplexer has answered. The attach it turns into is the
 /// ordinary one, so the pane goes back to the app's attach path.
 pub struct CreateAnswer {
     pub side: Side,
@@ -224,7 +224,7 @@ pub struct ViewState<'a> {
     pub attentive: bool,
     pub now: std::time::Instant,
     pub last_direct_input: Option<std::time::Instant>,
-    /// Whether a session is still open.  A focus call for one that closed
+    /// Whether a session is still open. A focus call for one that closed
     /// meanwhile has nothing left to report to.
     pub is_open: &'a dyn Fn(SessionId) -> bool,
 }

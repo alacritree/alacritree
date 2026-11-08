@@ -68,7 +68,7 @@ impl PanelFilter {
         self.toggles.contains(&key)
     }
 
-    /// Flip one toggle by its identity char.  A char outside `allowed_toggles`
+    /// Flip one toggle by its identity char. A char outside `allowed_toggles`
     /// names no filter on this panel and is ignored.
     pub(crate) fn toggle(&mut self, key: char) {
         if !self.allowed_toggles.contains(&key) {
@@ -88,7 +88,7 @@ impl PanelFilter {
         self.allowed_toggles.iter().copied().filter(|k| self.toggles.contains(k)).collect()
     }
 
-    /// The active toggles as a bitmask over `allowed_toggles` order.  The
+    /// The active toggles as a bitmask over `allowed_toggles` order. The
     /// focus reconciler compares this on every frame, where `active_toggles`'s
     /// `Vec` would put an allocation in the steady-state path.
     pub(crate) fn toggle_bits(&self) -> u32 {
@@ -105,7 +105,7 @@ impl PanelFilter {
         !self.query.is_empty() || !self.toggles.is_empty()
     }
 
-    /// Whether the toggle filters apply this frame.  Under `All` a live query
+    /// Whether the toggle filters apply this frame. Under `All` a live query
     /// stands them down, so a search reaches rows the toggles hide.
     pub(crate) fn toggles_apply(&self, scope: crate::config::SearchScope) -> bool {
         scope == crate::config::SearchScope::Filtered || self.query.is_empty()

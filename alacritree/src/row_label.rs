@@ -3,10 +3,10 @@
 //! Templates come from `[ui] worktree_name` / `[ui] project_name` and use
 //! subst's shell-style syntax: `$var`, `${var}`, and `${var:fallback}` (the
 //! fallback may itself contain variables, so `${branch:$name}` reads "the
-//! branch, or the worktree name when detached").  Variables that describe
+//! branch, or the worktree name when detached"). Variables that describe
 //! something optional — `$branch` on a detached worktree, `$pr` with no
 //! known PR — are absent rather than empty, so `${pr:}` conditionally shows
-//! the PR number while a bare `$pr` treats its absence as an error.  Any
+//! the PR number while a bare `$pr` treats its absence as an error. Any
 //! error — parse failure, unknown variable — falls back to the plain name
 //! with one warning per config key, so a typo'd config degrades to today's
 //! sidebar rather than blank rows.
@@ -18,7 +18,7 @@ use alacritree_forge::PrInfo;
 
 use crate::projects::Project;
 
-/// Substitute `vars` into `template`.  `None` on any subst error or when the
+/// Substitute `vars` into `template`. `None` on any subst error or when the
 /// trimmed result is empty — the caller falls back to the plain name either
 /// way, because a blank row label is as useless as a failed one.
 fn render_label(template: &str, vars: &HashMap<String, String>) -> Option<String> {
@@ -27,7 +27,7 @@ fn render_label(template: &str, vars: &HashMap<String, String>) -> Option<String
     (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
-/// The configured templates plus warn-once bookkeeping.  Config strings are
+/// The configured templates plus warn-once bookkeeping. Config strings are
 /// static per run, so one warning per config key + template covers every row
 /// that hits the same mistake without flooding the log every frame — keying
 /// on the template alone would let a second, independently broken config key
@@ -43,7 +43,7 @@ impl LabelTemplates {
         Self { worktree, project, warned: HashSet::new() }
     }
 
-    /// Display name for a worktree row.  Variables: `$name` (worktree name),
+    /// Display name for a worktree row. Variables: `$name` (worktree name),
     /// `$branch` (absent when detached, so `${branch:...}` falls back),
     /// `$path` (full worktree path), `$pr` (the branch's PR number as
     /// `#123`, absent when none is known — `${pr:}` shows it only when one
@@ -68,8 +68,8 @@ impl LabelTemplates {
         self.render_or_fallback("worktree_name", &template, &vars, &wt.name)
     }
 
-    /// Display name for a project row.  A manual rename always wins — the
-    /// template only shapes the *default* name.  Variables: `$name`
+    /// Display name for a project row. A manual rename always wins — the
+    /// template only shapes the *default* name. Variables: `$name`
     /// (directory name), `$path` (full project root).
     pub(crate) fn project_label(&mut self, project: &Project) -> String {
         if let Some(label) = &project.label {

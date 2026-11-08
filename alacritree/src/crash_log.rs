@@ -16,7 +16,7 @@ use std::time::SystemTime;
 
 use crate::logdir;
 
-/// Whether a log directory has been chosen.  Read without the lock so the hook
+/// Whether a log directory has been chosen. Read without the lock so the hook
 /// can decline before contending for anything, and false until `install`, which
 /// is what keeps the hook inert in unit tests that never opt in.
 static ARMED: AtomicBool = AtomicBool::new(false);
@@ -41,12 +41,12 @@ const MAX_PANIC_RECORDS: usize = 20;
 
 struct State {
     version: &'static str,
-    /// Where artifacts live.  Guarded rather than a `OnceLock` because every
+    /// Where artifacts live. Guarded rather than a `OnceLock` because every
     /// writer already holds this lock, and a directory that can only ever be
     /// set once is unreachable for a second test case.
     dir: Option<PathBuf>,
     /// The artifact this process has confirmed as its own, once `ensure_artifact`
-    /// has created or reopened it.  Reused directly on every later call so a file
+    /// has created or reopened it. Reused directly on every later call so a file
     /// that merely happens to already sit at our identity's path — debris from an
     /// unrelated writer — is never mistaken for ours; only a path we ourselves
     /// settled on through `create_new` is ever reopened for append.
@@ -65,7 +65,7 @@ impl State {
     }
 }
 
-/// Arm the recorder.  Creates the directory but no file: an artifact is only
+/// Arm the recorder. Creates the directory but no file: an artifact is only
 /// created once something is worth writing, so a launch with crash logging off
 /// leaves nothing behind.
 pub fn install(dir: &Path, version: &'static str) {
@@ -90,11 +90,11 @@ pub fn install(dir: &Path, version: &'static str) {
 }
 
 /// Point the recorder at `[debug] log_dir`, which is only known once the config
-/// has been read.  Not a second `install`: `install` wraps the previous panic
+/// has been read. Not a second `install`: `install` wraps the previous panic
 /// hook, so a second call chains two hooks and records every panic twice.
 ///
 /// Declines a directory it cannot secure, leaving the recorder on the one it
-/// has.  Declines once an artifact exists, so one process cannot end up with
+/// has. Declines once an artifact exists, so one process cannot end up with
 /// its records split across two directories.
 pub fn set_dir(dir: &Path) {
     if let Err(e) = logdir::prepare_log_dir(dir) {
@@ -111,7 +111,7 @@ pub fn set_enabled(enabled: bool) {
     ENABLED.store(enabled, Ordering::Relaxed);
 }
 
-/// Create the artifact for this session.  Called after the gate is known.
+/// Create the artifact for this session. Called after the gate is known.
 pub fn session_begin() {
     if !writable() {
         return;
@@ -186,7 +186,7 @@ fn line(body: &str) -> String {
     format!("{} {body}\n", timestamp())
 }
 
-/// The vocabulary the writer emits and [`classify`] reads back.  Building both
+/// The vocabulary the writer emits and [`classify`] reads back. Building both
 /// sides from these constants, instead of each duplicating the literals, is
 /// what keeps a renamed marker from silently breaking classification while
 /// every hand-written test still passes.
@@ -224,7 +224,7 @@ impl ExitReason {
     }
 }
 
-/// The single initializer.  The header has three possible authors — a panic
+/// The single initializer. The header has three possible authors — a panic
 /// during config load, `session_begin`, and any write after the file has been
 /// removed — and a record written into a headerless file has to be read back as
 /// indeterminate, discarding information we actually had.
@@ -310,7 +310,7 @@ fn record_panic(info: &PanicHookInfo<'_>) {
 
     // `try_lock`, never `lock`: a thread that panics while already holding this
     // mutex would wait on itself forever, and the mutex is not poisoned yet, so
-    // recovering from poisoning cannot help.  A lost record beats a hang.
+    // recovering from poisoning cannot help. A lost record beats a hang.
     match STATE.try_lock() {
         Ok(mut state) => record_bounded(&mut state, &location, &event),
         Err(TryLockError::Poisoned(p)) => record_bounded(&mut p.into_inner(), &location, &event),
@@ -352,9 +352,9 @@ fn record_bounded(state: &mut State, location: &str, event: &str) {
 }
 
 /// Close a collapsed run: written when a differing-location panic follows it or
-/// the process exits.  A run still in progress when the process aborts loses its
+/// the process exits. A run still in progress when the process aborts loses its
 /// count, not its record — the one full write already has the backtrace, which
-/// is the diagnosis; the tally is a nice-to-have on top of it.  Once the cap has
+/// is the diagnosis; the tally is a nice-to-have on top of it. Once the cap has
 /// fired, `record_bounded` drops a pending run itself rather than routing it
 /// here, so no tally is ever written for a location seen past the cap.
 fn flush_repeats(state: &mut State) {
@@ -393,7 +393,7 @@ pub fn prune() {
 /// This is safe against a concurrent pruner without any claim protocol because
 /// identities are never reused: a path is only deleted when its producer is
 /// dead and the file is over `RETAIN_DAYS` old, and recreating that exact path
-/// would need the same start nanosecond, pid, and ordinal.  If that invariant
+/// would need the same start nanosecond, pid, and ordinal. If that invariant
 /// is ever broken, deletion has to verify identity first.
 fn prune_in(dir: &Path) {
     let cutoff = SystemTime::now() - std::time::Duration::from_secs(RETAIN_DAYS * 86_400);
@@ -447,7 +447,7 @@ pub(crate) fn read_artifact(path: &Path) -> io::Result<ArtifactSnapshot> {
 }
 
 /// Read an artifact back and say what it recorded: a clean exit, a still-live
-/// process, a crash, or too little to tell.  The one module that writes the
+/// process, a crash, or too little to tell. The one module that writes the
 /// vocabulary is also the one that reads it, so the two cannot drift apart.
 pub fn classify(path: &Path, pid: u32) -> Verdict {
     let Ok(snapshot) = read_artifact(path) else { return Verdict::Indeterminate };
@@ -710,7 +710,7 @@ mod tests {
         });
     }
 
-    /// A process that has already written commits to where it wrote.  Proving
+    /// A process that has already written commits to where it wrote. Proving
     /// that needs the artifact removed underneath the recorder, since that is
     /// the one path on which `ensure_artifact` consults the directory again
     /// rather than reopening the file it remembers.
@@ -853,7 +853,7 @@ mod tests {
         });
     }
 
-    /// The exit marker reports what the recorder could not write.  It is
+    /// The exit marker reports what the recorder could not write. It is
     /// best-effort by construction: a skip that races `record_exit`'s read may be
     /// absent, and that is not a failure.
     #[test]
@@ -871,7 +871,7 @@ mod tests {
     }
 
     /// A blocking `lock()` here waits on a mutex this very thread holds and never
-    /// becomes poisoned.  This test hangs against that implementation.
+    /// becomes poisoned. This test hangs against that implementation.
     #[test]
     fn a_panic_while_holding_the_lock_does_not_hang() {
         with_recorder(|_| {
@@ -900,7 +900,7 @@ mod tests {
         });
     }
 
-    /// Retention is by age and liveness alone.  Reading a file to decide whether to
+    /// Retention is by age and liveness alone. Reading a file to decide whether to
     /// keep it is what let two earlier designs delete the only record of a crash.
     #[test]
     fn pruning_ignores_contents_entirely() {

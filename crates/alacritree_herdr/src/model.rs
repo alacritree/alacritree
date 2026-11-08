@@ -9,7 +9,7 @@ pub struct Settings {
     pub detach: Option<String>,
 }
 
-/// Which herdr listing a poll asks for.  `agent list` answers with the panes
+/// Which herdr listing a poll asks for. `agent list` answers with the panes
 /// herdr detected an agent in; `pane list` answers with every pane it owns,
 /// a superset carrying the same fields.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,7 +24,7 @@ impl Listing {
         if show_panes { Self::Panes } else { Self::Agents }
     }
 
-    /// The `herdr` subcommand that produces this listing.  A herdr too old
+    /// The `herdr` subcommand that produces this listing. A herdr too old
     /// for `pane list` answers with a usage error rather than an envelope,
     /// which `list_panes` cannot tell from no herdr on that side at all.
     pub fn args(self) -> [&'static str; 2] {
@@ -35,7 +35,7 @@ impl Listing {
     }
 }
 
-/// The agents on `side` that no live session is attached to.  These are the
+/// The agents on `side` that no live session is attached to. These are the
 /// ones that get a sidebar row; an attached agent is drawn by its session
 /// row instead, so each agent appears exactly once.
 pub(super) fn unattached<'a>(
@@ -60,17 +60,17 @@ pub fn pane_key(side: Side, terminal_id: String) -> PaneKey {
     PaneKey { multiplexer: MultiplexerKind::Herdr, side, terminal_id }
 }
 
-/// Why a poll produced no agents.  What separates the two is whether a herdr
+/// Why a poll produced no agents. What separates the two is whether a herdr
 /// ran at all, because that is what says whether waiting can change the
 /// answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PollError {
     /// herdr answered in its own voice, carrying the `code` from its error
-    /// envelope.  A herdr is installed here and something about this moment
+    /// envelope. A herdr is installed here and something about this moment
     /// stopped it — most often that its server is not up yet.
     Server(String),
     /// Nothing herdr-shaped answered: no binary, no distro, or output that
-    /// was not an envelope.  A property of the machine rather than the moment.
+    /// was not an envelope. A property of the machine rather than the moment.
     Absent(&'static str),
 }
 

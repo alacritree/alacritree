@@ -1,6 +1,6 @@
 //! The committed `schema/alacritree-config.json` and `docs/config-reference.md`
 //! must match what the config types generate, and `schema/alacritree-tasks.json`
-//! what the task model generates.  A stale schema is worse than none: editors
+//! what the task model generates. A stale schema is worse than none: editors
 //! would report valid config as invalid, and stay quiet about the keys it does
 //! not know about.
 //!

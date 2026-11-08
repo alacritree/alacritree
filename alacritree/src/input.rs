@@ -21,7 +21,7 @@ pub(crate) fn event_to_bytes(
             key_to_bytes(*key, *modifiers, key_text, mode)
         },
         // `Event::Paste` is handled by the caller via `paste::paste` so it
-        // gets bracketed-paste wrapping and newline normalization.  `Copy` and
+        // gets bracketed-paste wrapping and newline normalization. `Copy` and
         // `Cut` carry no modifiers, so they can't tell Ctrl+C from Ctrl+Shift+C
         // and must not be encoded here; the Key event alongside them does it.
         _ => None,
@@ -29,9 +29,9 @@ pub(crate) fn event_to_bytes(
 }
 
 /// The characters a key press produced, which egui-winit raises as its own
-/// `Event::Text` directly after the `Event::Key`.  winit carries both on one
+/// `Event::Text` directly after the `Event::Key`. winit carries both on one
 /// event; the split is egui's, so the pair is rejoined here for the kitty
-/// protocol's associated-text field.  Control characters and private-use
+/// protocol's associated-text field. Control characters and private-use
 /// codepoints never reach this point — egui-winit drops them before raising
 /// the event, which is the same rule the protocol states.
 pub(crate) fn associated_text(next_event: Option<&Event>) -> Option<&str> {
@@ -59,7 +59,7 @@ pub(crate) fn key_to_bytes(
         return Some(bytes);
     }
 
-    // winit reports AltGr as Ctrl+Alt.  A printable key carrying both must
+    // winit reports AltGr as Ctrl+Alt. A printable key carrying both must
     // stay silent: the composed character arrives via `Event::Text`, and
     // emitting bytes here too would double the input.
     if mods.ctrl && mods.alt {
@@ -91,7 +91,7 @@ pub(crate) fn key_to_bytes(
 }
 
 /// xterm modifier parameter: `1 + (Shift=1 | Alt=2 | Ctrl=4)`, as an ASCII
-/// digit.  `None` when no encodable modifier is held, so callers can emit
+/// digit. `None` when no encodable modifier is held, so callers can emit
 /// the shorter unmodified sequence.
 fn csi_modifier(mods: Modifiers) -> Option<u8> {
     let m = (mods.shift as u8) | ((mods.alt as u8) << 1) | ((mods.ctrl as u8) << 2);
@@ -122,7 +122,7 @@ fn should_build_kitty(key: Key, mods: Modifiers, mode: TermMode) -> bool {
 }
 
 /// CSI-u encoding for the keys whose legacy bytes are ambiguous: the C0
-/// control keys plus modified printables.  Arrows, F-keys and the editing
+/// control keys plus modified printables. Arrows, F-keys and the editing
 /// block keep their legacy CSI encodings even under the kitty protocol, so
 /// they fall through to `named_key_bytes`.
 fn kitty_sequence(
@@ -144,7 +144,7 @@ fn kitty_sequence(
                 return None;
             }
             // Kitty wants the unshifted key code, with Shift reported in the
-            // modifier field.  Shifted punctuation arrives as its own logical
+            // modifier field. Shifted punctuation arrives as its own logical
             // key in egui and carries no layout info, so it is used as-is —
             // upstream resolves it via winit's key_without_modifiers.
             let code = u32::from(key_char(key, false)?);
@@ -176,10 +176,10 @@ fn kitty_sequence(
 }
 
 /// The shifted character an app recovers `D` from, given a key code that is
-/// always the unshifted `d`.  The protocol allows this field only while Shift
+/// always the unshifted `d`. The protocol allows this field only while Shift
 /// is held, and only apps setting `REPORT_ALTERNATE_KEYS` ask for it; without
 /// it a shifted letter reaches the app as `d` plus a shift bit, which matches
-/// neither `d` nor `D` in a keymap.  Layout-shifted punctuation stays out of
+/// neither `d` nor `D` in a keymap. Layout-shifted punctuation stays out of
 /// reach — egui reports it as its own logical key, with no unshifted base to
 /// pair it with.
 fn shifted_alternate(key: Key, mods: Modifiers, mode: TermMode) -> Option<u32> {
@@ -189,7 +189,7 @@ fn shifted_alternate(key: Key, mods: Modifiers, mode: TermMode) -> Option<u32> {
     Some(u32::from(key_char(key, true)?))
 }
 
-/// Encoding for keys that never produce composed text.  Because no
+/// Encoding for keys that never produce composed text. Because no
 /// `Event::Text` follows these, every modifier combination is safe to encode
 /// here — including Ctrl+Alt, which on printables must stay silent (AltGr).
 fn named_key_bytes(key: Key, mods: Modifiers) -> Option<Vec<u8>> {
@@ -559,7 +559,7 @@ mod tests {
     }
 
     /// egui's clipboard commands ignore Shift, so Ctrl+Shift+C raises the same
-    /// synthetic `Copy` as Ctrl+C.  Encoding it would send the interrupt on the
+    /// synthetic `Copy` as Ctrl+C. Encoding it would send the interrupt on the
     /// copy shortcut; the Key event emitted alongside it carries the modifiers
     /// and is what the binding table and the encoder act on.
     #[test]
@@ -584,7 +584,7 @@ mod tests {
 
     /// The kitty encodings above only ever run if the terminal negotiates the
     /// protocol, and `Term` ignores an app's request for it unless
-    /// `TermConfig::kitty_keyboard` is set.  Drives the enable sequence a real
+    /// `TermConfig::kitty_keyboard` is set. Drives the enable sequence a real
     /// app sends through a terminal built from alacritree's own config, so the
     /// negotiation and the encoding are covered as one path rather than the
     /// mode being assumed.
@@ -650,7 +650,7 @@ mod tests {
 
     /// Yazi keys `D` off the shifted codepoint and has no config syntax for the
     /// unshifted-`d`-plus-shift state alacritree used to leave it in, so the
-    /// press did nothing at all.  Drives yazi's own enable sequence through the
+    /// press did nothing at all. Drives yazi's own enable sequence through the
     /// terminal so the negotiation and the encoding are covered as one path.
     #[test]
     fn shifted_letter_carries_its_alternate_once_an_app_asks_for_them() {

@@ -2,10 +2,10 @@
 //! beside it, into a bin directory.
 //!
 //! Reading a running image is always allowed, so the source is simply
-//! `current_exe()`.  What may be pinned is the *destination*: a window or MCP
+//! `current_exe()`. What may be pinned is the *destination*: a window or MCP
 //! bridge still running from an earlier install, or a pane's `conpty.dll` and
-//! `OpenConsole.exe`.  A pinned image cannot be overwritten, but it can be
-//! renamed.  The running process keeps working from the renamed file, and a
+//! `OpenConsole.exe`. A pinned image cannot be overwritten, but it can be
+//! renamed. The running process keeps working from the renamed file, and a
 //! later install sweeps it once the process has exited.
 
 use std::path::{Path, PathBuf};
@@ -14,7 +14,7 @@ use std::{fs, io};
 use crate::stale_exe;
 
 /// The console host `alacritty_terminal` loads from the exe's own directory
-/// (see `dll_search`).  Installing the exe without it leaves every pane on
+/// (see `dll_search`). Installing the exe without it leaves every pane on
 /// the slower console server built into Windows.
 const CONSOLE_HOST: &[&str] = if cfg!(windows) { &["conpty.dll", "OpenConsole.exe"] } else { &[] };
 
@@ -57,7 +57,7 @@ fn destination(dest: Option<PathBuf>) -> io::Result<PathBuf> {
     }
 }
 
-/// Install the exe and whichever console host files sit beside it.  A build
+/// Install the exe and whichever console host files sit beside it. A build
 /// without the vendored host is supported, as in `build.rs`: its panes just
 /// run slower.
 fn install_all(exe: &Path, dir: &Path) -> io::Result<Vec<Installed>> {
@@ -180,7 +180,7 @@ mod tests {
     }
 
     /// Without the console host beside it, the installed exe opens every pane
-    /// on the slower console server.  A pane pins its host just as a window
+    /// on the slower console server. A pane pins its host just as a window
     /// pins the exe, so the same rename-aside applies.
     #[cfg(windows)]
     #[test]
@@ -239,7 +239,7 @@ mod tests {
     }
 
     /// `alacritree install` run from the installed binary itself: the source
-    /// IS the target, and the process holds it.  The copy must land in the
+    /// IS the target, and the process holds it. The copy must land in the
     /// temp file before the target's name is freed, or a self-install deletes
     /// the very binary it is installing.
     #[cfg(windows)]

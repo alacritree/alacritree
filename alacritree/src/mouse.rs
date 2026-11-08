@@ -1,5 +1,5 @@
 //! Mouse-report byte encodings, mirroring alacritty's `mouse_report` /
-//! `normal_mouse_report` / `sgr_mouse_report`.  Apps that enable mouse
+//! `normal_mouse_report` / `sgr_mouse_report`. Apps that enable mouse
 //! tracking (vim, htop, TUI agents) receive clicks, drags, and wheel ticks as
 //! button reports instead of the terminal handling them locally.
 
@@ -28,10 +28,10 @@ fn modifier_offset(mods: Modifiers) -> u8 {
         + (if mods.ctrl { 16 } else { 0 })
 }
 
-/// Encode a mouse button event at `point`.  `button` is the base code (0/1/2
-/// for left/middle/right, `+32` for motion, 64-67 for wheel).  Returns `None`
+/// Encode a mouse button event at `point`. `button` is the base code (0/1/2
+/// for left/middle/right, `+32` for motion, 64-67 for wheel). Returns `None`
 /// when the pointer is over scrollback history or past the coordinate range the
-/// active encoding can express.  Mirrors alacritty's `mouse_report`: SGR keeps
+/// active encoding can express. Mirrors alacritty's `mouse_report`: SGR keeps
 /// the button and marks release with a trailing `m`; the legacy encoding can't
 /// name the button on release, so it reports button 3.
 pub(crate) fn mouse_report(
@@ -90,7 +90,7 @@ fn normal_mouse_report(mode: TermMode, point: Point, button: u8) -> Option<Vec<u
     Some(msg)
 }
 
-/// Encode one wheel tick.  Wheel ticks are momentary, so they always report as
+/// Encode one wheel tick. Wheel ticks are momentary, so they always report as
 /// a press.
 pub(crate) fn wheel_report(
     mode: TermMode,

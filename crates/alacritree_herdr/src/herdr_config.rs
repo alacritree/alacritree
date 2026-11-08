@@ -35,8 +35,8 @@ enum RawBinding {
 }
 
 impl RawBinding {
-    /// The binding a hint names.  herdr's own help surface leads with the
-    /// first, and a row has space for one.  An empty string is herdr's
+    /// The binding a hint names. herdr's own help surface leads with the
+    /// first, and a row has space for one. An empty string is herdr's
     /// spelling for unbound.
     fn first(&self) -> Option<&str> {
         match self {
@@ -63,7 +63,7 @@ fn render_key(key: &str) -> String {
     first.to_uppercase().chain(chars).collect()
 }
 
-/// The half of a prefix binding that follows the prefix.  A bare key keeps
+/// The half of a prefix binding that follows the prefix. A bare key keeps
 /// herdr's own lowercase spelling, so the hint matches herdr's documentation
 /// (`ctrl+b q`); a modified one is a combo and reads like one.
 fn render_prefixed(rest: &str) -> String {
@@ -100,7 +100,7 @@ fn settings_from(config: &str) -> Settings {
 }
 
 /// Where herdr looks for its config, mirroring its own resolution so both
-/// programs read the same file.  `HERDR_CONFIG_PATH` wins everywhere, then
+/// programs read the same file. `HERDR_CONFIG_PATH` wins everywhere, then
 /// `XDG_CONFIG_HOME` — herdr consults it on Windows too, before the platform
 /// directory, so a Windows user with it set keeps one config under `~`.
 fn native_config_path() -> Option<PathBuf> {
@@ -118,7 +118,7 @@ fn native_config_path() -> Option<PathBuf> {
     Some(PathBuf::from(home).join(".config").join("herdr").join("config.toml"))
 }
 
-/// The shell that prints a distro's herdr config.  Resolution happens inside
+/// The shell that prints a distro's herdr config. Resolution happens inside
 /// the distro because that is where the environment it depends on lives; a
 /// missing file prints nothing and still exits zero, which reads as herdr's
 /// defaults rather than as a distro we could not reach.
@@ -128,7 +128,7 @@ const CONFIG_SCRIPT: &str = concat!(
 );
 
 /// herdr's config text for this side, or `None` when the side could not be
-/// read at all.  An absent file is `Some("")`: herdr runs on its defaults
+/// read at all. An absent file is `Some("")`: herdr runs on its defaults
 /// there, and so should the hint.
 fn read_config(side: &Side, _blocking: &jobs::Blocking) -> Option<String> {
     match side {
@@ -155,7 +155,7 @@ fn read_config(side: &Side, _blocking: &jobs::Blocking) -> Option<String> {
 }
 
 /// What herdr's own config on this side says about leaving a pane and drawing
-/// its state.  Every part is user-settable, so a row spelling out a chord the
+/// its state. Every part is user-settable, so a row spelling out a chord the
 /// user has rebound would be worse than a row that stays quiet.
 pub(super) fn settings(side: &Side, blocking: &jobs::Blocking) -> Option<Settings> {
     Some(settings_from(&read_config(side, blocking)?))

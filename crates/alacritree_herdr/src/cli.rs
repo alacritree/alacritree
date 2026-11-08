@@ -1,6 +1,6 @@
 //! Running the `herdr` binary.
 //!
-//! A missing binary or an absent server is a silent no-op.  This is the only
+//! A missing binary or an absent server is a silent no-op. This is the only
 //! file that builds a herdr command line, the event stream's bridge included.
 
 use std::io::{self, BufRead, BufReader, Read, Write};
@@ -30,20 +30,20 @@ pub(super) fn program(side: &Side) -> String {
     }
 }
 
-/// The long-lived relay an event stream reads through.  herdr resolves the
+/// The long-lived relay an event stream reads through. herdr resolves the
 /// socket itself, so the stream reaches the same server every other call
 /// here does.
 pub(super) fn bridge_command(side: &Side) -> (String, Vec<String>) {
     side.command(&program(side), &["remote-api-bridge"])
 }
 
-/// Direct attach to one agent.  Unsupported on native Windows, where
+/// Direct attach to one agent. Unsupported on native Windows, where
 /// `run_terminal_attach` is a `#[cfg(windows)]` refusal.
 pub(super) fn attach_args(pane_id: &str) -> Vec<String> {
     vec!["agent".into(), "attach".into(), pane_id.into()]
 }
 
-/// Whether direct per-agent attach works on this side.  herdr's
+/// Whether direct per-agent attach works on this side. herdr's
 /// `run_terminal_attach` is a `#[cfg(windows)]` refusal, so a native Windows
 /// server falls back to focusing the pane and attaching the whole session.
 pub(super) fn can_attach(side: &Side) -> bool {
@@ -53,12 +53,12 @@ pub(super) fn can_attach(side: &Side) -> bool {
     }
 }
 
-/// Whether a row on `side` opens the agent's own pane.  Capability and
+/// Whether a row on `side` opens the agent's own pane. Capability and
 /// preference are separate questions and only disagree in one direction: a
 /// user who asks for a direct attach on a side that has none gets the
 /// session, and no user can be given a direct attach they did not ask for.
 ///
-/// `has_agent` is false for a pane herdr found no agent in.  Every `herdr
+/// `has_agent` is false for a pane herdr found no agent in. Every `herdr
 /// agent` subcommand resolves its target through the agent registry, which
 /// holds nothing for such a pane, so it is only ever reachable through the
 /// session.
@@ -121,7 +121,7 @@ const STDERR_GRACE: Duration = Duration::from_millis(500);
 
 /// Runs `f` on a worker thread and gives up on it after [`GESTURE_TIMEOUT`].
 /// `Command::output` has no timeout of its own, so the bound comes from this
-/// side, as the IPC client's does.  A call that times out leaves its thread
+/// side, as the IPC client's does. A call that times out leaves its thread
 /// parked until the child exits, so it suits only a read whose late answer
 /// changes nothing.
 pub(super) fn bounded<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Option<T> {
@@ -136,7 +136,7 @@ pub(super) fn bounded<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static)
 }
 
 /// The socket request that brings one pane to the front of the user's own
-/// herdr window.  The CLI has no way to name a pane with no agent in it:
+/// herdr window. The CLI has no way to name a pane with no agent in it:
 /// `agent focus` refuses one, and `tab focus` lands on whichever pane of the
 /// tab herdr last focused.
 fn focus_request(pane_id: &str) -> String {
@@ -167,7 +167,7 @@ fn decode_answer(line: &str) -> Result<(), String> {
     }
 }
 
-/// What one herdr call printed.  A request sent down the bridge has answered
+/// What one herdr call printed. A request sent down the bridge has answered
 /// once a line comes back, since the bridge is killed rather than left to
 /// exit.
 struct Reply {
@@ -196,7 +196,7 @@ enum Transport {
     Spawn,
 }
 
-/// Refuses a job the helper reached after its caller stopped waiting.  `$1`
+/// Refuses a job the helper reached after its caller stopped waiting. `$1`
 /// is that moment in Unix seconds, or `-` for a caller that waits forever.
 /// The helper cannot be told to drop a job it has queued, so this check is
 /// what keeps a late focus move or a duplicate pane from landing.
@@ -204,22 +204,22 @@ const HELPER_DEADLINE: &str =
     r#"d=$1; shift; [ "$d" = - ] || [ "$(date +%s)" -le "$d" ] || exit 124; "#;
 
 /// Prints what a command wrote to stdout, and on failure what it wrote to
-/// stderr after it, with the command's own exit status.  The helper keeps
+/// stderr after it, with the command's own exit status. The helper keeps
 /// only a script's stdout.
 const HELPER_COMMAND: &str =
     r#"{ e=$("$@" 2>&1 1>&3); r=$?; } 3>&1; [ "$r" -eq 0 ] || printf '%s' "$e"; exit "$r""#;
 
 /// Writes the request in `$1` to the command after it and prints the first
-/// line back.  herdr's Linux bridge answers after its stdin closes.  What it
+/// line back. herdr's Linux bridge answers after its stdin closes. What it
 /// printed on stderr, a connect failure for one, stands in only when no
 /// answer came, so a warning cannot pass for the answer.
 const HELPER_REQUEST: &str = r#"r=$1; shift; f=$(mktemp) || exit 1; o=$(printf '%s\n' "$r" | "$@" 2>"$f" | head -n 1); if [ -n "$o" ]; then printf '%s\n' "$o"; else head -c 1000 "$f"; fi; rm -f "$f""#;
 
 /// Runs `herdr <args>` on `side`, writing `request` to its stdin as one line
-/// when given.  A WSL side goes through the distro's resident helper while it
+/// when given. A WSL side goes through the distro's resident helper while it
 /// is up, which skips the `wsl.exe` launch and login shell a one-shot pays;
 /// under load that launch has stalled for longer than any gesture waits.
-/// `limit` bounds the wait.  A helper job reached after it is refused, and a
+/// `limit` bounds the wait. A helper job reached after it is refused, and a
 /// one-shot that runs out is killed.
 fn call(
     side: &Side,
@@ -255,7 +255,7 @@ fn call(
 }
 
 /// `None` when the helper is not up, or cannot say where herdr is without a
-/// login shell, so the caller spawns one-shot instead.  A request the helper
+/// login shell, so the caller spawns one-shot instead. A request the helper
 /// may already have run is never retried.
 fn via_helper(
     distro: &str,
@@ -322,8 +322,8 @@ fn spawned(
 }
 
 /// Runs `command` to completion, or, given a `request`, until it answers one
-/// line.  stdin stays open until then, since herdr's Windows bridge stops
-/// relaying at EOF.  A child that runs out `limit` is killed.  On a WSL side
+/// line. stdin stays open until then, since herdr's Windows bridge stops
+/// relaying at EOF. A child that runs out `limit` is killed. On a WSL side
 /// that is `wsl.exe`: a herdr already started inside the distro runs on.
 #[allow(clippy::disallowed_methods)] // Every caller is a pool job.
 fn run_child(
@@ -383,7 +383,7 @@ fn run_child(
 }
 
 /// Focuses one pane in the user's own herdr window, the first half of the
-/// native-Windows attach fallback.  A refusal carries herdr's message rather
+/// native-Windows attach fallback. A refusal carries herdr's message rather
 /// than its code, since it is shown to the user, and a server that does not
 /// answer inside [`GESTURE_TIMEOUT`] refuses the same way.
 pub(super) fn focus_pane(
@@ -403,9 +403,9 @@ pub(super) fn focus_pane(
     decode_answer(&String::from_utf8_lossy(&reply.stdout)).map_err(HerdrError::FocusRefused)
 }
 
-/// The running session to attach to on this side.  `herdr session list
+/// The running session to attach to on this side. `herdr session list
 /// --json` is a flat object rather than the `result`-wrapped envelope
-/// `agent list` uses.  An answer that names nothing falls back to `default`,
+/// `agent list` uses. An answer that names nothing falls back to `default`,
 /// the name herdr gives an unnamed session; a server that does not answer
 /// inside [`GESTURE_TIMEOUT`] is an `Err`, because attaching to a guessed
 /// name would only park the wedged wait inside the new session.
@@ -470,7 +470,7 @@ pub(super) fn create_pane(
     Ok(CreatedPane { terminal_id: root.terminal_id, pane_id: root.pane_id, tab_id: root.tab_id })
 }
 
-/// Runs one of herdr's listings on one side.  Success is on stdout, errors
+/// Runs one of herdr's listings on one side. Success is on stdout, errors
 /// are on stderr, so both are captured; the exit status decides which to read.
 ///
 /// wsl.exe's own failure messages (a missing distro, for instance) come back
@@ -504,7 +504,7 @@ pub(super) type HerdrAttachResult = Result<(String, Vec<String>), HerdrError>;
 /// leaves herdr where it is. Both are process spawns, and on native Windows
 /// both wait on herdr starting up, which is why this only runs on the pool.
 ///
-/// `cached_name` is what the endpoint learned in the background.  A gesture
+/// `cached_name` is what the endpoint learned in the background. A gesture
 /// that beats the first read asks herdr itself: a wait is better than a
 /// refusal.
 pub(super) fn herdr_attach_gesture(
