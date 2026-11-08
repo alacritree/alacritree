@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.16.0](https://github.com/alacritree/alacritree/compare/v0.15.0...v0.16.0) (2026-11-08)
+
+
+### ⚠ BREAKING CHANGES
+
+* **vt:** [integrations.claude] terminal_bell is gone, and new worktrees no longer get a .claude/settings.local.json from alacritree.
+
+### Features
+
+* **herdr-core:** keep sessions across quit ([8dc5b29](https://github.com/alacritree/alacritree/commit/8dc5b2992638f021db260f1477b61bb04996aacd))
+* **herdr-core:** keep WSL distros alive after quit ([#473](https://github.com/alacritree/alacritree/issues/473)) ([91e5395](https://github.com/alacritree/alacritree/commit/91e539597ecc6439d13cbd259412aa7f890f2c01))
+* **herdr-core:** list and attach foreign panes ([65d56b3](https://github.com/alacritree/alacritree/commit/65d56b3baea30bbf0d37492ffd07833675405193))
+* **herdr-core:** offer to install hc where it is missing ([#472](https://github.com/alacritree/alacritree/issues/472)) ([1d6f585](https://github.com/alacritree/alacritree/commit/1d6f585162698579cc82efba469f6dc31c7c95b5))
+* **herdr-core:** reach a core where hc does not look [1] ([e832005](https://github.com/alacritree/alacritree/commit/e83200556fdb7f7b13e046efc88512dde9561735))
+* **herdr-core:** reconnect sessions after a dropped connection ([63692ef](https://github.com/alacritree/alacritree/commit/63692ef9a2607be61e2f5c540e0c829417c083a2))
+* **herdr-core:** run new sessions in the core ([cb09917](https://github.com/alacritree/alacritree/commit/cb099171129c0dce07f3806400c3d53ac89bb2f5))
+* **herdr-core:** run sessions in WSL distro cores [1] ([7573316](https://github.com/alacritree/alacritree/commit/7573316b382deb38b43ed147f28f0188f9644c3a))
+* **sidebar:** list sub-agents under their session ([#467](https://github.com/alacritree/alacritree/issues/467)) ([419ca3c](https://github.com/alacritree/alacritree/commit/419ca3c949d334a523566c991d7abee0b43257e6)), closes [#441](https://github.com/alacritree/alacritree/issues/441)
+* **sidebar:** list sub-agents under WSL sessions [5] ([8e463f0](https://github.com/alacritree/alacritree/commit/8e463f066e373a801484f6efb5e953807b8e2a00))
+* **vt:** show OSC 7501 program status on rows and toasts ([6c7a54a](https://github.com/alacritree/alacritree/commit/6c7a54adc15f56ea11408edcd0abb7616064e208))
+
 ## [0.15.0](https://github.com/alacritree/alacritree/compare/v0.14.0...v0.15.0) (2026-11-06)
 
 
