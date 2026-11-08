@@ -1409,8 +1409,9 @@ impl AlacritreeApp {
         wsl_probe: Option<WslProbe>,
         wsl_distro: Option<String>,
     ) -> Result<SessionId, SessionError> {
-        // Only a login shell carries `wsl_distro`, and it runs in its
-        // distro's core.
+        // Only a login shell carries `wsl_distro`. A distro's core runs its
+        // own default shell, so a command launched through `wsl.exe`, such as
+        // a multiplexer attach, stays native, where its argv runs as given.
         let side = wsl_distro.clone().map_or(Side::Native, Side::Wsl);
         let preferred = self.cores.as_ref().and_then(|cores| cores.on(&side));
         self.spawn_shell_on(preferred, ctx, workspace, directory, shell, wsl_probe, wsl_distro)
@@ -5265,6 +5266,40 @@ mod tests {
             })
             .expect("the sidebar lists the session");
         assert_eq!(row.cwd, Some(PathBuf::from(r"\\wsl.localhost\d\home\me\src")));
+    }
+
+    /// A distro's core starts its own default shell, so a command launched
+    /// through `wsl.exe`, such as a multiplexer attach, stays on the native
+    /// side where its argv runs as given.
+    #[test]
+    fn a_command_launched_into_a_distro_keeps_its_argv_on_the_native_side() {
+        let (mut app, _, native_core) = app_preferring_a_scripted_core();
+        let distro_core = ScriptedSessions::default();
+        if let Some(Cores::Scripted(cores)) = &mut app.cores {
+            cores.insert(Side::Wsl("d".into()), distro_core.clone());
+        }
+        let attach = ShellCommand::new("wsl.exe".into(), vec![
+            "-d".into(),
+            "d".into(),
+            "--exec".into(),
+            "zellij".into(),
+            "attach".into(),
+        ]);
+        let probe = WslProbe { distro: "d".into(), key: "k".into() };
+
+        let id = app
+            .spawn_session_with_shell(
+                &Context::default(),
+                None,
+                None,
+                Some(attach),
+                Some(probe),
+                None,
+            )
+            .expect("a scripted open");
+
+        assert!(distro_core.session(id).is_none());
+        assert!(native_core.session(id).is_some());
     }
 
     #[test]
