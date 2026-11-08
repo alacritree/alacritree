@@ -59,6 +59,11 @@ impl ModalGate {
         self.painted.get() == Some(now)
     }
 
+    /// Whether `now` opens this frame: the previous frame did not paint it.
+    pub(crate) fn opening(&self, now: ModalKind) -> bool {
+        self.painted.get() != Some(now)
+    }
+
     /// Carry what this frame painted into the next frame's gate. Runs every
     /// frame, including the frames that paint no modal at all.
     pub(crate) fn end_frame(&self) {
@@ -106,6 +111,15 @@ mod tests {
         gate.accepts(ModalKind::Delete);
         gate.end_frame();
         assert!(!gate.accepts(ModalKind::Quit));
+    }
+
+    #[test]
+    fn a_modal_opens_only_on_its_first_frame() {
+        let gate = ModalGate::default();
+        assert!(gate.opening(ModalKind::Delete));
+        gate.accepts(ModalKind::Delete);
+        gate.end_frame();
+        assert!(!gate.opening(ModalKind::Delete));
     }
 
     /// A frame that paints no modal clears the permission, so a dialog

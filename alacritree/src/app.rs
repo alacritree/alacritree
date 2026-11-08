@@ -3038,6 +3038,17 @@ fn focus_default(ctx: &Context, id: egui::Id) {
     }
 }
 
+/// Give `id` focus on the frame its modal opens, as [`focus_default`] does
+/// for a modal opened from the sidebar. A modal that opens over a focused
+/// terminal would otherwise show no default button.
+fn focus_default_on_open(ctx: &Context, opening: bool, id: egui::Id) {
+    if opening {
+        ctx.memory_mut(|m| m.request_focus(id));
+    } else {
+        focus_default(ctx, id);
+    }
+}
+
 /// One drained event's effect on a sidebar panel: either a filter outcome
 /// (search/toggle) or a plain browsing nav key.
 enum SidebarNavStep {
@@ -5544,6 +5555,44 @@ mod tests {
         assert!(app.modals.hc_install.is_none());
         let notice = app.modals.error_dialog.clone().unwrap_or_default();
         assert!(notice.contains("hc is not installed") && notice.contains("native"), "{notice}");
+    }
+
+    /// The install dialogs open over a terminal that holds the keyboard,
+    /// and their default button still opens focused, which is what draws
+    /// its highlight.
+    #[test]
+    fn the_install_dialogs_open_with_their_default_button_focused() {
+        let (mut app, _native, _core) = app_preferring_a_scripted_core();
+        let ctx = Context::default();
+        let terminal = egui::Id::new("terminal");
+        let frame = |app: &mut AlacritreeApp| {
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    ui.interact(ui.max_rect(), terminal, egui::Sense::click());
+                });
+                app.paint_dialogs(ctx, true);
+            });
+            ctx.memory(|m| m.focused())
+        };
+        ctx.memory_mut(|m| m.request_focus(terminal));
+        frame(&mut app);
+
+        assert!(app.offer_hc_install(&Side::Native));
+        frame(&mut app);
+        let install = frame(&mut app);
+        assert!(install.is_some_and(|id| id != terminal), "the offer left focus on the terminal");
+
+        let installer = alacritree_herdr_core::Installer::on(Side::Native);
+        app.modals.hc_install = Some(HcInstall::Running {
+            installer: installer.clone(),
+            job: jobs::pool().spawn(jobs::Priority::Interactive, |_| Ok(String::new())),
+            hidden: false,
+        });
+        frame(&mut app);
+        app.modals.hc_install = Some(HcInstall::Done { installer, result: Ok(String::new()) });
+        frame(&mut app);
+        let ok = frame(&mut app);
+        assert!(ok.is_some_and(|id| Some(id) != install), "the result opened without focus");
     }
 
     /// An install sent to the background does not take the keyboard from a
