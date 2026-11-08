@@ -314,6 +314,22 @@ fn a_session_paints_takes_keys_resizes_and_reports_its_foreground() {
     opened.handle.kill();
 }
 
+/// A shell such as nushell refuses a `PWD` that ends in a separator, so a
+/// working directory spelled with one reaches the terminal without it.
+#[test]
+#[ignore = "needs hc on PATH"]
+fn a_trailing_separator_never_reaches_the_shells_pwd() {
+    let core = Core::start();
+    let backend = HerdrCore::new("hc");
+    let dir = PathBuf::from(format!("{}{}", core.dir().display(), std::path::MAIN_SEPARATOR));
+    let opened = open(&backend, shell(), &dir);
+
+    let print_pwd: &[u8] = if cfg!(windows) { b"echo [%PWD%]\r" } else { b"echo \"[$PWD]\"\r" };
+    opened.handle.write(print_pwd.to_vec());
+    shows(&opened, &format!("[{}]", core.dir().display()));
+    assert!(!screen(&opened.term).contains(&format!("[{}]", dir.display())));
+}
+
 #[test]
 #[ignore = "needs hc on PATH"]
 fn closing_a_session_kills_its_terminal_and_removes_its_record() {

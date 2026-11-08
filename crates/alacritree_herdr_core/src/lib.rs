@@ -448,6 +448,14 @@ fn ensure_working_directory(dir: Option<&Path>) -> Result<(), SessionError> {
     }
 }
 
+/// `dir` without a trailing separator, as a native core's `cwd`.
+///
+/// The core sets the shell's `PWD` from `cwd`, and a shell such as nushell
+/// refuses one that ends in a separator. A root keeps its separator.
+fn core_cwd(dir: &Path) -> String {
+    dir.components().collect::<PathBuf>().display().to_string()
+}
+
 /// The terminal identity a PTY child inherits from alacritree's own
 /// environment, which a core terminal starts without.
 const IDENTITY_ENV: [&str; 2] = ["TERM", "COLORTERM"];
@@ -477,7 +485,7 @@ impl<H: From<HerdrCoreHandle>> SessionBackend<H> for HerdrCore {
                 let argv: Vec<String> = shell
                     .map(|shell| std::iter::once(shell.program).chain(shell.args).collect())
                     .unwrap_or_default();
-                (argv, working_directory.map(|dir| dir.display().to_string()))
+                (argv, working_directory.as_deref().map(core_cwd))
             },
             Side::Wsl(_) => {
                 let launch_dir =
@@ -1230,6 +1238,16 @@ mod tests {
 
     fn size(num_cols: u16, num_lines: u16) -> WindowSize {
         WindowSize { num_lines, num_cols, cell_width: 9, cell_height: 18 }
+    }
+
+    #[test]
+    fn a_core_cwd_drops_a_trailing_separator_but_keeps_a_roots() {
+        let (dir, root) =
+            if cfg!(windows) { (r"C:\Users\dev", r"C:\") } else { ("/home/dev", "/") };
+        let sep = std::path::MAIN_SEPARATOR;
+        assert_eq!(core_cwd(Path::new(&format!("{dir}{sep}"))), dir);
+        assert_eq!(core_cwd(Path::new(dir)), dir);
+        assert_eq!(core_cwd(Path::new(root)), root);
     }
 
     /// A distro core's foreground program keeps the distro's pid and Linux
