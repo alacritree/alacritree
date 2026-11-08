@@ -45,12 +45,14 @@ impl Default for HerdrCoreConfig {
 #[serde(default)]
 pub struct RawHerdrCore {
     /// The `hc` program to run on Windows or natively. Its own name is looked
-    /// up on PATH; any other value runs as written. hc finds its core's
+    /// up on PATH, then in the folder hc's installer uses; any other value
+    /// runs as written. hc finds its core's
     /// socket in its own order: `HC_SOCKET`, then the `socket` key in its
     /// `config.toml`, then its runtime directory.
     path: String,
     /// The `hc` program to run inside every WSL distro, as written. Empty
-    /// finds it by name through the distro's login shell.
+    /// finds it by name through the distro's login shell, then in
+    /// `~/.local/bin`.
     wsl_path: String,
     /// The glyph on a herdr-core pane's sidebar row and palette entry. A bare
     /// string sets the glyph; a table also styles its color, weight, slant
