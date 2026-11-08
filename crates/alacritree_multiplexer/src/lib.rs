@@ -99,6 +99,11 @@ fn known_names() -> String {
 pub enum MultiplexerKind {
     Herdr,
     Zellij,
+    /// The terminals of the native side's herdr-core core that alacritree did
+    /// not create. Last, so a request naming no multiplexer still reaches
+    /// one that can create a pane.
+    #[strum(serialize = "herdr_core")]
+    HerdrCore,
     /// Answers from a script instead of a server, so app behaviour can be
     /// tested at the trait rather than through one multiplexer's wire
     /// format.  Left out of [`MultiplexerKind::real`], so nothing builds it,
@@ -342,6 +347,19 @@ pub trait MultiplexerSession {
         id: ::alacritree_multiplexer::SessionId,
         key: Option<&::alacritree_multiplexer::PaneKey>,
     );
+
+    /// Whether each pane is a terminal of a session backend, whose
+    /// `terminal_id` names it there. The app then opens a pane through that
+    /// backend instead of an attach client, can watch it, and can kill it.
+    fn backend_terminals(&self) -> bool {
+        false
+    }
+
+    /// End the program in `key`'s pane. Only a multiplexer with
+    /// [`Self::backend_terminals`] is asked.
+    fn kill_terminal(&mut self, key: &::alacritree_multiplexer::PaneKey) {
+        let _ = key;
+    }
 }
 
 #[cfg(test)]
@@ -357,6 +375,7 @@ mod tests {
     fn a_multiplexer_reads_back_as_the_name_it_spelled() {
         assert_eq!(MultiplexerKind::Herdr.to_string(), "herdr");
         assert_eq!(MultiplexerKind::Zellij.to_string(), "zellij");
+        assert_eq!(MultiplexerKind::HerdrCore.to_string(), "herdr_core");
         for kind in MultiplexerKind::iter() {
             assert_eq!(MultiplexerKind::from_str(&kind.to_string()), Ok(kind));
         }

@@ -64,7 +64,7 @@ use crate::{
     clipboard_image, file_drop, ipc, mouse_hide, notify, paste, path_style, scratchpad,
     sidebar_focus, temporary, terminal_view, worktree_liveness,
 };
-use alacritree_herdr_core::{CoreElsewhere, Remedy};
+use alacritree_herdr_core::{CoreElsewhere, HerdrCores, Remedy};
 use alacritree_session_backend::{
     Adoptable, Placement, SessionBackend, SessionError, SessionHandle,
 };
@@ -559,6 +559,9 @@ pub struct AlacritreeApp {
     /// The core `[integrations.herdr_core] session_backend` prefers on each
     /// side, or `None` when it prefers native.
     cores: Option<Cores>,
+    /// What opens a herdr-core pane, the native core's terminal that
+    /// alacritree did not create. It shares the native core of `cores`.
+    pane_backend: Backend,
     /// The startup connect to the native core. The home tab's first shell
     /// waits for it, so a home tab whose terminals the core kept gets them
     /// back rather than one more. It answers a core that hc does not reach,
@@ -627,11 +630,13 @@ impl AlacritreeApp {
         ipc: (Option<ipc::server::SocketHandle>, Option<Receiver<ipc::server::AppCall>>),
     ) -> Self {
         let (font_chain, face_metrics) = fonts;
-        let cores = Cores::from_config(&config.integrations.herdr_core);
+        let herdr_cores = HerdrCores::new(&config.integrations.herdr_core);
+        let cores = Cores::from_config(&config.integrations.herdr_core, &herdr_cores);
+        let core = herdr_cores.on(&Side::Native);
         let color_glyph_budget_mb = config.font.color_glyph_cache_mb;
         let grid_snapshot = crate::terminal_view::GridSnapshot::new(&config.palette);
         let (ipc_socket, ipc_rx) = ipc;
-        let multiplexers = Multiplexers::new(&config.integrations);
+        let multiplexers = Multiplexers::with_core(&config.integrations, core.clone());
         let row_labels = crate::row_label::LabelTemplates::new(
             config.ui.worktree_name.clone(),
             config.ui.project_name.clone(),
@@ -696,6 +701,7 @@ impl AlacritreeApp {
             project_refreshes: Default::default(),
             session_backend: Backend::native(),
             cores,
+            pane_backend: Backend::HerdrCore(core),
             core_connect: None,
             pending_spawns: Default::default(),
             multiplexers,
@@ -844,11 +850,16 @@ impl AlacritreeApp {
             wsl::prime_distros_from_cli(blocking);
         }));
 
+        // Every side's core shares the pane listing's waker, so an idle window
+        // repaints for a terminal to adopt or to list.
+        if let Backend::HerdrCore(core) = &app.pane_backend {
+            let ctx = cc.egui_ctx.clone();
+            core.set_waker(move || ctx.request_repaint());
+        }
         // `hc connect` may start the core, so connecting here keeps that wait
         // off the frame that opens the first session. A distro's connection
         // opens with its WSL helper.
         if let Some(cores) = &app.cores {
-            cores.wake_on_new_terminals(&cc.egui_ctx);
             cores.open_beside_wsl_helpers();
         }
         app.start_core_connect();
@@ -2491,6 +2502,7 @@ impl AlacritreeApp {
             || self.modals.pending_create.is_some()
             || self.modals.pending_session_close.is_some()
             || self.modals.pending_detach_all.is_some()
+            || self.modals.pending_kill_terminal.is_some()
             || self.modals.core_elsewhere.is_some()
             || self.modals.pending_rename.is_some()
             || self.modals.pending_base_branch.is_some()
@@ -3483,7 +3495,13 @@ impl AlacritreeApp {
                 sidebar_nav::WorkspaceEntry::Pane(key) => {
                     let pane = self.find_pane(key)?;
                     let managed = self.pane_managed(key, pane);
-                    Some(WorkspaceRowData::Pane(PaneRowData::new(key.clone(), pane, managed)))
+                    let backend = self.multiplexers.get(key.multiplexer).backend_terminals();
+                    Some(WorkspaceRowData::Pane(PaneRowData::new(
+                        key.clone(),
+                        pane,
+                        managed,
+                        backend,
+                    )))
                 },
                 sidebar_nav::WorkspaceEntry::Temporary(section) => {
                     Some(WorkspaceRowData::Temporary(TemporaryRowData {
@@ -3806,6 +3824,9 @@ impl AlacritreeApp {
         }
         if self.modals.pending_detach_all.is_some() {
             self.show_detach_all_dialog(ctx);
+        }
+        if self.modals.pending_kill_terminal.is_some() {
+            self.show_kill_terminal_dialog(ctx);
         }
         if self.modals.core_elsewhere.is_some() {
             self.show_core_elsewhere_dialog(ctx);
@@ -4706,8 +4727,8 @@ mod tests {
     use super::palette::{PaletteColumns, paint_palette_row, pane_palette_content};
     use super::panes::WorkspaceSwitch;
     use super::sidebar::{
-        RowName, WorktreeRowView, home_row, pane_display_name, session_row, session_row_title,
-        sessions_filter_passes, upstream_badge, worktree_row,
+        RowName, SidebarRequests, WorktreeRowView, home_row, pane_display_name, session_row,
+        session_row_title, sessions_filter_passes, upstream_badge, worktree_row,
     };
     use super::widgets::agent_hint;
     use crate::sidebar_model::build_snapshot;
@@ -4792,8 +4813,11 @@ mod tests {
     /// herdr-specific from the app itself.
     fn test_app() -> AlacritreeApp {
         let (_, notify_rx) = mpsc::channel();
+        let mut config = Config::default();
+        // The native core is the user's own, so no test lists its terminals.
+        config.integrations.herdr_core.enabled = false;
         let mut app = AlacritreeApp::from_parts(
-            Config::default(),
+            config,
             Theme::from_config(&Config::default()),
             state::PersistedState::default(),
             Vec::new(),
@@ -6119,7 +6143,7 @@ mod tests {
         multiplexers.only_scripted().enable().attach_directly(!shared_view);
         let key = Scripted::key(&side, &pane.terminal_id);
         let managed = multiplexers.get(key.multiplexer).managed(&key.side, Some(pane));
-        PaneRowData::new(key, pane, managed)
+        PaneRowData::new(key, pane, managed, false)
     }
 
     /// Every variant of `egui::Event` as compiled in this build, so an egui
@@ -6409,7 +6433,7 @@ mod tests {
         assert_eq!(
             reply_rx.try_recv().unwrap(),
             Err("every multiplexer integration is disabled ([integrations.herdr] or \
-                 [integrations.zellij] enabled)"
+                 [integrations.zellij] or [integrations.herdr_core] enabled)"
                 .to_string())
         );
     }
@@ -6429,7 +6453,8 @@ mod tests {
 
         assert_eq!(
             reply_rx.try_recv().unwrap(),
-            Err("`tmux` is not a multiplexer, expected `herdr` or `zellij`".to_string())
+            Err("`tmux` is not a multiplexer, expected `herdr` or `zellij` or `herdr_core`"
+                .to_string())
         );
     }
 
@@ -7681,6 +7706,148 @@ mod tests {
 
         assert_eq!(app.modals.pending_detach_all.as_deref().map(<[SessionId]>::len), Some(2));
         assert_eq!(app.sessions.len(), 3);
+    }
+
+    /// `test_app` listing the pane `t1`, whose terminal a session backend runs
+    /// and opens on the scripted `sessions`.
+    fn app_with_a_backend_terminal() -> (AlacritreeApp, ScriptedSessions, PaneKey) {
+        let (mut app, sessions) = app_on_scripted_backend();
+        app.pane_backend = Backend::Scripted(sessions.clone());
+        app.multiplexers.scripted_mut().enable().backend_terminal_panes(true);
+        adopt_panes(&mut app, &Side::Native, vec![Scripted::pane("t1")]);
+        (app, sessions, Scripted::key(&Side::Native, "t1"))
+    }
+
+    fn kill_terminal_from_the_palette(app: &mut AlacritreeApp) {
+        app.dispatch_action(
+            &Context::default(),
+            BindingAction::Named(NamedAction::KillTerminal(action::KillTerminal)),
+            ActionOrigin::Palette,
+        );
+    }
+
+    /// Opening the row takes the terminal over through the session backend,
+    /// with no attach client in between.
+    #[test]
+    fn opening_a_backend_terminal_pane_attaches_its_terminal() {
+        let (mut app, sessions, key) = app_with_a_backend_terminal();
+        let switch = app.switch_for_attach(&None, AttachFocus::Take);
+        let unlisted = PaneTarget::unlisted(&key, "t1");
+
+        assert!(app.attach_pane(
+            &Context::default(),
+            key.clone(),
+            unlisted,
+            &switch,
+            None,
+            AttachFocus::Take
+        ));
+
+        let id = app.pane_session(&key).expect("the pane has a session");
+        assert_eq!(app.active_session_index().map(|at| app.sessions[at].id), Some(id));
+        let records = sessions.records();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].terminal.as_deref(), Some("t1"));
+        assert!(!records[0].watching);
+    }
+
+    /// Watch follows the terminal, so what the user types and how the window
+    /// is sized never reach it.
+    #[test]
+    fn watching_a_backend_terminal_never_types_into_it_or_resizes_it() {
+        let (mut app, sessions, key) = app_with_a_backend_terminal();
+
+        app.watch_pane(&Context::default(), key.clone());
+
+        let id = app.pane_session(&key).expect("the watch has a session");
+        assert_eq!(app.active_session_index().map(|at| app.sessions[at].id), Some(id));
+        let session = app.sessions.iter_mut().find(|s| s.id == id).expect("the session");
+        session.write(b"typed".to_vec());
+        session.resize(TermSize { columns: 120, screen_lines: 40 }, (8.0, 16.0));
+        let record = sessions.records().pop().expect("a record");
+        assert!(record.watching);
+        assert_eq!(record.calls, []);
+    }
+
+    /// Another client shows a backend terminal, and a takeover would resize
+    /// it under that client, so attaching every pane leaves it alone.
+    #[test]
+    fn attaching_every_pane_leaves_backend_terminals_alone() {
+        let (mut app, sessions, key) = app_with_a_backend_terminal();
+
+        app.attach_every_multiplexer_pane(&Context::default());
+
+        assert!(app.pane_session(&key).is_none());
+        assert!(sessions.records().is_empty());
+    }
+
+    /// Killing ends the program for every client attached to it, so the
+    /// palette only asks, and the terminal ends once the user confirms.
+    #[test]
+    fn kill_terminal_from_the_palette_asks_before_it_kills() {
+        let (mut app, _, key) = app_with_a_backend_terminal();
+        app.sidebar.model.set_cursor(SidebarRow::Pane(key.clone()));
+        app.focus = PaneFocus::ProjectsSidebar;
+
+        kill_terminal_from_the_palette(&mut app);
+
+        assert_eq!(app.modals.pending_kill_terminal.as_ref(), Some(&key));
+        assert!(app.multiplexers.scripted().killed().is_empty());
+        let ctx = Context::default();
+        dialog_frame(&mut app, &ctx, Vec::new());
+        dialog_frame(&mut app, &ctx, vec![key_ev(egui::Key::Enter, true)]);
+        assert_eq!(app.multiplexers.scripted().killed(), [key]);
+        assert!(app.modals.pending_kill_terminal.is_none());
+    }
+
+    #[test]
+    fn kill_terminal_from_a_pane_row_asks_and_a_cancel_kills_nothing() {
+        let (mut app, _, key) = app_with_a_backend_terminal();
+        let mut requests = SidebarRequests::default();
+        requests.kill_terminal = Some(key.clone());
+
+        app.apply_sidebar_activations(&Context::default(), &mut requests);
+
+        assert_eq!(app.modals.pending_kill_terminal.as_ref(), Some(&key));
+        let ctx = Context::default();
+        dialog_frame(&mut app, &ctx, Vec::new());
+        dialog_frame(&mut app, &ctx, vec![key_ev(egui::Key::Escape, true)]);
+        assert!(app.modals.pending_kill_terminal.is_none());
+        assert!(app.multiplexers.scripted().killed().is_empty());
+    }
+
+    /// A pane an attach client shows is the multiplexer's to end, so the
+    /// action names what it acts on rather than offering to kill it.
+    #[test]
+    fn kill_terminal_refuses_a_pane_no_session_backend_runs() {
+        let (mut app, _, key) = app_with_a_backend_terminal();
+        app.multiplexers.scripted_mut().backend_terminal_panes(false);
+        app.sidebar.model.set_cursor(SidebarRow::Pane(key));
+        app.focus = PaneFocus::ProjectsSidebar;
+
+        kill_terminal_from_the_palette(&mut app);
+
+        assert!(app.modals.pending_kill_terminal.is_none());
+        assert!(app.modals.error_dialog.is_some());
+    }
+
+    /// `[integrations.herdr_core] enabled = false` lists none of the core's
+    /// other terminals, in the sidebar or the palette.
+    #[test]
+    fn a_disabled_herdr_core_lists_no_foreign_pane() {
+        let mut app = test_app();
+        for enabled in [true, false] {
+            let mut config = crate::config::IntegrationsConfig::default();
+            config.herdr_core.enabled = enabled;
+            app.multiplexers = Multiplexers::new(&config);
+            app.multiplexers.herdr_core_mut_for_test().adopt_for_test(vec![Scripted::pane("t1")]);
+
+            let listed: Vec<MultiplexerKind> =
+                app.pane_listing().iter().map(|listed| listed.key.multiplexer).collect();
+
+            let expected = if enabled { vec![MultiplexerKind::HerdrCore] } else { vec![] };
+            assert_eq!(listed, expected, "enabled = {enabled}");
+        }
     }
 
     /// A disabled integration is why the whole-set actions found nothing, and

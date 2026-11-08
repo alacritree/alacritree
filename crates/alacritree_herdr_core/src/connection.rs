@@ -42,10 +42,17 @@ pub(crate) struct Facts {
     pub(crate) live: bool,
     pub(crate) pid: Option<u32>,
     pub(crate) labels: HashMap<String, String>,
+    /// The name a client gave the terminal.
+    pub(crate) name: Option<String>,
+    /// The title the program set.
+    pub(crate) title: Option<String>,
+    /// The directory the terminal started in.
+    pub(crate) cwd: Option<PathBuf>,
 }
 
 /// Called when the core reports a terminal that is new, back after a loss,
-/// or labelled anew, which is when a terminal may become adoptable.
+/// labelled anew, finished or removed, which is when a terminal may become
+/// adoptable or change what the pane listing shows.
 pub(crate) type Waker = Arc<OnceLock<Box<dyn Fn() + Send + Sync>>>;
 
 /// What runs in a terminal now: the foreground process group's leader, or
@@ -67,6 +74,12 @@ struct Record {
     pid: Option<u32>,
     #[serde(default)]
     labels: HashMap<String, String>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    cwd: Option<PathBuf>,
 }
 
 impl Record {
@@ -76,6 +89,9 @@ impl Record {
             live: self.state == "live",
             pid: self.pid,
             labels: self.labels,
+            name: self.name,
+            title: self.title,
+            cwd: self.cwd,
         };
         (self.address, facts)
     }
@@ -468,7 +484,7 @@ fn snapshot(terminals: &Value) -> HashMap<String, Facts> {
 }
 
 /// Apply every whole event line buffered so far. Answers whether one may
-/// have made a terminal adoptable.
+/// have made a terminal adoptable or changed the pane listing.
 fn apply_events(routes: &mut Routes) -> bool {
     let mut arrived = false;
     while let Some(end) = routes.partial_event.iter().position(|&byte| byte == b'\n') {
@@ -481,7 +497,8 @@ fn apply_events(routes: &mut Routes) -> bool {
 }
 
 /// Fold one notification from the event stream into the terminals' facts.
-/// Answers whether it may have made a terminal adoptable.
+/// Answers whether it may have made a terminal adoptable or changed the pane
+/// listing. A foreground change does neither, and it is the most frequent.
 fn apply_event(terminals: &mut HashMap<String, Facts>, message: &Value) -> bool {
     let params = &message["params"];
     if message["method"] == "missed" {
@@ -511,16 +528,12 @@ fn apply_event(terminals: &mut HashMap<String, Facts>, message: &Value) -> bool 
             false
         },
         Some("lost" | "finished") => {
-            if let Some(facts) = terminals.get_mut(address) {
-                facts.foreground = None;
-                facts.live = false;
-            }
-            false
+            let Some(facts) = terminals.get_mut(address) else { return false };
+            facts.foreground = None;
+            facts.live = false;
+            true
         },
-        Some("removed") => {
-            terminals.remove(address);
-            false
-        },
+        Some("removed") => terminals.remove(address).is_some(),
         _ => false,
     }
 }

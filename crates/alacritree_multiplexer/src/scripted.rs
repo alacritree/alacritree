@@ -66,6 +66,10 @@ pub struct Scripted {
     /// Sessions the app reported closed, in the order it reported them.
     closed: Vec<(SessionId, Option<PaneKey>)>,
     attached: Vec<(SessionId, PaneKey)>,
+    /// Each pane is a session backend's terminal, as herdr-core's are.
+    backend_terminals: bool,
+    /// The panes the app killed, in the order it killed them.
+    killed: Vec<PaneKey>,
 }
 
 impl Scripted {
@@ -107,6 +111,16 @@ impl Scripted {
     pub fn attach_directly(&mut self, direct: bool) -> &mut Self {
         self.direct = direct;
         self
+    }
+
+    /// Answer as a multiplexer whose panes are a session backend's terminals.
+    pub fn backend_terminal_panes(&mut self, terminals: bool) -> &mut Self {
+        self.backend_terminals = terminals;
+        self
+    }
+
+    pub fn killed(&self) -> &[PaneKey] {
+        &self.killed
     }
 
     pub fn show_unmatched(&mut self, show: bool) -> &mut Self {
@@ -367,5 +381,13 @@ impl MultiplexerSession for Scripted {
     fn session_closed(&mut self, id: SessionId, key: Option<&PaneKey>) {
         self.closed.push((id, key.cloned()));
         self.attach_queue.retain(|pending| Some(&pending.key) != key);
+    }
+
+    fn backend_terminals(&self) -> bool {
+        self.backend_terminals
+    }
+
+    fn kill_terminal(&mut self, key: &PaneKey) {
+        self.killed.push(key.clone());
     }
 }

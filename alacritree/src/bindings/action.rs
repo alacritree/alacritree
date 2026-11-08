@@ -91,6 +91,7 @@ unit_actions!(
     NewMultiplexerPane,
     AttachAllMultiplexerPanes,
     DetachAllMultiplexerPanes,
+    KillTerminal,
     ToggleAttentionFilter,
     TogglePrOpenFilter,
     TogglePrDraftFilter,

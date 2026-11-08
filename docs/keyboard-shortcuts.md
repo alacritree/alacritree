@@ -171,6 +171,7 @@ entry. Names match alacritty's own action names, so existing configs port over.
 - `NewMultiplexerPane`, open a new pane in the terminal multiplexer (herdr) and a session on it, in the focused workspace and on the side the focused session's own pane belongs to. No default key. Also reachable from the command palette.
 - `AttachAllMultiplexerPanes`, open a session on every detected multiplexer (herdr) pane no session holds yet, one per row the sidebar lists, leaving the panes that already hold one alone. Each session files under the workspace its own pane belongs to, and the workspace on screen does not change. No default key. Also reachable from the command palette.
 - `DetachAllMultiplexerPanes`, end every session attached to a multiplexer pane. The panes keep running under the multiplexer and their rows come back unattached. `[ui] confirm_session_detach` is asked once for the whole batch rather than once per session. No default key. Also reachable from the command palette.
+- `KillTerminal`, end the program in a herdr-core terminal that alacritree did not create, after a confirmation. It acts on the pane row under the sidebar cursor while the sidebar has focus, and otherwise on the active session's terminal. The row's own menu offers the same kill. No default key. Also reachable from the command palette.
 - `SidebarTop` / `SidebarBottom` — move the sidebar cursor to the first / last
   visible row.
 - `SidebarPreviousProject` / `SidebarNextProject` — jump the sidebar cursor to

@@ -108,7 +108,7 @@ fn section_of(a: NamedAction) -> PaletteSection {
         | CloseSession(_)
         | CloseExitedSession(_)
         | NewMultiplexerPane(_) => Sessions,
-        AttachAllMultiplexerPanes(_) | DetachAllMultiplexerPanes(_) => Sessions,
+        AttachAllMultiplexerPanes(_) | DetachAllMultiplexerPanes(_) | KillTerminal(_) => Sessions,
         SelectNextTab(_) | SelectPreviousTab(_) | SelectTab(_) | SelectLastTab(_) => Sessions,
         SelectNextSession(_) | SelectPreviousSession(_) => Sessions,
         SelectNextAgentSession(_) | SelectPreviousAgentSession(_) => Sessions,

@@ -93,6 +93,7 @@
                 "NewMultiplexerPane",
                 "AttachAllMultiplexerPanes",
                 "DetachAllMultiplexerPanes",
+                "KillTerminal",
                 "SidebarTop",
                 "SidebarBottom",
                 "SidebarNextProject",
@@ -871,6 +872,11 @@
     },
     "RawHerdrCore": {
       "properties": {
+        "enabled": {
+          "default": true,
+          "description": "List the native core's terminals that alacritree did not create, such\nas the ones herdr-app or an agent started, as panes in the sidebar.\n\nOpening such a pane attaches to it, and closing that session only\ndetaches. Its row's menu can also watch it, which never types into it\nor resizes it, and kill it after a confirmation. alacritree reads the\nlist from a core that already runs, and never starts one for it.",
+          "type": "boolean"
+        },
         "icon": {
           "anyOf": [
             {

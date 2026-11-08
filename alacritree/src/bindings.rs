@@ -282,6 +282,10 @@ pub enum NamedAction {
     /// End every session attached to a multiplexer pane. The panes keep
     /// running under the multiplexer and their rows come back unattached.
     DetachAllMultiplexerPanes(action::DetachAllMultiplexerPanes),
+    /// End the program in a herdr-core terminal alacritree did not create,
+    /// after a confirmation. It acts on the active session's terminal, or on
+    /// the pane row under the sidebar cursor.
+    KillTerminal(action::KillTerminal),
     SidebarTop(action::SidebarTop),
     SidebarBottom(action::SidebarBottom),
     SidebarNextProject(action::SidebarNextProject),
@@ -593,6 +597,7 @@ impl NamedAction {
                 "Attach every unattached multiplexer pane the sidebar lists".into()
             },
             Self::DetachAllMultiplexerPanes(_) => "Detach every attached multiplexer pane".into(),
+            Self::KillTerminal(_) => "Kill a herdr-core terminal alacritree did not create".into(),
             Self::SidebarTop(_) => "Move the sidebar cursor to the first row".into(),
             Self::SidebarBottom(_) => "Move the sidebar cursor to the last row".into(),
             Self::SidebarNextProject(_) => "Jump the sidebar cursor to the next project".into(),
@@ -2284,6 +2289,7 @@ mod tests {
         all.push(NamedAction::NewMultiplexerPane(action::NewMultiplexerPane));
         all.push(NamedAction::AttachAllMultiplexerPanes(action::AttachAllMultiplexerPanes));
         all.push(NamedAction::DetachAllMultiplexerPanes(action::DetachAllMultiplexerPanes));
+        all.push(NamedAction::KillTerminal(action::KillTerminal));
         for a in all {
             let name = a.config_name();
             assert!(

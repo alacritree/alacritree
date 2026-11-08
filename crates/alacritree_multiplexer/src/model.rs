@@ -23,7 +23,7 @@ pub struct PaneKey {
 /// One pane as its multiplexer reports it.  `terminal_id` is the identity
 /// because `pane_id` is positional: a pane moved between workspaces gets a new
 /// one.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pane {
     pub terminal_id: String,
     pub pane_id: String,

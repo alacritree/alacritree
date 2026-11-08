@@ -8,6 +8,7 @@ use std::str::FromStr;
 
 use alacritree_common::side::Side;
 use alacritree_herdr::Herdr;
+use alacritree_herdr_core::{HerdrCore, HerdrCorePanes};
 #[cfg(test)]
 use alacritree_multiplexer::Scripted;
 use alacritree_multiplexer::{
@@ -30,6 +31,7 @@ use crate::session::SessionId;
 pub(crate) enum Multiplexer {
     Herdr(Herdr),
     Zellij(Zellij),
+    HerdrCore(HerdrCorePanes),
     /// Answers from a script instead of a server, so app behaviour can be
     /// tested at the trait rather than through one multiplexer's wire format.
     #[cfg(test)]
@@ -41,6 +43,7 @@ impl Multiplexer {
         match self {
             Self::Herdr(_) => MultiplexerKind::Herdr,
             Self::Zellij(_) => MultiplexerKind::Zellij,
+            Self::HerdrCore(_) => MultiplexerKind::HerdrCore,
             #[cfg(test)]
             Self::Scripted(_) => MultiplexerKind::Scripted,
         }
@@ -51,12 +54,19 @@ impl Multiplexer {
     /// baked font subset covers it.
     pub(crate) fn default_icon(&self) -> BakedGlyph {
         match self {
-            Self::Herdr(_) => DEFAULT_HERDR_ICON,
+            // herdr-core is the core herdr runs on, so its panes wear herdr's mark.
+            Self::Herdr(_) | Self::HerdrCore(_) => DEFAULT_HERDR_ICON,
             Self::Zellij(_) => DEFAULT_ZELLIJ_ICON,
             // A scripted row wants a neutral mark rather than one of its own.
             #[cfg(test)]
             Self::Scripted(_) => crate::config::DEFAULT_SESSION_ICON,
         }
+    }
+
+    /// Whether a create may land here. A multiplexer listing a session
+    /// backend's terminals only lists what other clients started.
+    pub(crate) fn creates_panes(&self) -> bool {
+        self.enabled() && !self.backend_terminals()
     }
 
     /// The key a pane on `side` is known by here.
@@ -77,9 +87,16 @@ impl Multiplexers {
     /// In the order of [`MultiplexerKind::real`], which is the order a
     /// listing is polled and drawn in.
     pub(crate) fn new(config: &IntegrationsConfig) -> Self {
+        Self::with_core(config, HerdrCore::new(&config.herdr_core.path))
+    }
+
+    /// As [`Self::new`], listing the terminals of `core`, which the app's
+    /// herdr-core sessions share.
+    pub(crate) fn with_core(config: &IntegrationsConfig, core: HerdrCore) -> Self {
         Self(vec![
             Multiplexer::Herdr(Herdr::new(config.herdr.clone())),
             Multiplexer::Zellij(Zellij::new(config.zellij.clone())),
+            Multiplexer::HerdrCore(HerdrCorePanes::new(core, config.herdr_core.clone())),
         ])
     }
 
@@ -137,9 +154,10 @@ impl Multiplexers {
         if self.get(kind).enabled() { Ok(Some(kind)) } else { Err(PaneError::Disabled(kind)) }
     }
 
-    /// The multiplexer a request naming none goes to: the first one enabled.
+    /// The multiplexer a create naming none goes to: the first one enabled
+    /// that creates panes.
     pub(crate) fn default_enabled(&self) -> Option<&Multiplexer> {
-        self.iter().find(|m| m.enabled())
+        self.iter().find(|m| m.creates_panes())
     }
 
     /// The pane `key` names, while its multiplexer still lists it.
@@ -245,6 +263,14 @@ impl Multiplexers {
     }
 
     #[cfg(test)]
+    pub(crate) fn herdr_core_mut_for_test(&mut self) -> &mut HerdrCorePanes {
+        let Multiplexer::HerdrCore(panes) = self.get_mut(MultiplexerKind::HerdrCore) else {
+            unreachable!("`get_mut` answers with the kind it was asked for")
+        };
+        panes
+    }
+
+    #[cfg(test)]
     pub(crate) fn zellij_mut_for_test(&mut self) -> &mut Zellij {
         let Multiplexer::Zellij(zellij) = self.get_mut(MultiplexerKind::Zellij) else {
             unreachable!("`get_mut` answers with the kind it was asked for")
@@ -293,7 +319,7 @@ mod tests {
         assert_eq!(all.len(), MultiplexerKind::real().count());
         assert_eq!(
             all.requested(Some("scripted")).unwrap_err().to_string(),
-            "`scripted` is not a multiplexer, expected `herdr` or `zellij`"
+            "`scripted` is not a multiplexer, expected `herdr` or `zellij` or `herdr_core`"
         );
         assert!(!all.disabled_reason().contains("scripted"));
 
