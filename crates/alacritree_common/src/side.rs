@@ -164,12 +164,10 @@ pub fn login_shell_script(inner: &str) -> String {
 /// own output on stdout. A bare name is found through the distro user's
 /// login shell, whose rc output is dropped, and the program then runs
 /// outside that shell. A program that speaks a protocol on stdout needs this
-/// rather than [`login_shell_script`]. A name the login shell does not find
-/// is tried in `~/.local/bin`, where user installers put programs and where
-/// not every login shell looks.
+/// rather than [`login_shell_script`].
 pub fn wsl_command_with_clean_stdout(distro: &str, program: &str, args: &[&str]) -> Command {
     let script = format!(
-        r#"n=$1; shift; case $n in */*) p=$n ;; *) {LOGIN_SHELL}; p=$("$s" -lc 'command -v "$1"' "$s" "$n" </dev/null 2>/dev/null | tail -n 1); [ -n "$p" ] || [ ! -x "$HOME/.local/bin/$n" ] || p=$HOME/.local/bin/$n ;; esac; exec "${{p:-$n}}" "$@""#
+        r#"n=$1; shift; case $n in */*) p=$n ;; *) {LOGIN_SHELL}; p=$("$s" -lc 'command -v "$1"' "$s" "$n" </dev/null 2>/dev/null | tail -n 1) ;; esac; exec "${{p:-$n}}" "$@""#
     );
     let mut command = wsl::command(distro, None);
     command.args(["sh", "-c", &script, "sh", program]).args(args);
@@ -221,7 +219,9 @@ pub fn run(
 /// hold a pool worker, and a sidebar spinner, until the app quits.
 pub const LIMIT: Duration = Duration::from_secs(300);
 
-fn run_within(
+/// [`run`] with a limit of the caller's own, for a program whose time to
+/// finish is not a hook's.
+pub fn run_within(
     side: &Side,
     program: &Program,
     cwd: Option<&Path>,

@@ -51,8 +51,7 @@ pub struct RawHerdrCore {
     /// `config.toml`, then its runtime directory.
     path: String,
     /// The `hc` program to run inside every WSL distro, as written. Empty
-    /// finds it by name through the distro's login shell, then in
-    /// `~/.local/bin`.
+    /// finds it by name through the distro's login shell.
     wsl_path: String,
     /// The glyph on a herdr-core pane's sidebar row and palette entry. A bare
     /// string sets the glyph; a table also styles its color, weight, slant

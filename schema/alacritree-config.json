@@ -924,7 +924,7 @@
         },
         "wsl_path": {
           "default": "",
-          "description": "The `hc` program to run inside every WSL distro, as written. Empty\nfinds it by name through the distro's login shell, then in\n`~/.local/bin`.",
+          "description": "The `hc` program to run inside every WSL distro, as written. Empty\nfinds it by name through the distro's login shell.",
           "type": "string"
         }
       },

@@ -19,7 +19,7 @@ use serde_json::Value;
 
 use crate::connection::{Connection, Waker};
 use crate::elsewhere::{self, HcPaths};
-use crate::{CoreError, install, one_shot};
+use crate::{CoreError, one_shot};
 
 /// How long a session waits between attempts to attach while its side has
 /// no connection.
@@ -62,13 +62,11 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// The native `hc` to spawn: `program` as configured, or where hc's
-/// installer put it when the bare name is not on this process's PATH.
+/// The native `hc` to spawn: where [`tools::locate_spawnable`] finds
+/// `program`, else `program` as written, so the spawn reports it missing.
 fn native_program(program: &str) -> String {
-    let installed = (program == Tool::Hc.name() && tools::locate_spawnable(program).is_none())
-        .then(install::native_location)
-        .flatten();
-    installed.map_or_else(|| program.to_string(), |hc| hc.display().to_string())
+    tools::locate_spawnable(program)
+        .map_or_else(|| program.to_string(), |hc| hc.display().to_string())
 }
 
 impl SideCore {
@@ -222,15 +220,14 @@ impl SideCore {
     }
 
     /// The distro's helper when it is up, and the `hc` it runs. That is the
-    /// configured path, else where the helper's login shell found it. `None`
-    /// while the helper found no `hc`, so a call takes the resident's route,
-    /// which sees an install made since the helper started.
+    /// configured path, else where [`tools::wsl_resolved`] found it. `None`
+    /// while no `hc` is known there, so a call takes the resident's route,
+    /// which reports a missing `hc`. The lookup keeps no miss, so an install
+    /// brings the helper's route back.
     fn helper(&self) -> Option<(Arc<HelperClient>, String)> {
         let Launch::Wsl { distro, program } = &self.launch else { return None };
         let client = wsl_helper::client(distro)?;
-        let program = program
-            .clone()
-            .or_else(|| client.capabilities()?.path(Tool::Hc.name()).map(str::to_string))?;
+        let program = program.clone().or_else(|| tools::wsl_resolved(Tool::Hc, distro, || {}))?;
         Some((client, program))
     }
 

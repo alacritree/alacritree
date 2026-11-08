@@ -3,12 +3,13 @@
 //! Each tool has a native path and an optional WSL path, because a Windows
 //! path means nothing inside a distro. A native path runs as written when it
 //! differs from the tool's own name, and the name alone is found by the OS's
-//! PATH search. A set WSL path runs as written inside every distro; unset,
-//! the name is found through the user's login shell, since `wsl.exe --exec`
-//! sees only the default system PATH, which omits per-user install dirs like
+//! PATH search, then in the folder of an installer alacritree runs. A set WSL path runs as written
+//! inside every distro; unset, the name is found through the user's login shell, since `wsl.exe
+//! --exec` sees only the default system PATH, which omits per-user install dirs like
 //! `~/.cargo/bin`.
 
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, RwLock};
 
@@ -193,18 +194,44 @@ fn locate_in(program: &str, dirs: &[PathBuf], exts: &[String]) -> Option<PathBuf
 }
 
 pub fn locate(program: &str) -> Option<PathBuf> {
-    locate_in(program, &search_path(), &executable_extensions())
+    locate_in(program, &search_path(program), &executable_extensions())
 }
 
 /// Where `Command::new(program)` finds `program`, which is narrower than
 /// [`locate`] on Windows. A shell runs a `.cmd` shim or an extensionless
 /// script for a bare name, but `Command` never spawns either.
 pub fn locate_spawnable(program: &str) -> Option<PathBuf> {
-    locate_in(program, &search_path(), &spawnable_extensions(program))
+    locate_in(program, &search_path(program), &spawnable_extensions(program))
 }
 
-fn search_path() -> Vec<PathBuf> {
-    std::env::var_os("PATH").map(|path| std::env::split_paths(&path).collect()).unwrap_or_default()
+fn search_path(program: &str) -> Vec<PathBuf> {
+    search_path_in(program, |name| std::env::var_os(name))
+}
+
+/// The PATH, then the folder the installer of the tool named `program` puts
+/// it in. That installer adds the folder to the user's PATH, which reaches
+/// only processes started after it.
+fn search_path_in(program: &str, var: impl Fn(&str) -> Option<OsString>) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> =
+        var("PATH").map(|path| std::env::split_paths(&path).collect()).unwrap_or_default();
+    let tool = Tool::VARIANTS.iter().find(|tool| tool.name() == program);
+    dirs.extend(tool.and_then(|tool| installer_dir(*tool, var)));
+    dirs
+}
+
+/// The folder a tool's own installer puts it in natively, for the tools
+/// whose installer alacritree runs.
+fn installer_dir(tool: Tool, var: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
+    match tool {
+        Tool::Hc => match var("HC_INSTALL_DIR") {
+            Some(dir) => Some(PathBuf::from(dir)),
+            None if cfg!(windows) => {
+                Some(PathBuf::from(var("LOCALAPPDATA")?).join("Programs").join("herdr-core"))
+            },
+            None => Some(PathBuf::from(var("HOME")?).join(".local").join("bin")),
+        },
+        _ => None,
+    }
 }
 
 /// `Command` on Windows appends `.exe` to a name without an extension and
@@ -423,6 +450,23 @@ mod tests {
         let found = locate_in("tool", &[dir.path().to_path_buf()], &[String::new()]);
 
         assert_eq!(found, Some(exe));
+    }
+
+    /// hc's installer adds its folder to the user's PATH, which a running
+    /// process never sees, so a lookup by name tries that folder too.
+    #[test]
+    fn hc_is_looked_up_in_its_installer_folder_after_the_path() {
+        let var = |name: &str| match name {
+            "PATH" => Some(OsString::from("on-path")),
+            "HC_INSTALL_DIR" => Some(OsString::from("hc-install-dir")),
+            _ => None,
+        };
+
+        assert_eq!(search_path_in("hc", var), [
+            PathBuf::from("on-path"),
+            PathBuf::from("hc-install-dir")
+        ]);
+        assert_eq!(search_path_in("git", var), [PathBuf::from("on-path")]);
     }
 
     #[test]
