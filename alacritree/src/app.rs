@@ -3302,7 +3302,7 @@ impl AlacritreeApp {
                     Some(WorkspaceRowData::Session(SessionRowData {
                         id: s.id,
                         name: session_row_name(&s.title, activity, self.session_pane(s)),
-                        reported_cwd: s.cwd(),
+                        cwd: s.cwd(),
                         last_notification: s.last_notification.clone(),
                         progress: s.progress,
                         needs_attention: s.needs_attention,
@@ -9815,7 +9815,7 @@ mod tests {
             let row = SessionRowData {
                 id: 1,
                 name: RowName::plain("zsh".to_owned()),
-                reported_cwd: None,
+                cwd: None,
                 last_notification: None,
                 progress: None,
                 needs_attention: false,
@@ -9962,7 +9962,7 @@ mod tests {
             let mut row = SessionRowData {
                 id: 1,
                 name: RowName::plain(name.to_owned()),
-                reported_cwd: Some(cwd.clone()),
+                cwd: Some(cwd.clone()),
                 last_notification: Some("build failed".to_owned()),
                 progress: None,
                 needs_attention: false,
@@ -10164,7 +10164,7 @@ mod tests {
         let session = |attention, activity| SessionRowData {
             id: 1,
             name: RowName::plain("zsh".to_owned()),
-            reported_cwd: None,
+            cwd: None,
             last_notification: None,
             progress: None,
             needs_attention: attention,
@@ -10402,7 +10402,7 @@ mod tests {
         let row = SessionRowData {
             id: 1,
             name: RowName::plain("cargo test --workspace --all-features -- --nocapture".to_owned()),
-            reported_cwd: None,
+            cwd: None,
             last_notification: None,
             progress: None,
             needs_attention: false,
