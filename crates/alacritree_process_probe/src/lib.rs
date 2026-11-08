@@ -74,8 +74,9 @@ impl ProbeHandle {
             };
         }
         let Signals { agent, foreground_job, nav_tui, answered } = match &self.wsl {
-            // The helper answers nothing for an idle shell, so the distro pid
-            // it reports is never the shell's.
+            // The Windows tree under the shell pid reads every idle WSL shell
+            // as busy, because wsl.exe keeps its plumbing children alive. The
+            // helper answers nothing for an idle shell, so no pid is the shell's.
             Some(_) => reported_signals(self.foreground().as_ref(), None),
             None => Signals {
                 agent: self.shell_pid.and_then(foreground_agent_name),
