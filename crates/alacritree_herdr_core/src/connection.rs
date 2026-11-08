@@ -152,7 +152,21 @@ struct Routes {
     /// Bytes of an event line that a frame cut off.
     partial_event: Vec<u8>,
     terminals: HashMap<String, Facts>,
+    /// The facts last showed a running terminal.
+    running: bool,
 }
+
+impl Routes {
+    /// A terminal that has not finished. A lost program counts, since the
+    /// core starts its new shell.
+    fn has_running_terminal(&self) -> bool {
+        self.terminals.values().any(|facts| facts.state != State::Finished)
+    }
+}
+
+/// Called on the demux thread, with the facts locked, when the core goes
+/// from no running terminal to one. The first report counts.
+pub(crate) type OnRunning = Option<Box<dyn Fn() + Send + Sync>>;
 
 struct Shared {
     alive: AtomicBool,
@@ -160,11 +174,25 @@ struct Shared {
     /// Signalled when the terminals' facts change or the connection closes.
     changed: Condvar,
     waker: Waker,
+    on_running: OnRunning,
 }
 
 impl Shared {
     fn routes(&self) -> MutexGuard<'_, Routes> {
         self.routes.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Call [`Self::on_running`] when the facts that just changed show a
+    /// running terminal and the previous ones showed none.
+    fn note_running(&self, routes: &mut Routes) {
+        let running = routes.has_running_terminal();
+        if running
+            && !routes.running
+            && let Some(on_running) = &self.on_running
+        {
+            on_running();
+        }
+        routes.running = running;
     }
 
     /// End the connection when either pipe breaks. Dropping the senders
@@ -197,6 +225,7 @@ impl Connection {
         mut command: Command,
         program: &str,
         waker: Waker,
+        on_running: OnRunning,
     ) -> Result<Arc<Self>, CoreError> {
         command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
         // Backend calls may block, as the trait says. The app connects on a
@@ -236,6 +265,7 @@ impl Connection {
             routes: Default::default(),
             changed: Condvar::new(),
             waker,
+            on_running,
         });
         let (frames, outgoing) = mpsc::channel();
         spawn_writer(stdin, outgoing, shared.clone())?;
@@ -340,9 +370,9 @@ impl Connection {
     }
 
     /// Answers whether the core last reported a terminal that has not
-    /// finished. A lost program counts, since the core starts its new shell.
+    /// finished.
     pub(crate) fn has_running_terminal(&self) -> bool {
-        self.shared.routes().terminals.values().any(|facts| facts.state != State::Finished)
+        self.shared.routes().has_running_terminal()
     }
 
     /// What `pick` takes from each terminal the core last reported.
@@ -474,12 +504,14 @@ fn route(shared: &Shared, frames: &Sender<Vec<u8>>, Frame { channel, kind, paylo
     if channel == 0 {
         if kind == wire::DATA {
             answer(&mut routes, frames, &shared.waker, &payload);
+            shared.note_running(&mut routes);
         }
         return;
     }
     if routes.events == Some(channel) {
         if kind == wire::DATA {
             take_events(&mut routes, frames, &shared.waker, channel, &payload);
+            shared.note_running(&mut routes);
             shared.changed.notify_all();
         }
         return;
@@ -666,7 +698,7 @@ mod tests {
     /// finds no `hc`. That is the same miss as a native spawn that finds none.
     #[test]
     fn a_shell_that_finds_no_hc_reads_as_a_spawn_that_found_nothing() {
-        let error = Connection::open(exiting(127), "hc connect", Waker::default()).err();
+        let error = Connection::open(exiting(127), "hc connect", Waker::default(), None).err();
 
         assert!(
             matches!(&error, Some(CoreError::Spawn { source, .. }) if source.kind() == std::io::ErrorKind::NotFound),
@@ -676,7 +708,7 @@ mod tests {
 
     #[test]
     fn any_other_exit_before_hello_is_a_refusal() {
-        let error = Connection::open(exiting(1), "hc connect", Waker::default()).err();
+        let error = Connection::open(exiting(1), "hc connect", Waker::default(), None).err();
 
         assert!(matches!(&error, Some(CoreError::Refused(_))), "{error:?}");
     }
@@ -738,6 +770,7 @@ mod tests {
             routes: Default::default(),
             changed: Condvar::new(),
             waker: Default::default(),
+            on_running: None,
         });
         let (session, stream) = mpsc::channel();
         shared.routes().streams.insert(3, session);
@@ -770,6 +803,51 @@ mod tests {
 
         assert_eq!(sent.try_recv().ok(), Some(wire::encode(9, wire::CLOSE, &[])));
         assert!(!routes.streams.contains_key(&9));
+    }
+
+    /// The hook runs when the subscribe snapshot shows a running terminal,
+    /// not for a second one, and again once a terminal starts after all of
+    /// them finished.
+    #[test]
+    fn on_running_follows_the_core_from_no_running_terminal_to_one() {
+        let starts = Arc::new(AtomicU64::new(0));
+        let counted = starts.clone();
+        let shared = Shared {
+            alive: AtomicBool::new(true),
+            routes: Default::default(),
+            changed: Condvar::new(),
+            waker: Default::default(),
+            on_running: Some(Box::new(move || {
+                counted.fetch_add(1, Ordering::Relaxed);
+            })),
+        };
+        let (reply, _answer) = mpsc::channel();
+        shared.routes().calls.insert(1, Pending { opens: Opens::Events, reply });
+        let (frames, _sent) = mpsc::channel();
+        let live = |address: &str| json!({ "address": address, "pid": 10, "foreground": null, "state": "live" });
+        let events = |messages: &[Value]| Frame {
+            channel: 5,
+            kind: wire::DATA,
+            payload: messages
+                .iter()
+                .map(|message| format!("{message}\n"))
+                .collect::<String>()
+                .into(),
+        };
+        let subscribed = json!({ "jsonrpc": "2.0", "id": 1,
+                                 "result": { "channel": 5, "terminals": [live("t1")] } });
+
+        let payload = subscribed.to_string().into_bytes();
+        route(&shared, &frames, Frame { channel: 0, kind: wire::DATA, payload });
+        route(&shared, &frames, events(&[event("created", "t2", live("t2"))]));
+        assert_eq!(starts.load(Ordering::Relaxed), 1);
+
+        let finished = json!({});
+        let all_finish =
+            [event("finished", "t1", finished.clone()), event("finished", "t2", finished)];
+        route(&shared, &frames, events(&all_finish));
+        route(&shared, &frames, events(&[event("created", "t3", live("t3"))]));
+        assert_eq!(starts.load(Ordering::Relaxed), 2);
     }
 
     /// The core may cut an event line across frames.

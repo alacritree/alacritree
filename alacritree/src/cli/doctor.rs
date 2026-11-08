@@ -118,11 +118,11 @@ fn report(
     checks.extend(gh_auth_check());
     checks.extend(diff_viewer_check(&config.integrations.diff_viewer.viewer));
     checks.push(shell_check(config.shell.as_ref()));
-    let leaves_keepers = matches!(
+    let keeps_distros_up = matches!(
         config.integrations.herdr_core.session_backend,
         alacritree_herdr_core::SessionBackendChoice::HerdrCore
     );
-    checks.extend(wsl_checks(&wsl::distros(), wsl::idle_shutdown(), leaves_keepers));
+    checks.extend(wsl_checks(&wsl::distros(), wsl::idle_shutdown(), keeps_distros_up));
     if config.integrations.taskwarrior.enabled {
         checks.extend(taskwarrior_checks(&wsl::distros()));
     }
@@ -267,7 +267,7 @@ enum ProbeError {
 fn wsl_checks(
     distros: &[wsl::WslDistro],
     idle_shutdown: Option<wsl::IdleShutdown>,
-    leaves_keepers: bool,
+    keeps_distros_up: bool,
 ) -> Vec<Check> {
     if distros.is_empty() {
         return Vec::new();
@@ -280,16 +280,17 @@ fn wsl_checks(
     let probes = probe_distros(distros);
     let mut checks = vec![check("wsl", "distros", Status::Ok, names.join(", "))];
     checks.extend(probes.iter().map(|(name, probe)| wsl_distro_check(name, probe)));
-    checks.push(idle_shutdown_check(idle_shutdown, leaves_keepers));
+    checks.push(idle_shutdown_check(idle_shutdown, keeps_distros_up));
     checks
 }
 
 /// WSL stops an idle distro, and every terminal its herdr-core core runs
 /// with it. Nothing in the app shows when that happens or why its terminals
 /// outlive a quit. The setting is global and the user's choice, so the row
-/// explains and never warns. `leaves_keepers` is whether a quit leaves a
-/// keeper, which only the herdr-core session backend does.
-fn idle_shutdown_check(idle_shutdown: Option<wsl::IdleShutdown>, leaves_keepers: bool) -> Check {
+/// explains and never warns. `keeps_distros_up` is whether a distro core
+/// with a running terminal gets a keeper, which only the herdr-core session
+/// backend gives it.
+fn idle_shutdown_check(idle_shutdown: Option<wsl::IdleShutdown>, keeps_distros_up: bool) -> Check {
     let setting = "`[general] instanceIdleTimeout` in %UserProfile%\\.wslconfig";
     let detail = match idle_shutdown.unwrap_or(wsl::IdleShutdown::DEFAULT) {
         wsl::IdleShutdown::Never => {
@@ -297,11 +298,11 @@ fn idle_shutdown_check(idle_shutdown: Option<wsl::IdleShutdown>, leaves_keepers:
         },
         wsl::IdleShutdown::After(timeout) => {
             let source = if idle_shutdown.is_some() { "as set by" } else { "the default of" };
-            let keeper = if leaves_keepers {
-                "On quit, alacritree leaves a hidden wsl.exe keeper for each distro whose \
-                 herdr-core terminals are live, and the keeper exits with the last one"
+            let keeper = if keeps_distros_up {
+                "A distro whose herdr-core core runs a terminal gets a hidden wsl.exe keeper, \
+                 which holds the distro up after alacritree ends and exits with the last terminal"
             } else {
-                "A quit leaves a keeper that holds a distro up only with \
+                "A keeper holds a distro up after alacritree ends only with \
                  `[integrations.herdr_core] session_backend = \"herdr_core\"`"
             };
             format!(
@@ -846,14 +847,15 @@ mod tests {
     /// WSL stops an idle distro and every terminal in it. The note says
     /// when, by which setting, and what alacritree does about it, and never
     /// warns, since the setting is the user's choice.
-    /// Only the herdr-core backend leaves a keeper on quit, so under the
+    /// Only the herdr-core backend gives a distro a keeper, so under the
     /// native backend the row says what would.
     #[test]
-    fn the_idle_shutdown_note_promises_a_keeper_only_where_quit_leaves_one() {
+    fn the_idle_shutdown_note_promises_a_keeper_only_under_herdr_core() {
+        let promise = "gets a hidden wsl.exe keeper";
         let native = idle_shutdown_check(None, false).detail;
-        assert!(!native.contains("On quit, alacritree leaves"), "{native:?}");
+        assert!(!native.contains(promise), "{native:?}");
         assert!(native.contains("session_backend"), "{native:?}");
-        assert!(idle_shutdown_check(None, true).detail.contains("On quit, alacritree leaves"));
+        assert!(idle_shutdown_check(None, true).detail.contains(promise));
     }
 
     #[test]

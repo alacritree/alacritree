@@ -17,7 +17,7 @@ use alacritree_common::wsl_helper::{self, HelperClient, TransportError};
 use alacritree_common::{command_ext, wsl};
 use serde_json::Value;
 
-use crate::connection::{Connection, Waker};
+use crate::connection::{Connection, OnRunning, Waker};
 use crate::elsewhere::{self, HcPaths};
 use crate::{CoreError, keeper, one_shot};
 
@@ -148,7 +148,7 @@ impl SideCore {
             .command()
             .and_then(|(command, label)| {
                 log::info!("herdr-core ({}): starting `{label}`", self.side.name());
-                Connection::open(command, &label, self.waker.clone())
+                Connection::open(command, &label, self.waker.clone(), self.keep_up())
             })
             .map_err(|error| self.missing(error));
         slot.failed_at = opened.is_err().then(Instant::now);
@@ -201,16 +201,36 @@ impl SideCore {
         }
     }
 
+    /// What a distro's connection runs when its core starts to run a
+    /// terminal: a keeper, so the distro stays up however the app ends. The
+    /// native core needs none.
+    fn keep_up(&self) -> OnRunning {
+        let Launch::Wsl { distro, program } = &self.launch else { return None };
+        let (distro, hc) = (distro.clone(), distro_hc(program.as_deref()).to_string());
+        Some(Box::new(move || keeper::start_in_background(distro.clone(), hc.clone())))
+    }
+
     /// Leave a keeper that holds the distro up after alacritree quits, and
-    /// answer its pid. A core whose connection reports no running terminal,
-    /// and the native core, get none. A core with no connection up may still
-    /// have terminals, so its keeper looks for itself.
+    /// answer its pid. It exits at once while the keeper the connection
+    /// started still holds the lock.
+    ///
+    /// A core whose connection reports no running terminal, and the native
+    /// core, get none. A core with no connection up may still have
+    /// terminals, so its keeper looks for itself.
     pub(crate) fn leave_keeper(&self) -> Option<u32> {
         let Launch::Wsl { distro, program } = &self.launch else { return None };
         if self.live().is_some_and(|connection| !connection.has_running_terminal()) {
             return None;
         }
-        keeper::leave(distro, distro_hc(program.as_deref()))
+        keeper::start(distro, distro_hc(program.as_deref()))
+    }
+
+    /// Answers whether a keeper holds this distro's lock. The native core
+    /// has no keeper.
+    #[cfg(feature = "test-support")]
+    pub(crate) fn keeper_runs(&self) -> bool {
+        let Launch::Wsl { distro, program } = &self.launch else { return false };
+        keeper::holds_lock(distro, distro_hc(program.as_deref()))
     }
 
     /// Answers whether the native core already serves, without starting one.

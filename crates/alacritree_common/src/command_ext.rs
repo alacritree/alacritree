@@ -46,8 +46,8 @@ pub fn hidden(program: impl AsRef<OsStr>) -> Command {
 /// On Windows the child breaks away from any job alacritree runs in, since a
 /// job that ends its members as it closes would end the child too. A job that
 /// refuses the breakaway still gets the child. Blocks for the spawn.
-// For a process that outlives the app, so it starts as the app quits, after
-// the window is gone and nothing waits on the UI thread.
+// For a process that outlives the app. It starts on a thread of its own, or
+// as the app quits after the window is gone, so no frame waits on it.
 #[allow(clippy::disallowed_methods)]
 pub fn spawn_detached(command: &mut Command) -> std::io::Result<Child> {
     command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
