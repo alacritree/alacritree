@@ -5698,8 +5698,14 @@ mod tests {
 
     /// Have `backend` report Claude Code process 42 holding session `id`.
     fn run_claude(backend: &ScriptedSessions, id: SessionId) {
+        run_claude_on(backend, id, Side::Native);
+    }
+
+    /// Have `backend` report Claude Code process 42 on `side` holding session
+    /// `id`.
+    fn run_claude_on(backend: &ScriptedSessions, id: SessionId, side: Side) {
         let program = ForegroundProgram {
-            side: Side::Native,
+            side,
             pid: Some(42),
             argv: vec!["claude".into()],
             cwd: Some(PathBuf::from("/work/app")),
@@ -5712,10 +5718,34 @@ mod tests {
         });
     }
 
+    /// `app` reading Claude Code's files for `side` from `home` alone.
+    fn read_claude_on(app: &mut AlacritreeApp, side: Side, home: &Path) {
+        app.subagents.homes = crate::subagents::Homes {
+            claude: alacritree_claude::subagents::home()
+                .with(Side::Native, None)
+                .with(side, Some(home.to_path_buf())),
+            codex: alacritree_codex::home().with(Side::Native, None),
+        };
+    }
+
     /// `app` reading Claude Code's files from `home` alone.
     fn read_claude_from(app: &mut AlacritreeApp, home: &Path) {
-        app.subagents.homes =
-            crate::subagents::Homes { claude: Some(home.to_path_buf()), codex: None };
+        read_claude_on(app, Side::Native, home);
+    }
+
+    /// A Claude Code in a WSL distro registers in the distro's home, so its
+    /// session's sub-agents are read there.
+    #[test]
+    fn a_claude_session_in_a_distro_lists_its_sub_agent() {
+        let (mut app, native) = app_on_scripted_backend();
+        let (home, _) = claude_home_with_a_running_sub_agent();
+        let ubuntu = Side::Wsl("Ubuntu".into());
+        read_claude_on(&mut app, ubuntu.clone(), home.path());
+        let id = app.spawn_session(&Context::default(), None).expect("a scripted open");
+        run_claude_on(&native, id, ubuntu);
+
+        poll_subagents_until(&mut app, |app| !home_subagent_names(app).is_empty());
+        assert_eq!(home_subagent_names(&app), ["Map the service install"]);
     }
 
     /// The names of the sub-agent rows the home workspace paints, folded into

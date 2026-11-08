@@ -13,7 +13,7 @@ pub struct RawClaude {
     /// agents included, in the sidebar under that session's row, or under its
     /// workspace's row when the session is the only one there. They are read
     /// from the transcripts Claude Code keeps in `CLAUDE_CONFIG_DIR` or
-    /// `~/.claude`, so a session running inside WSL lists none.
+    /// `~/.claude`, inside the distro for a session running in WSL.
     subagents: bool,
 }
 

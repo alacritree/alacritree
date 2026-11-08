@@ -260,7 +260,7 @@
       "properties": {
         "subagents": {
           "default": true,
-          "description": "List the sub-agents each Claude Code session has running, workflow\nagents included, in the sidebar under that session's row, or under its\nworkspace's row when the session is the only one there. They are read\nfrom the transcripts Claude Code keeps in `CLAUDE_CONFIG_DIR` or\n`~/.claude`, so a session running inside WSL lists none.",
+          "description": "List the sub-agents each Claude Code session has running, workflow\nagents included, in the sidebar under that session's row, or under its\nworkspace's row when the session is the only one there. They are read\nfrom the transcripts Claude Code keeps in `CLAUDE_CONFIG_DIR` or\n`~/.claude`, inside the distro for a session running in WSL.",
           "type": "boolean"
         }
       },
@@ -271,7 +271,7 @@
       "properties": {
         "subagents": {
           "default": true,
-          "description": "List the sub-agents each Codex session has running in the sidebar,\nunder that session's row, or under its workspace's row when the\nsession is the only one there. They are read from the rollouts Codex\nkeeps in `CODEX_HOME` or `~/.codex` and matched to a session by the\ndirectory Codex started in, so two Codex sessions in one directory\nlist none, and a session running inside WSL lists none.",
+          "description": "List the sub-agents each Codex session has running in the sidebar,\nunder that session's row, or under its workspace's row when the\nsession is the only one there. They are read from the rollouts Codex\nkeeps in `CODEX_HOME` or `~/.codex`, inside the distro for a session\nrunning in WSL. A session's sub-agents are matched by the directory\nCodex started in, so two Codex sessions in one directory list none.",
           "type": "boolean"
         }
       },

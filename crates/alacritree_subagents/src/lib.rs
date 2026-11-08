@@ -2,7 +2,8 @@
 //! alacritree's sessions started them.
 //!
 //! A harness such as Claude Code or Codex keeps each sub-agent's transcript
-//! on disk, so a backend reads those files rather than asking the agent.
+//! on disk, so a backend reads those files rather than asking the agent. A
+//! session in a WSL distro keeps them in the distro, which [`Home`] reaches.
 //! [`SubagentSource`] takes the program each session's backend reports in
 //! the foreground and answers which sub-agents each session has running.
 //! Another harness is a new backend crate with its own config section, and a
@@ -17,6 +18,7 @@ extern crate self as alacritree_subagents;
 #[cfg(any(test, feature = "test-support"))]
 mod fake;
 pub mod follow;
+mod home;
 pub mod tail;
 
 use std::io;
@@ -26,8 +28,11 @@ pub use alacritree_session_backend::{ForegroundProgram, Side};
 
 #[cfg(any(test, feature = "test-support"))]
 pub use self::fake::FakeSource;
+pub use self::home::Home;
 
-/// A session a harness may run in, as its session backend reports it.
+/// A session a harness may run in, as its session backend reports it. The
+/// foreground program's pid and cwd are as its side spells them, so a
+/// source reads them against that side's [`Home`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Host {
     /// The program that holds the session's terminal.
@@ -35,24 +40,6 @@ pub struct Host {
     /// The coding agent the backend's probe recognizes in the session, by
     /// its canonical name, such as `claude` or `codex`.
     pub agent: Option<&'static str>,
-}
-
-impl Host {
-    /// The foreground program's pid, when it runs on the native side, where
-    /// every source reads its files.
-    pub fn native_pid(&self) -> Option<u32> {
-        self.on_native_side().then_some(self.foreground.pid).flatten()
-    }
-
-    /// The foreground program's working directory, when it runs on the
-    /// native side.
-    pub fn native_cwd(&self) -> Option<&std::path::Path> {
-        self.on_native_side().then_some(self.foreground.cwd.as_deref()).flatten()
-    }
-
-    fn on_native_side(&self) -> bool {
-        self.foreground.side == Side::Native
-    }
 }
 
 /// A sub-agent that is still working.

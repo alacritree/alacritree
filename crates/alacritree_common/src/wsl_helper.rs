@@ -12,7 +12,8 @@ use crate::tools::Tool;
 /// Bumped only when the request/response framing changes incompatibly; a
 /// client seeing any other version treats the helper as unusable and stays
 /// on one-shot spawns. `3` adds `WATCH`, which an older helper does not know.
-pub const PROTOCOL_VERSION: &str = "3";
+/// `4` adds the pid and working directory to a `PROBE` answer.
+pub const PROTOCOL_VERSION: &str = "4";
 
 /// The programs the hello resolves, in the order its fields carry them.
 /// `HELPER_SCRIPT` spells the same list.
@@ -177,7 +178,7 @@ s=$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f7)
 [ -x "$s" ] || s=${SHELL:-/bin/sh}
 caps=$("$s" -lc 'command -v git || echo; command -v gh || echo; command -v delta || echo; command -v doppler || echo; command -v herdr || echo; command -v tuicr || echo; command -v task || echo; command -v zellij || echo; command -v hc || echo' 2>/dev/null)
 rt=${XDG_RUNTIME_DIR:-/tmp}/alacritree
-printf 'hello\t3'
+printf 'hello\t4'
 i=1
 while [ "$i" -le 9 ]; do
   printf '\t%s' "$(b64 "$(printf %s "$caps" | sed -n "${i}p")")"
@@ -244,8 +245,11 @@ while IFS=$TAB read -r id kind rest; do
     # In the background, and reading /proc with the read builtin, so a probe
     # that scans every process neither forks per process nor holds up the
     # requests queued behind it.
+    # The answer is the program's pid, comm and working directory, tab
+    # separated, or nothing for an idle shell. The directory comes last, so
+    # a tab in it cannot shift the other fields.
     (
-      comm= p= stat=
+      comm= p= stat= fg= cwd=
       read -r p 2>/dev/null < "$rt/session-$rest.pid"
       case $p in ''|*[!0-9]*) p= ;; esac
       if [ -n "$p" ] && [ -d "/proc/$p" ]; then
@@ -257,6 +261,7 @@ while IFS=$TAB read -r id kind rest; do
         case $tpgid in ''|*[!0-9]*) tpgid= ;; esac
         if [ -n "$tpgid" ] && [ "$tpgid" != "$pgrp" ]; then
           read -r comm 2>/dev/null < "/proc/$tpgid/comm"
+          fg=$tpgid
           # A launcher (chezmoi edit, git commit) stays the group leader while
           # the editor it spawned shares its group; when the leader is not itself
           # a nav TUI, scan the group so the nvim on screen is still recognized.
@@ -271,7 +276,7 @@ while IFS=$TAB read -r id kind rest; do
               [ "${3:-}" = "$tpgid" ] || continue
               m=
               read -r m 2>/dev/null < "${sf%/stat}/comm"
-              case $m in nvim*|vim*|tmux*|zellij*|herdr*) comm=$m; break;; esac
+              case $m in nvim*|vim*|tmux*|zellij*|herdr*) comm=$m; fg=${sf%/stat}; fg=${fg#/proc/}; break;; esac
             done
             ;;
           esac
@@ -282,10 +287,16 @@ while IFS=$TAB read -r id kind rest; do
           # too, and reporting its comm would read as a foreground job.
           m=
           read -r m 2>/dev/null < "/proc/$tpgid/comm"
-          case $m in nvim*|vim*|tmux*|zellij*|herdr*) comm=$m ;; esac
+          case $m in nvim*|vim*|tmux*|zellij*|herdr*) comm=$m fg=$tpgid ;; esac
         fi
       fi
-      printf %s "$comm" > "$t/$id.out"
+      if [ -n "$comm" ]; then
+        # `cd -P` resolves the link with a builtin, so no process is forked.
+        cd -P "/proc/$fg/cwd" 2>/dev/null && cwd=$PWD
+        printf '%s\t%s\t%s' "$fg" "$comm" "$cwd" > "$t/$id.out"
+      else
+        : > "$t/$id.out"
+      fi
       printf '%s 0\n' "$id" >> "$t/done"
     ) &
     ;;
@@ -944,11 +955,10 @@ impl HelperClient {
         Ok((frame.exit, frame.payload))
     }
 
-    pub fn probe(&self, key: &str) -> Result<Option<String>, TransportError> {
+    pub fn probe(&self, key: &str) -> Result<Option<WslForeground>, TransportError> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let frame = self.request(id, encode_probe(id, key), PROBE_TIMEOUT)?;
-        let comm = String::from_utf8_lossy(&frame.payload).trim().to_string();
-        Ok((!comm.is_empty()).then_some(comm))
+        Ok(parse_probe(&frame.payload))
     }
 
     /// Watches `path` inside the distro until the replica files change, the
@@ -1440,6 +1450,17 @@ pub fn capability(distro: &str, program: &str) -> Option<String> {
     client(distro)?.capabilities()?.path(program).map(str::to_string)
 }
 
+/// The directory `var` names in the helper's environment, or `$HOME/<folder>`
+/// when it is unset or empty, as a Linux path. This is how a harness such as
+/// Claude Code finds its state directory. `None` while the helper is not up,
+/// so the caller asks again later rather than start a `wsl.exe` of its own.
+pub fn dir_from_env(distro: &str, var: &str, folder: &str) -> Option<String> {
+    const SCRIPT: &str = r#"d=$(printenv "$1"); printf %s "${d:-$HOME/$2}""#;
+    let (exit, out) = client(distro)?.run(SCRIPT, &[var, folder]).ok()?;
+    let dir = String::from_utf8_lossy(&out).into_owned();
+    (exit == 0 && dir.starts_with('/')).then_some(dir)
+}
+
 /// Identity of a shimmed WSL session for the foreground probe.
 #[derive(Debug, Clone)]
 pub struct WslProbe {
@@ -1447,11 +1468,34 @@ pub struct WslProbe {
     pub key: String,
 }
 
+/// The program that holds a shimmed WSL session's tty, as the helper's
+/// `PROBE` reads it from the distro's `/proc`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WslForeground {
+    /// The pid inside the distro.
+    pub pid: u32,
+    pub comm: String,
+    /// The program's working directory, spelled as a Linux path. `None` when
+    /// the helper could not read it.
+    pub cwd: Option<String>,
+}
+
+/// A `PROBE` answer, `<pid>\t<comm>\t<cwd>`, or `None` for the empty answer
+/// of an idle shell.
+fn parse_probe(payload: &[u8]) -> Option<WslForeground> {
+    let text = String::from_utf8_lossy(payload);
+    let mut fields = text.splitn(3, '\t');
+    let pid = fields.next()?.parse().ok()?;
+    let comm = fields.next()?.trim().to_string();
+    let cwd = fields.next().filter(|cwd| !cwd.is_empty()).map(str::to_string);
+    (!comm.is_empty()).then_some(WslForeground { pid, comm, cwd })
+}
+
 const PROBE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
-type ProbeCache = Mutex<HashMap<(String, String), Option<String>>>;
+type ProbeCache = Mutex<HashMap<(String, String), Option<WslForeground>>>;
 
-/// Last-known foreground `comm` per registered `(distro, probe key)`.
+/// Last-known foreground program per registered `(distro, probe key)`.
 /// Written only by the poller thread (and tests); read from the UI thread.
 fn probe_cache() -> &'static ProbeCache {
     static CACHE: OnceLock<ProbeCache> = OnceLock::new();
@@ -1475,17 +1519,17 @@ pub fn unregister_probe(distro: &str, key: &str) {
     lock(probe_cache()).remove(&(distro.to_string(), key.to_string()));
 }
 
-/// Cached foreground `comm` for a shimmed WSL session. It never blocks and
+/// Cached foreground program of a shimmed WSL session. It never blocks and
 /// never touches the pipe, so it is safe on the UI thread. `None` means
 /// unknown: helper down, key unregistered, or an idle shell at the last
 /// poll. Callers must treat unknown as "no TUI".
-pub fn foreground_comm(distro: &str, key: &str) -> Option<String> {
+pub fn foreground(distro: &str, key: &str) -> Option<WslForeground> {
     lock(probe_cache()).get(&(distro.to_string(), key.to_string()))?.clone()
 }
 
 #[cfg(test)]
-fn set_cached_comm(distro: &str, key: &str, comm: Option<String>) {
-    lock(probe_cache()).insert((distro.to_string(), key.to_string()), comm);
+fn set_cached_foreground(distro: &str, key: &str, program: Option<WslForeground>) {
+    lock(probe_cache()).insert((distro.to_string(), key.to_string()), program);
 }
 
 /// One process-wide poller refreshes every registered key at the agent
@@ -1510,12 +1554,12 @@ fn ensure_poller() {
                         // until the next successful probe. Still call client() every
                         // tick so a cooled-down helper keeps getting nudged back up.
                         let Some(client) = client(&entry.0) else { continue };
-                        let comm = match client.probe(&entry.1) {
-                            Ok(comm) => comm,
+                        let program = match client.probe(&entry.1) {
+                            Ok(program) => program,
                             Err(_) => continue,
                         };
                         if let Some(slot) = lock(probe_cache()).get_mut(&entry) {
-                            *slot = comm;
+                            *slot = program;
                         }
                     }
                 }
@@ -2167,7 +2211,7 @@ mod tests {
     fn parses_hello_with_missing_tools() {
         // git and runtime dir present, every other tool absent.
         let line =
-            "hello\t3\tL3Vzci9iaW4vZ2l0\t\t\t\t\t\t\t\t\tL3J1bi91c2VyLzEwMDAvYWxhY3JpdHJlZQ==\n";
+            "hello\t4\tL3Vzci9iaW4vZ2l0\t\t\t\t\t\t\t\t\tL3J1bi91c2VyLzEwMDAvYWxhY3JpdHJlZQ==\n";
         let caps = parse_hello(line).unwrap();
         assert_eq!(caps.path("git"), Some("/usr/bin/git"));
         assert_eq!(caps.path("delta"), None);
@@ -2178,9 +2222,9 @@ mod tests {
 
     #[test]
     fn rejects_unknown_hello_version() {
-        assert!(parse_hello("hello\t2\t\t\t\t\t\t\t\n").is_none());
-        assert!(parse_hello("goodbye\t3\t\t\t\t\t\t\t\n").is_none());
-        assert!(parse_hello("hello\t3\t\t\t\t\n").is_none());
+        assert!(parse_hello("hello\t3\t\t\t\t\t\t\t\n").is_none());
+        assert!(parse_hello("goodbye\t4\t\t\t\t\t\t\t\n").is_none());
+        assert!(parse_hello("hello\t4\t\t\t\t\n").is_none());
     }
 
     #[test]
@@ -2377,20 +2421,40 @@ mod tests {
     }
 
     #[test]
+    fn a_probe_answer_carries_the_pid_name_and_directory() {
+        assert_eq!(
+            parse_probe(b"4242\tclaude\t/home/dev/my\tproject"),
+            Some(WslForeground {
+                pid: 4242,
+                comm: "claude".into(),
+                cwd: Some("/home/dev/my\tproject".into()),
+            })
+        );
+        assert_eq!(
+            parse_probe(b"7\tsleep\t"),
+            Some(WslForeground { pid: 7, comm: "sleep".into(), cwd: None }),
+            "a directory the helper could not read"
+        );
+        assert_eq!(parse_probe(b""), None, "an idle shell");
+        assert_eq!(parse_probe(b"x\tsleep\t/"), None);
+    }
+
+    #[test]
     fn probe_cache_lifecycle() {
         // An inert distro name: even if the poller ticks mid-test, `client()`
         // cools down on the failed spawn instead of touching a real distro.
         const D: &str = "no-such-distro";
-        // An unknown key has an unknown comm, which the caller treats as "no
-        // TUI".
-        assert_eq!(foreground_comm(D, "test-77-1"), None);
+        // An unknown key has an unknown program, which the caller treats as
+        // "no TUI".
+        assert_eq!(foreground(D, "test-77-1"), None);
         register_probe(D, "test-77-1");
         // Registered but not yet polled: still unknown, not a panic or a block.
-        assert_eq!(foreground_comm(D, "test-77-1"), None);
-        set_cached_comm(D, "test-77-1", Some("nvim".to_string()));
-        assert_eq!(foreground_comm(D, "test-77-1").as_deref(), Some("nvim"));
+        assert_eq!(foreground(D, "test-77-1"), None);
+        let nvim = WslForeground { pid: 9, comm: "nvim".into(), cwd: None };
+        set_cached_foreground(D, "test-77-1", Some(nvim.clone()));
+        assert_eq!(foreground(D, "test-77-1"), Some(nvim));
         unregister_probe(D, "test-77-1");
-        assert_eq!(foreground_comm(D, "test-77-1"), None);
+        assert_eq!(foreground(D, "test-77-1"), None);
     }
 
     #[test]
@@ -2692,7 +2756,7 @@ mod tests {
         assert_eq!(fast, b"fast");
         assert_eq!(slow.join().unwrap().1, b"slow");
 
-        // An unregistered probe key resolves to "no foreground comm".
+        // An unregistered probe key resolves to "no foreground program".
         assert_eq!(client.probe("999999-999999").expect("probe"), None);
 
         use std::process::Stdio;
@@ -2722,13 +2786,13 @@ mod tests {
         let pid = String::from_utf8_lossy(&out);
         assert!(!pid.is_empty() && pid.chars().all(|c| c.is_ascii_digit()), "pid: {pid:?}");
 
-        // ...and probing the idle shell resolves to "no foreground comm".
+        // ...and probing the idle shell resolves to "no foreground program".
         // WSL2 allocates a controlling pty for every `--exec` session
         // regardless of the Windows-side stdio redirection, so the shell owns
         // the tty itself. The probe must read that as idle, not as a running
         // job, or every idle WSL session trips the close confirmation.
-        let comm = client.probe(&key).expect("probe shimmed session");
-        assert_eq!(comm, None, "idle shell should probe as no foreground job");
+        let program = client.probe(&key).expect("probe shimmed session");
+        assert_eq!(program, None, "idle shell should probe as no foreground job");
 
         let _ = child.kill();
         let _ = child.wait();
@@ -2972,6 +3036,72 @@ rm -rf "$XDG_RUNTIME_DIR"
             return;
         };
         assert_eq!(lines.lines().collect::<Vec<_>>(), ["run answered", "probe answered"]);
+    }
+
+    /// A shimmed session under a real pty, made by `script`, runs `sleep` in
+    /// the foreground from a directory of its own, and the helper probes it.
+    /// The job records its own pid, which the probe has to name.
+    #[cfg(any(windows, target_os = "linux"))]
+    const PROBE_FOREGROUND_HARNESS: &str = r##"echo harness
+for tool in setsid base64 script; do
+  command -v "$tool" >/dev/null || { echo "skip: needs $tool"; exit 0; }
+done
+helper_script=$(cat <<'EOF_HELPER_SCRIPT'
+{script}
+EOF_HELPER_SCRIPT
+)
+XDG_RUNTIME_DIR=$(mktemp -d)
+export XDG_RUNTIME_DIR
+d=$XDG_RUNTIME_DIR/alacritree
+work=$XDG_RUNTIME_DIR/work
+mkdir -p "$work"
+# The session starts before the helper, whose startup sweep removes a
+# pidfile it finds half written.
+cat > "$XDG_RUNTIME_DIR/session.sh" <<EOF_SESSION
+mkdir -p "$d" && printf %s \$\$ > "$d/session-k.pid"
+set -m
+cd "$work"
+sh -c 'printf %s \$\$ > "\$1"; exec sleep 30' sh "$XDG_RUNTIME_DIR/job.pid"
+EOF_SESSION
+setsid script -qc "sh $XDG_RUNTIME_DIR/session.sh" /dev/null < /dev/null > /dev/null 2>&1 &
+i=0
+while [ $i -lt 50 ] && ! [ -s "$XDG_RUNTIME_DIR/job.pid" ]; do sleep 0.1; i=$((i + 1)); done
+[ -s "$XDG_RUNTIME_DIR/job.pid" ] || { echo "skip: the session never started its job"; exit 0; }
+mkfifo "$XDG_RUNTIME_DIR/in"
+setsid sh -c "$helper_script" sh < "$XDG_RUNTIME_DIR/in" > "$XDG_RUNTIME_DIR/out" 2>/dev/null &
+exec 4> "$XDG_RUNTIME_DIR/in"
+answered() {
+  i=0
+  while [ $i -lt 50 ]; do
+    grep -q "^$1	" "$XDG_RUNTIME_DIR/out" 2>/dev/null && return 0
+    sleep 0.1
+    i=$((i + 1))
+  done
+  return 1
+}
+answered hello || { echo "skip: the helper never said hello"; exit 0; }
+printf '1\tPROBE\tk\n' >&4
+answered 1 || { echo "probe never answered"; exit 0; }
+want=$(cat "$XDG_RUNTIME_DIR/job.pid")$(printf '\t')sleep$(printf '\t')$(cd -P "$work" && pwd -P)
+got=$(awk 'index($0, "1\t") == 1 { getline; print; exit }' "$XDG_RUNTIME_DIR/out")
+if [ "$got" = "$want" ]; then echo "probe names the job"; else echo "probe said: $got"; fi
+kill "$(cat "$XDG_RUNTIME_DIR/job.pid")" 2>/dev/null
+exec 4>&-
+sleep 0.2
+rm -rf "$XDG_RUNTIME_DIR"
+"##;
+
+    /// The probe answers the foreground job's pid, `comm` and working
+    /// directory, so a WSL session reports its program like a native one.
+    #[cfg(any(windows, target_os = "linux"))]
+    #[test]
+    fn a_probe_names_the_foreground_jobs_pid_and_directory() {
+        let Some(lines) =
+            run_in_linux(&PROBE_FOREGROUND_HARNESS.replace("{script}", HELPER_SCRIPT))
+        else {
+            return;
+        };
+        assert_eq!(lines.trim_end(), "probe names the job");
     }
 
     /// A watch sits open on a directory that never changes, then a `RUN` and a

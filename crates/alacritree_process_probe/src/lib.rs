@@ -9,7 +9,7 @@
 //!
 //! Everything below that is per-platform: `/proc` on Linux, `sysctl` on
 //! macOS, a background refresher over `sysinfo` on Windows, and the WSL
-//! helper's own foreground `comm` for a session running inside a distro.
+//! helper's own foreground probe for a session running inside a distro.
 
 use std::cell::Cell;
 use std::path::PathBuf;
@@ -73,14 +73,16 @@ impl ProbeHandle {
                 answered: cached.answered,
             };
         }
-        let agent = self.shell_pid.and_then(foreground_agent_name);
-        let (foreground_job, nav_tui, answered) = match &self.wsl {
+        let (agent, foreground_job, nav_tui, answered) = match &self.wsl {
             Some(probe) => {
-                let comm = wsl_helper::foreground_comm(&probe.distro, &probe.key);
-                let (foreground_job, nav_tui) = wsl_probe_signals(comm.as_deref());
-                (foreground_job, nav_tui, comm.is_some())
+                let program = wsl_helper::foreground(&probe.distro, &probe.key);
+                let comm = program.as_ref().map(|program| program.comm.as_str());
+                let (foreground_job, nav_tui) = wsl_probe_signals(comm);
+                let agent = comm.and_then(|comm| agent_named(comm, ""));
+                (agent, foreground_job, nav_tui, comm.is_some())
             },
             None => (
+                self.shell_pid.and_then(foreground_agent_name),
                 self.shell_pid.is_some_and(shell_has_foreground_job),
                 self.shell_pid.is_some_and(foreground_nav_tui),
                 self.shell_pid.is_some_and(probe_has_answered),
@@ -96,16 +98,16 @@ impl ProbeHandle {
         Signals { agent, foreground_job, nav_tui, answered }
     }
 
-    /// Uncached: nothing asks for it every frame. A WSL session's helper
-    /// reports only the foreground `comm`, so it has no pid and no cwd.
+    /// Uncached: nothing asks for it every frame. A WSL session's comes from
+    /// the helper's last poll, with its pid and cwd as the distro spells them.
     pub fn foreground(&self) -> Option<ForegroundProgram> {
         if let Some(probe) = &self.wsl {
-            let comm = wsl_helper::foreground_comm(&probe.distro, &probe.key)?;
+            let program = wsl_helper::foreground(&probe.distro, &probe.key)?;
             return Some(ForegroundProgram {
                 side: Side::Wsl(probe.distro.clone()),
-                pid: None,
-                argv: vec![comm],
-                cwd: None,
+                pid: Some(program.pid),
+                argv: vec![program.comm],
+                cwd: program.cwd.map(PathBuf::from),
             });
         }
         let Program { pid, argv, cwd } = foreground_program(self.shell_pid?)?;

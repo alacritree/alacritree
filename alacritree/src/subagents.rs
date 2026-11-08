@@ -4,7 +4,7 @@
 //! Each harness reads its own files behind `alacritree_subagents`'s
 //! [`SubagentSource`]. This side knows the sessions. It hands every source
 //! each one as a [`Host`], which carries the program its session backend
-//! reports in the foreground, native or herdr-core alike.
+//! reports in the foreground, native or herdr-core alike, on either side.
 //!
 //! A scan stats files, so it runs on the job pool, one at a time and at most
 //! every `SCAN_EVERY`, and only while some harness's `subagents` key is on.
@@ -12,7 +12,6 @@
 //! coming for as long as there is something to drop when it finishes.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use alacritree_claude::subagents::ClaudeSubagents;
@@ -20,7 +19,9 @@ use alacritree_codex::CodexSubagents;
 use alacritree_common::jobs;
 #[cfg(test)]
 use alacritree_subagents::FakeSource;
-use alacritree_subagents::{Host, Scan, Subagent, SubagentSource, ambassador_impl_SubagentSource};
+use alacritree_subagents::{
+    Home, Host, Scan, Subagent, SubagentSource, ambassador_impl_SubagentSource,
+};
 use ambassador::Delegate;
 
 use crate::session::SessionId;
@@ -54,19 +55,16 @@ impl Harnesses {
     }
 }
 
-/// Where each harness keeps its files.
+/// Where each harness keeps its files on each side.
 #[derive(Clone, Debug)]
 pub(crate) struct Homes {
-    pub(crate) claude: Option<PathBuf>,
-    pub(crate) codex: Option<PathBuf>,
+    pub(crate) claude: Home,
+    pub(crate) codex: Home,
 }
 
 impl Default for Homes {
     fn default() -> Self {
-        Self {
-            claude: alacritree_claude::subagents::config_dir(),
-            codex: alacritree_codex::home_dir(),
-        }
+        Self { claude: alacritree_claude::subagents::home(), codex: alacritree_codex::home() }
     }
 }
 
@@ -200,6 +198,8 @@ fn scan(sources: &mut [Source], hosted: &[Hosted]) -> Running {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use alacritree_subagents::{ForegroundProgram, Side};
 
     use super::*;

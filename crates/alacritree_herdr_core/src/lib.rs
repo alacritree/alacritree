@@ -1151,22 +1151,12 @@ impl SessionHandle for HerdrCoreHandle {
     /// As fresh as the core's last foreground poll, as this machine reaches
     /// the path.
     fn cwd(&self) -> Option<PathBuf> {
-        let cwd = self.facts().foreground?.cwd;
-        match self.attached.core.side() {
-            Side::Native => Some(cwd),
-            Side::Wsl(distro) => Some(wsl::linux_to_windows(&cwd.to_string_lossy(), distro)),
-        }
+        Some(cwd_here(self.attached.core.side(), &self.facts().foreground?.cwd))
     }
 
     /// The cwd as the side spells it.
     fn foreground(&self) -> Option<ForegroundProgram> {
-        let foreground = self.facts().foreground?;
-        Some(ForegroundProgram {
-            side: self.attached.core.side().clone(),
-            pid: u32::try_from(foreground.pid).ok(),
-            argv: if foreground.argv.is_empty() { vec![foreground.name] } else { foreground.argv },
-            cwd: Some(foreground.cwd),
-        })
+        Some(foreground_program(self.attached.core.side(), self.facts().foreground?))
     }
 
     /// Follows the shell the stream shows, which a lost program replaces.
@@ -1182,6 +1172,25 @@ impl SessionHandle for HerdrCoreHandle {
             },
             None => alacritree_process_probe::reported_signals(self.foreground().as_ref(), pid),
         }
+    }
+}
+
+/// `cwd`, which a core on `side` reported, as this machine reaches it.
+fn cwd_here(side: &Side, cwd: &Path) -> PathBuf {
+    match side {
+        Side::Native => cwd.to_path_buf(),
+        Side::Wsl(distro) => wsl::linux_to_windows(&cwd.to_string_lossy(), distro),
+    }
+}
+
+/// The program a core on `side` reported in the foreground, with its pid and
+/// cwd as the side spells them.
+fn foreground_program(side: &Side, foreground: Foreground) -> ForegroundProgram {
+    ForegroundProgram {
+        side: side.clone(),
+        pid: u32::try_from(foreground.pid).ok(),
+        argv: if foreground.argv.is_empty() { vec![foreground.name] } else { foreground.argv },
+        cwd: Some(foreground.cwd),
     }
 }
 
@@ -1206,6 +1215,32 @@ mod tests {
 
     fn size(num_cols: u16, num_lines: u16) -> WindowSize {
         WindowSize { num_lines, num_cols, cell_width: 9, cell_height: 18 }
+    }
+
+    /// A distro core's foreground program keeps the distro's pid and Linux
+    /// cwd, which the sub-agent sources read against the distro's files,
+    /// while the sidebar's cwd is the path this machine reaches.
+    #[test]
+    fn a_distro_cores_program_keeps_the_distros_spelling() {
+        let ubuntu = Side::Wsl("Ubuntu".into());
+        let reported = |argv: &[&str]| Foreground {
+            pid: 4242,
+            name: "claude".into(),
+            argv: argv.iter().map(|arg| arg.to_string()).collect(),
+            cwd: PathBuf::from("/home/dev/app"),
+        };
+        assert_eq!(foreground_program(&ubuntu, reported(&[])), ForegroundProgram {
+            side: ubuntu.clone(),
+            pid: Some(4242),
+            argv: vec!["claude".into()],
+            cwd: Some(PathBuf::from("/home/dev/app")),
+        });
+        let program = foreground_program(&ubuntu, reported(&["/usr/bin/node", "cli.js"]));
+        assert_eq!(program.argv, ["/usr/bin/node", "cli.js"]);
+        assert_eq!(
+            cwd_here(&ubuntu, Path::new("/home/dev/app")),
+            wsl::linux_to_windows("/home/dev/app", "Ubuntu")
+        );
     }
 
     /// A session whose side had no connection when it opened, as a distro

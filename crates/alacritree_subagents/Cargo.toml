@@ -12,8 +12,10 @@ publish = false
 test-support = []
 
 [dependencies]
+alacritree_common.workspace = true
 alacritree_session_backend.workspace = true
 ambassador.workspace = true
+home = "0.5.5"
 thiserror.workspace = true
 
 [dev-dependencies]
