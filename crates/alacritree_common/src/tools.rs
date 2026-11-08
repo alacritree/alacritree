@@ -197,9 +197,9 @@ pub fn locate(program: &str) -> Option<PathBuf> {
     locate_in(program, &search_path(program), &executable_extensions())
 }
 
-/// Where `Command::new(program)` finds `program`, which is narrower than
-/// [`locate`] on Windows. A shell runs a `.cmd` shim or an extensionless
-/// script for a bare name, but `Command` never spawns either.
+/// Where `program` is in a form `Command::new` spawns, which is narrower
+/// than [`locate`] on Windows. A shell runs a `.cmd` shim or an
+/// extensionless script for a bare name, but `Command` never spawns either.
 pub fn locate_spawnable(program: &str) -> Option<PathBuf> {
     locate_in(program, &search_path(program), &spawnable_extensions(program))
 }

@@ -220,14 +220,18 @@ impl SideCore {
     }
 
     /// The distro's helper when it is up, and the `hc` it runs. That is the
-    /// configured path, else where [`tools::wsl_resolved`] found it. `None`
-    /// while no `hc` is known there, so a call takes the resident's route,
-    /// which reports a missing `hc`. The lookup keeps no miss, so an install
-    /// brings the helper's route back.
+    /// configured path, else where the helper's login shell found it, else
+    /// where [`tools::wsl_resolved`] found it since. `None` while no `hc` is
+    /// known there, so a call takes the resident's route, which reports a
+    /// missing `hc`. The lookup keeps no miss, so an install made after the
+    /// helper started brings the helper's route back.
     fn helper(&self) -> Option<(Arc<HelperClient>, String)> {
         let Launch::Wsl { distro, program } = &self.launch else { return None };
         let client = wsl_helper::client(distro)?;
-        let program = program.clone().or_else(|| tools::wsl_resolved(Tool::Hc, distro, || {}))?;
+        let program = program
+            .clone()
+            .or_else(|| client.capabilities()?.path(Tool::Hc.name()).map(str::to_string))
+            .or_else(|| tools::wsl_resolved(Tool::Hc, distro, || {}))?;
         Some((client, program))
     }
 
