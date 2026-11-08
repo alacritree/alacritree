@@ -1199,9 +1199,16 @@ impl<R: Repaint> Session<R> {
         self.placed = Some((workspace, position));
     }
 
+    /// End the program and its terminal. A session that closes calls this,
+    /// since dropping one leaves a terminal its backend keeps running.
+    pub(crate) fn kill(&mut self) {
+        if let Some(mut handle) = self.handle.take() {
+            handle.kill();
+        }
+    }
+
     /// Let go of the terminal and leave its program running, where the
-    /// backend can keep it. Otherwise the session keeps its terminal, and
-    /// dropping the session ends it.
+    /// backend can keep it. Otherwise the session keeps its terminal.
     pub(crate) fn detach(&mut self) {
         if let Some(handle) = &mut self.handle
             && handle.detach().is_ok()
@@ -1530,15 +1537,6 @@ impl<R: Repaint> Session<R> {
             cursor_line: (cursor.line.0 + back).max(0) as usize,
             cursor_column: cursor.column.0,
             history_size,
-        }
-    }
-}
-
-/// A session leaves only by closing, and closing ends its program.
-impl<R: Repaint> Drop for Session<R> {
-    fn drop(&mut self) {
-        if let Some(handle) = &mut self.handle {
-            handle.kill();
         }
     }
 }
@@ -3587,10 +3585,10 @@ pub(crate) mod tests {
         }
     }
 
-    /// A closing session ends its terminal rather than only letting go of
-    /// it, so a backend that keeps terminals alive does not leak one per tab.
+    /// A session dropped without closing, as in a crash, ends only what dies
+    /// with its handle. A terminal the backend keeps outlives it.
     #[test]
-    fn dropping_a_session_kills_its_terminal() {
+    fn dropping_a_session_leaves_its_terminal_to_the_backend() {
         let (mut session, request) = pending(None);
         let (backend, handle) = scripted(request);
         session.attach(handle);
@@ -3599,6 +3597,20 @@ pub(crate) mod tests {
         drop(session);
 
         let record = backend.session(id).expect("the session opened a terminal");
+        assert!(record.dropped && !record.killed && !record.detached);
+    }
+
+    /// A closing session ends its terminal rather than only letting go of
+    /// it, so a backend that keeps terminals alive does not leak one per tab.
+    #[test]
+    fn killing_a_session_ends_its_terminal() {
+        let (mut session, request) = pending(None);
+        let (backend, handle) = scripted(request);
+        session.attach(handle);
+
+        session.kill();
+
+        let record = backend.session(session.id).expect("the session opened a terminal");
         assert!(record.killed && record.dropped && !record.detached);
     }
 }

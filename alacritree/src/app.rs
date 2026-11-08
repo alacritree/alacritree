@@ -5282,7 +5282,21 @@ mod tests {
 
         let kept = core.session(in_core).expect("the core terminal");
         assert!(kept.detached && !kept.killed);
-        assert!(native.session(in_pty).expect("the native terminal").killed);
+        assert!(native.session(in_pty).expect("the native terminal").dropped);
+    }
+
+    /// An app that goes without a clean exit, as in a panic, kills nothing.
+    /// A core terminal stays for the next launch, as it does after a quit.
+    #[test]
+    fn an_app_dropped_without_quitting_leaves_core_terminals_running() {
+        let (mut app, _native, core) = app_preferring_a_scripted_core();
+        core.keep_terminals();
+        let in_core = app.spawn_session(&Context::default(), None).expect("a core open");
+
+        drop(app);
+
+        let kept = core.session(in_core).expect("the core terminal");
+        assert!(kept.dropped && !kept.killed);
     }
 
     /// A terminal the core keeps comes back at the workspace and position

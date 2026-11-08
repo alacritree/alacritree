@@ -1,6 +1,7 @@
-//! The open sessions and each workspace's active one.  Sessions leave only
-//! through `remove`, which repairs the active entries a removal invalidates,
-//! so no caller has to remember to.
+//! The open sessions and each workspace's active one. Sessions leave only
+//! through `remove`, which ends their programs and repairs the active entries
+//! a removal invalidates, so no caller has to remember to. A session dropped
+//! any other way, as in a crash, leaves a kept terminal running.
 
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
@@ -104,11 +105,11 @@ impl SessionList {
             .then_some(previous)
     }
 
-    /// Take `ids` out of the list and hand them back, in the order given.  A
-    /// workspace whose active session went hands its entry to the
-    /// [`Self::return_target`] when `return_to_previous` allows one, else to
-    /// the sibling `mode` lands on, or loses it when no sibling is left.  Ids
-    /// not in the list are skipped.
+    /// Close `ids`, ending each one's program, and hand them back in the
+    /// order given. A workspace whose active session went hands its entry to
+    /// the [`Self::return_target`] when `return_to_previous` allows one, else
+    /// to the sibling `mode` lands on, or loses it when no sibling is left.
+    /// Ids not in the list are skipped.
     pub(super) fn remove(
         &mut self,
         ids: &[SessionId],
@@ -122,7 +123,8 @@ impl SessionList {
             };
             let returned = self.return_target(id, return_to_previous);
             self.returns_to.remove(&id);
-            let session = self.sessions.remove(idx);
+            let mut session = self.sessions.remove(idx);
+            session.kill();
             let workspace = session.working_directory.clone();
             if self.active(&workspace) == Some(id) {
                 let remaining: Vec<(WorkspaceKey, SessionId)> =
