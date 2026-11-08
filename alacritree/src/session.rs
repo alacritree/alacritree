@@ -7,7 +7,9 @@ use std::time::{Duration, Instant};
 
 use alacritree_common::wsl_helper::WslProbe;
 use alacritree_multiplexer::{AgentStatus, PaneKey};
-use alacritree_session_backend::{ProcessTree, Screen, SessionHandle, Signals, TerminalColors};
+use alacritree_session_backend::{
+    Placement, ProcessTree, Screen, SessionHandle, Signals, TerminalColors,
+};
 pub(crate) use alacritree_session_backend::{SESSION_ID_ENV, ShellCommand};
 use alacritty_terminal::event::{Event as TermEvent, EventListener, WindowSize};
 use alacritty_terminal::grid::Dimensions;
@@ -426,6 +428,9 @@ pub(crate) struct Session<R: Repaint> {
     /// The terminal's backend side, from `attach` on. Scratchpads and task
     /// lists never get one.
     handle: Option<Handle>,
+    /// The workspace and position `handle` last heard, so a frame computes
+    /// a placement only when it changed.
+    placed: Option<(Option<PathBuf>, usize)>,
     /// Bytes written before the terminal existed, replayed by `attach`.
     /// `Some` only between `pending` and `attach`, which also makes it the
     /// answer to whether this session is still opening. A scratchpad has no
@@ -806,6 +811,10 @@ fn session_env(
 /// stay on the UI thread. Built by [`Session::pending`].
 pub(crate) type OpenRequest<R> = alacritree_session_backend::OpenRequest<EventProxy<R>>;
 
+/// Everything showing a running terminal in a session needs. Built by
+/// [`Session::pending_attach`].
+pub(crate) type AttachRequest<R> = alacritree_session_backend::AttachRequest<EventProxy<R>>;
+
 impl<R: Repaint> Session<R> {
     pub(crate) fn bind_pane(&mut self, key: PaneKey, shared_view: bool) {
         let bound_at = Instant::now();
@@ -868,6 +877,7 @@ impl<R: Repaint> Session<R> {
             pane_key: None,
             pane_bound_at: None,
             shared_view: false,
+            placed: None,
         })
     }
 
@@ -914,6 +924,7 @@ impl<R: Repaint> Session<R> {
             pane_key: None,
             pane_bound_at: None,
             shared_view: false,
+            placed: None,
         }
     }
 
@@ -988,6 +999,36 @@ impl<R: Repaint> Session<R> {
             report_distro,
             wsl_probe,
         )
+    }
+
+    /// A pending session for `terminal`, which its backend already runs,
+    /// plus what attaching it needs. The first paint restores as much
+    /// scrollback as `[scrolling] history` keeps.
+    pub(crate) fn pending_attach(
+        repaint: R,
+        config: &Config,
+        working_directory: Option<PathBuf>,
+        size: TermSize,
+        cell_size: (f32, f32),
+        terminal: String,
+    ) -> (Self, AttachRequest<R>) {
+        let (session, request) = Self::pending_shell(
+            repaint,
+            config,
+            working_directory,
+            size,
+            cell_size,
+            None,
+            None,
+            None,
+        );
+        let request = AttachRequest {
+            terminal,
+            history: config.scrolling.history,
+            colors: request.colors,
+            screen: request.screen,
+        };
+        (session, request)
     }
 
     /// A pending session running `program args` instead of the user's shell,
@@ -1078,6 +1119,7 @@ impl<R: Repaint> Session<R> {
                 background: config.palette.bg,
                 cursor: config.palette.cursor_bg,
             },
+            placement: Placement::default(),
             screen: Screen { term: term.clone(), listener: proxy.clone(), window_size },
         };
 
@@ -1114,6 +1156,7 @@ impl<R: Repaint> Session<R> {
             pane_key: None,
             pane_bound_at: None,
             shared_view: false,
+            placed: None,
         };
 
         (session, request)
@@ -1132,6 +1175,52 @@ impl<R: Repaint> Session<R> {
             handle.write(input);
         }
         self.handle = Some(handle);
+    }
+
+    /// Tell the terminal's backend that the session sits at `position` in
+    /// its workspace, when that changed. `title` names the workspace and is
+    /// asked only then. A session still opening is placed once it lands.
+    pub(crate) fn place(
+        &mut self,
+        position: usize,
+        title: impl FnOnce(&Option<PathBuf>) -> Option<String>,
+    ) {
+        let unchanged = self
+            .placed
+            .as_ref()
+            .is_some_and(|(workspace, at)| *workspace == self.working_directory && *at == position);
+        let Some(handle) = self.handle.as_mut().filter(|_| !unchanged) else { return };
+        let workspace = self.working_directory.clone();
+        handle.place(&Placement {
+            title: title(&workspace),
+            workspace: workspace.clone(),
+            position,
+        });
+        self.placed = Some((workspace, position));
+    }
+
+    /// Place the session again on the next [`Self::place`], as when its
+    /// workspace's title changes.
+    pub(crate) fn forget_placement(&mut self) {
+        self.placed = None;
+    }
+
+    /// End the program and its terminal. A session that closes calls this,
+    /// since dropping one leaves a terminal its backend keeps running.
+    pub(crate) fn kill(&mut self) {
+        if let Some(mut handle) = self.handle.take() {
+            handle.kill();
+        }
+    }
+
+    /// Let go of the terminal and leave its program running, where the
+    /// backend can keep it. Otherwise the session keeps its terminal.
+    pub(crate) fn detach(&mut self) {
+        if let Some(handle) = &mut self.handle
+            && handle.detach().is_ok()
+        {
+            self.handle = None;
+        }
     }
 
     /// Mark whether this session's grid is the one being painted.  Output from
@@ -1454,15 +1543,6 @@ impl<R: Repaint> Session<R> {
             cursor_line: (cursor.line.0 + back).max(0) as usize,
             cursor_column: cursor.column.0,
             history_size,
-        }
-    }
-}
-
-/// A session leaves only by closing, and closing ends its program.
-impl<R: Repaint> Drop for Session<R> {
-    fn drop(&mut self) {
-        if let Some(handle) = &mut self.handle {
-            handle.kill();
         }
     }
 }
@@ -2319,6 +2399,7 @@ pub(crate) mod tests {
             pane_key: None,
             pane_bound_at: None,
             shared_view: false,
+            placed: None,
         }
     }
 
@@ -3510,10 +3591,10 @@ pub(crate) mod tests {
         }
     }
 
-    /// A closing session ends its terminal rather than only letting go of
-    /// it, so a backend that keeps terminals alive does not leak one per tab.
+    /// A session dropped without closing, as in a crash, ends only what dies
+    /// with its handle. A terminal the backend keeps outlives it.
     #[test]
-    fn dropping_a_session_kills_its_terminal() {
+    fn dropping_a_session_leaves_its_terminal_to_the_backend() {
         let (mut session, request) = pending(None);
         let (backend, handle) = scripted(request);
         session.attach(handle);
@@ -3522,6 +3603,20 @@ pub(crate) mod tests {
         drop(session);
 
         let record = backend.session(id).expect("the session opened a terminal");
+        assert!(record.dropped && !record.killed && !record.detached);
+    }
+
+    /// A closing session ends its terminal rather than only letting go of
+    /// it, so a backend that keeps terminals alive does not leak one per tab.
+    #[test]
+    fn killing_a_session_ends_its_terminal() {
+        let (mut session, request) = pending(None);
+        let (backend, handle) = scripted(request);
+        session.attach(handle);
+
+        session.kill();
+
+        let record = backend.session(session.id).expect("the session opened a terminal");
         assert!(record.killed && record.dropped && !record.detached);
     }
 }

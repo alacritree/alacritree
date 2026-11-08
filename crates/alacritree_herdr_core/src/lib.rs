@@ -1,29 +1,32 @@
 //! The session backend that runs each terminal in the native side's
 //! herdr-core core, over one `hc connect` child in framed mode.
 //!
-//! Closing a session kills its terminal and removes the finished record. A
-//! demux thread routes each stream into a parser thread per session, rather
-//! than an `EventedPty` per session.
+//! Terminals start with `keep` and outlive alacritree. Closing a session
+//! kills its terminal, quitting only detaches, and the next launch adopts
+//! each terminal that the `labels` module marks as alacritree's. A demux
+//! thread routes each stream into a parser thread per session.
 
 mod connection;
+mod labels;
 mod parser;
 mod settings;
 mod wire;
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, TryLockError};
 
 use alacritree_process_probe::ProbeHandle;
 use alacritree_session_backend::{
-    ForegroundProgram, OpenRequest, Operation, PaneKey, Screen, SessionBackend, SessionBackendKind,
-    SessionError, SessionHandle, Side, Signals, TerminalColors,
+    Adoptable, AttachRequest, ForegroundProgram, OpenRequest, Operation, Placement, Screen,
+    SessionBackend, SessionBackendKind, SessionError, SessionHandle, Side, Signals, TerminalColors,
 };
 use alacritty_terminal::event::{EventListener, WindowSize};
 use alacritty_terminal::vte::ansi::Rgb;
 use serde_json::{Value, json};
 
-use self::connection::{Answer, Connection, Facts};
+use self::connection::{Answer, Connection, Facts, Waker};
 pub use self::settings::{HerdrCoreConfig, RawHerdrCore, SessionBackendChoice};
 
 /// The glyph that marks a herdr-core pane: herdr's ram's head from the
@@ -77,13 +80,37 @@ impl From<CoreError> for SessionError {
 pub struct HerdrCore {
     program: Arc<str>,
     connection: Arc<Mutex<Option<Arc<Connection>>>>,
+    claims: Arc<Mutex<Claims>>,
+    waker: Waker,
+}
+
+/// The terminals this process holds, so none is adopted twice.
+#[derive(Default)]
+struct Claims {
+    /// Every terminal a session opened, or that was handed out to adopt.
+    held: HashSet<String>,
+    /// Opens whose terminal the core may already report but whose address
+    /// is not in `held` yet. Adoption waits while any is in flight.
+    opening: usize,
 }
 
 impl HerdrCore {
     /// `program` is the `hc` binary, as `[integrations.herdr_core] path`
     /// names it.
     pub fn new(program: &str) -> Self {
-        Self { program: program.into(), connection: Default::default() }
+        Self {
+            program: program.into(),
+            connection: Default::default(),
+            claims: Default::default(),
+            waker: Default::default(),
+        }
+    }
+
+    /// Call `wake` whenever the core reports a terminal that may be
+    /// adoptable, so a terminal an agent starts shows up in an idle app.
+    /// Only the first call counts.
+    pub fn set_waker(&self, wake: impl Fn() + Send + Sync + 'static) {
+        let _ = self.waker.set(Box::new(wake));
     }
 
     /// The live connection, opened first if there is none. Holding the slot
@@ -93,9 +120,21 @@ impl HerdrCore {
         if let Some(connection) = slot.as_ref().filter(|connection| connection.alive()) {
             return Ok(connection.clone());
         }
-        let connection = Connection::open(&self.program)?;
+        let connection = Connection::open(&self.program, self.waker.clone())?;
         *slot = Some(connection.clone());
         Ok(connection)
+    }
+
+    /// The live connection, if one is open. Never waits, so the UI thread
+    /// can ask while another thread holds the slot to open a connection,
+    /// which can take seconds.
+    fn open_connection(&self) -> Option<Arc<Connection>> {
+        let slot = match self.connection.try_lock() {
+            Ok(slot) => slot,
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(TryLockError::WouldBlock) => return None,
+        };
+        slot.as_ref().filter(|connection| connection.alive()).cloned()
     }
 }
 
@@ -147,14 +186,8 @@ impl<H: From<HerdrCoreHandle>> SessionBackend<H> for HerdrCore {
     where
         L: EventListener + Send + 'static,
     {
-        let OpenRequest {
-            shell,
-            working_directory,
-            mut env,
-            colors,
-            screen: Screen { term, listener, window_size },
-            ..
-        } = request;
+        let OpenRequest { shell, working_directory, mut env, colors, placement, screen, .. } =
+            request;
         ensure_working_directory(working_directory.as_deref())?;
         let connection = self.connection().map_err(CoreError::unavailable)?;
 
@@ -166,36 +199,116 @@ impl<H: From<HerdrCoreHandle>> SessionBackend<H> for HerdrCore {
         let argv: Vec<String> = shell
             .map(|shell| std::iter::once(shell.program).chain(shell.args).collect())
             .unwrap_or_default();
+        let window_size = screen.window_size;
         let display = DisplayFacts::new(colors, window_size);
-        let (cols, rows) = (window_size.num_cols, window_size.num_lines);
-        let record = connection.call(
+        lock(&self.claims).opening += 1;
+        let run = connection.call(
             "terminal.run",
             json!({
                 "argv": argv,
                 "cwd": working_directory,
                 "env": env,
-                "size": { "cols": cols, "rows": rows },
+                "size": { "cols": window_size.num_cols, "rows": window_size.num_lines },
                 "display": display.json(),
                 "no_parent": true,
                 "no_notify": true,
+                "keep": true,
+                "labels": labels::for_run(&placement),
             }),
-        )?;
-        let address = record["address"].as_str().unwrap_or_default().to_string();
-        let shell_pid = record["pid"].as_u64().and_then(|pid| u32::try_from(pid).ok());
+        );
+        let (address, shell_pid) = {
+            let mut claims = lock(&self.claims);
+            claims.opening -= 1;
+            let record = run?;
+            let address = record["address"].as_str().unwrap_or_default().to_string();
+            claims.held.insert(address.clone());
+            (address, record["pid"].as_u64().and_then(|pid| u32::try_from(pid).ok()))
+        };
 
+        let stream = Stream { address: address.clone(), shell_pid, display, history: 0, placement };
+        stream.attach(connection.clone(), screen).map(H::from).inspect_err(|_| {
+            end(connection, address);
+        })
+    }
+
+    fn adoptable(&self) -> Vec<Adoptable> {
+        let Some(connection) = self.open_connection() else { return Vec::new() };
+        let mut claims = lock(&self.claims);
+        if claims.opening > 0 {
+            return Vec::new();
+        }
+        let found = connection.pick_terminals(|address, facts| {
+            let placement = labels::placement(&facts.labels)?;
+            (facts.live && !claims.held.contains(address))
+                .then(|| Adoptable { terminal: address.to_string(), placement })
+        });
+        claims.held.extend(found.iter().map(|adoptable| adoptable.terminal.clone()));
+        found
+    }
+
+    fn attach<L>(&self, request: AttachRequest<L>) -> Result<H, SessionError>
+    where
+        L: EventListener + Send + 'static,
+    {
+        let AttachRequest { terminal, history, colors, screen } = request;
+        let connection = self.connection().map_err(CoreError::unavailable)?;
+        let facts = connection.facts(&terminal).unwrap_or_default();
+        let stream = Stream {
+            address: terminal,
+            shell_pid: facts.pid,
+            display: DisplayFacts::new(colors, screen.window_size),
+            history,
+            placement: labels::placement(&facts.labels).unwrap_or_default(),
+        };
+        stream.attach(connection, screen).map(H::from)
+    }
+
+    fn watch<L>(&self, _request: AttachRequest<L>) -> Result<H, SessionError>
+    where
+        L: EventListener + Send + 'static,
+    {
+        Err(unsupported(Operation::Watch))
+    }
+}
+
+/// A terminal in the core, about to be shown in a session.
+struct Stream {
+    address: String,
+    shell_pid: Option<u32>,
+    display: DisplayFacts,
+    /// Scrollback lines the first paint restores.
+    history: usize,
+    /// What the terminal's labels record.
+    placement: Placement,
+}
+
+impl Stream {
+    /// Attach to the terminal and feed `screen` from it. A failure ends
+    /// nothing, and the caller decides whether the terminal lives on.
+    fn attach<L>(
+        self,
+        connection: Arc<Connection>,
+        Screen { term, listener, window_size }: Screen<L>,
+    ) -> Result<HerdrCoreHandle, SessionError>
+    where
+        L: EventListener + Send + 'static,
+    {
+        let Self { address, shell_pid, display, history, placement } = self;
+        let (cols, rows) = (window_size.num_cols, window_size.num_lines);
         let attached = connection.call_streaming(
             "terminal.attach",
-            json!({ "terminal": address, "cols": cols, "rows": rows, "display": display.json() }),
-        );
+            json!({
+                "terminal": address,
+                "cols": cols,
+                "rows": rows,
+                "display": display.json(),
+                "history": history,
+            }),
+        )?;
         let (answer, (channel, stream)) = match attached {
-            Ok(Answer { result, stream: Some(stream) }) => (result, stream),
-            Ok(Answer { result, stream: None }) => {
-                end(connection, address);
+            Answer { result, stream: Some(stream) } => (result, stream),
+            Answer { result, stream: None } => {
                 return Err(CoreError::Protocol(result.to_string()).into());
-            },
-            Err(error) => {
-                end(connection, address);
-                return Err(error.into());
             },
         };
 
@@ -203,7 +316,6 @@ impl<H: From<HerdrCoreHandle>> SessionBackend<H> for HerdrCore {
         let credit = move |bytes| credited.credit(channel, bytes);
         if let Err(error) = parser::spawn(term, listener, stream, credit) {
             connection.send(channel, wire::CLOSE, &[]);
-            end(connection, address);
             return Err(error.into());
         }
 
@@ -215,28 +327,11 @@ impl<H: From<HerdrCoreHandle>> SessionBackend<H> for HerdrCore {
             probe: ProbeHandle::new(shell_pid, None),
             size: (cols, rows),
             display,
+            placement,
             focused: AtomicU8::new(UNKNOWN),
+            closed: false,
             killed: false,
-        }
-        .into())
-    }
-
-    fn adoptable(&self) -> Vec<PaneKey> {
-        Vec::new()
-    }
-
-    fn attach<L>(&self, _pane: &PaneKey, _screen: Screen<L>) -> Result<H, SessionError>
-    where
-        L: EventListener + Send + 'static,
-    {
-        Err(unsupported(Operation::Attach))
-    }
-
-    fn watch<L>(&self, _pane: &PaneKey, _screen: Screen<L>) -> Result<H, SessionError>
-    where
-        L: EventListener + Send + 'static,
-    {
-        Err(unsupported(Operation::Watch))
+        })
     }
 }
 
@@ -277,7 +372,11 @@ pub struct HerdrCoreHandle {
     automatic_input: bool,
     size: (u16, u16),
     display: DisplayFacts,
+    /// What the terminal's labels last recorded.
+    placement: Placement,
     focused: AtomicU8,
+    /// The stream is closed, by a detach or a kill.
+    closed: bool,
     killed: bool,
 }
 
@@ -289,6 +388,12 @@ impl HerdrCoreHandle {
 
     fn facts(&self) -> Facts {
         self.connection.facts(&self.address).unwrap_or_default()
+    }
+
+    fn close_stream(&mut self) {
+        if !std::mem::replace(&mut self.closed, true) {
+            self.connection.send(self.channel, wire::CLOSE, &[]);
+        }
     }
 }
 
@@ -338,13 +443,24 @@ impl SessionHandle for HerdrCoreHandle {
         if std::mem::replace(&mut self.killed, true) {
             return;
         }
-        self.connection.send(self.channel, wire::CLOSE, &[]);
+        self.close_stream();
         end(self.connection.clone(), self.address.clone());
     }
 
-    /// The session opened this terminal, so it is the session's to end.
+    /// The terminal runs on in the core, where the next launch adopts it.
     fn detach(&mut self) -> Result<(), SessionError> {
-        Err(unsupported(Operation::Detach))
+        self.close_stream();
+        Ok(())
+    }
+
+    /// Never blocks, since nothing waits for the label call's answer.
+    fn place(&mut self, placement: &Placement) {
+        if *placement != self.placement {
+            let labels = labels::of(placement);
+            self.connection
+                .cast("terminal.label", json!({ "terminal": self.address, "labels": labels }));
+            self.placement = placement.clone();
+        }
     }
 
     /// As fresh as the core's last foreground poll.
@@ -370,9 +486,7 @@ impl SessionHandle for HerdrCoreHandle {
 /// Dropping a handle detaches its stream and leaves the terminal running.
 impl Drop for HerdrCoreHandle {
     fn drop(&mut self) {
-        if !self.killed {
-            self.connection.send(self.channel, wire::CLOSE, &[]);
-        }
+        self.close_stream();
     }
 }
 

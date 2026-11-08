@@ -74,6 +74,41 @@ pub struct OpenRequest<L> {
     pub wsl_probe: Option<WslProbe>,
     pub process_tree: ProcessTree,
     pub colors: TerminalColors,
+    pub placement: Placement,
+    pub screen: Screen<L>,
+}
+
+/// Where a session sits in the app. A backend whose terminals outlive the
+/// app records it with the terminal, so the next launch puts the terminal
+/// back in the same place.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Placement {
+    /// The checkout the session belongs to. `None` is the home tab.
+    pub workspace: Option<PathBuf>,
+    /// The session's index among its workspace's sessions.
+    pub position: usize,
+    /// How other clients name the workspace, as `<project> / <checkout>`.
+    pub title: Option<String>,
+}
+
+/// A terminal that a backend keeps and no session holds, with the place
+/// it last had in the app.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Adoptable {
+    /// The terminal's id in its backend, such as `t7`.
+    pub terminal: String,
+    pub placement: Placement,
+}
+
+/// Everything a backend needs to show a terminal it already runs in a
+/// session.
+#[derive(Clone)]
+pub struct AttachRequest<L> {
+    /// The terminal's id in its backend, such as `t7`.
+    pub terminal: String,
+    /// How many scrollback lines the first paint restores.
+    pub history: usize,
+    pub colors: TerminalColors,
     pub screen: Screen<L>,
 }
 

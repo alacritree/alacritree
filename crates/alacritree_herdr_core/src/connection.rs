@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -33,11 +33,20 @@ const HELLO_TIMEOUT: Duration = Duration::from_secs(15);
 /// the slowest call this client makes.
 const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// What the core says about a terminal's program, kept current from events.
+/// What the core says about a terminal, kept current from events.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Facts {
     pub(crate) foreground: Option<Foreground>,
+    /// The program runs. A finished terminal, or one whose lost program
+    /// waits for its replacement, is not live.
+    pub(crate) live: bool,
+    pub(crate) pid: Option<u32>,
+    pub(crate) labels: HashMap<String, String>,
 }
+
+/// Called when the core reports a terminal that is new, back after a loss,
+/// or labelled anew, which is when a terminal may become adoptable.
+pub(crate) type Waker = Arc<OnceLock<Box<dyn Fn() + Send + Sync>>>;
 
 /// What runs in a terminal now: the foreground process group's leader, or
 /// on Windows the program the terminal started.
@@ -54,11 +63,21 @@ pub(crate) struct Foreground {
 struct Record {
     address: String,
     foreground: Option<Foreground>,
+    state: String,
+    pid: Option<u32>,
+    #[serde(default)]
+    labels: HashMap<String, String>,
 }
 
 impl Record {
     fn facts(self) -> (String, Facts) {
-        (self.address, Facts { foreground: self.foreground })
+        let facts = Facts {
+            foreground: self.foreground,
+            live: self.state == "live",
+            pid: self.pid,
+            labels: self.labels,
+        };
+        (self.address, facts)
     }
 }
 
@@ -100,6 +119,7 @@ struct Routes {
 struct Shared {
     alive: AtomicBool,
     routes: Mutex<Routes>,
+    waker: Waker,
 }
 
 impl Shared {
@@ -119,7 +139,7 @@ pub(crate) struct Connection {
 
 impl Connection {
     /// Start `hc connect`, switch it to framed mode and follow its events.
-    pub(crate) fn open(program: &str) -> Result<Arc<Self>, CoreError> {
+    pub(crate) fn open(program: &str, waker: Waker) -> Result<Arc<Self>, CoreError> {
         let mut command = alacritree_common::command_ext::hidden(program);
         command.arg("connect").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
         // Backend calls may block, as the trait says. The app connects on a
@@ -146,7 +166,8 @@ impl Connection {
             },
         };
 
-        let shared = Arc::new(Shared { alive: AtomicBool::new(true), routes: Default::default() });
+        let shared =
+            Arc::new(Shared { alive: AtomicBool::new(true), routes: Default::default(), waker });
         let (frames, outgoing) = mpsc::channel();
         spawn_writer(stdin, outgoing, shared.clone())?;
         spawn_demux(stdout, frames.clone(), shared.clone())?;
@@ -178,6 +199,15 @@ impl Connection {
         self.call_opening(method, params, Opens::Nothing).map(|answer| answer.result)
     }
 
+    /// Make a call without waiting for its answer, for the UI thread.
+    pub(crate) fn cast(&self, method: &str, params: Value) {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let (reply, _ignored) = mpsc::channel();
+        self.shared.routes().calls.insert(id, Pending { opens: Opens::Nothing, reply });
+        let request = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
+        self.send(0, wire::DATA, request.to_string().as_bytes());
+    }
+
     /// Open a stream with `method`, whose reply names its channel.
     pub(crate) fn call_streaming(&self, method: &str, params: Value) -> Result<Answer, CoreError> {
         self.call_opening(method, params, Opens::Stream)
@@ -206,6 +236,15 @@ impl Connection {
     /// What the core last said about `address`.
     pub(crate) fn facts(&self, address: &str) -> Option<Facts> {
         self.shared.routes().terminals.get(address).cloned()
+    }
+
+    /// What `pick` takes from each terminal the core last reported.
+    pub(crate) fn pick_terminals<T>(
+        &self,
+        mut pick: impl FnMut(&str, &Facts) -> Option<T>,
+    ) -> Vec<T> {
+        let routes = self.shared.routes();
+        routes.terminals.iter().filter_map(|(address, facts)| pick(address, facts)).collect()
     }
 }
 
@@ -322,13 +361,13 @@ fn route(shared: &Shared, frames: &Sender<Vec<u8>>, Frame { channel, kind, paylo
     let mut routes = shared.routes();
     if channel == 0 {
         if kind == wire::DATA {
-            answer(&mut routes, frames, &payload);
+            answer(&mut routes, frames, &shared.waker, &payload);
         }
         return;
     }
     if routes.events == Some(channel) {
         if kind == wire::DATA {
-            take_events(&mut routes, frames, channel, &payload);
+            take_events(&mut routes, frames, &shared.waker, channel, &payload);
         }
         return;
     }
@@ -353,14 +392,24 @@ fn credit(channel: u32, bytes: usize) -> Vec<u8> {
     wire::encode(channel, wire::CREDIT, &(bytes as u32).to_le_bytes())
 }
 
-fn take_events(routes: &mut Routes, frames: &Sender<Vec<u8>>, channel: u32, payload: &[u8]) {
+fn take_events(
+    routes: &mut Routes,
+    frames: &Sender<Vec<u8>>,
+    waker: &Waker,
+    channel: u32,
+    payload: &[u8],
+) {
     let _ = frames.send(credit(channel, payload.len()));
     routes.partial_event.extend_from_slice(payload);
-    apply_events(routes);
+    if apply_events(routes)
+        && let Some(wake) = waker.get()
+    {
+        wake();
+    }
 }
 
 /// Hand a reply to its call, routing the channel it opens first.
-fn answer(routes: &mut Routes, frames: &Sender<Vec<u8>>, payload: &[u8]) {
+fn answer(routes: &mut Routes, frames: &Sender<Vec<u8>>, waker: &Waker, payload: &[u8]) {
     let Ok(reply) = serde_json::from_slice::<Value>(payload) else { return };
     let Some(pending) = reply["id"].as_u64().and_then(|id| routes.calls.remove(&id)) else {
         return;
@@ -382,7 +431,7 @@ fn answer(routes: &mut Routes, frames: &Sender<Vec<u8>>, payload: &[u8]) {
             routes.terminals = snapshot(&result["terminals"]);
             for early in std::mem::take(&mut routes.early_events) {
                 if early.channel == channel {
-                    take_events(routes, frames, channel, &early.payload);
+                    take_events(routes, frames, waker, channel, &early.payload);
                 }
             }
             None
@@ -397,48 +446,61 @@ fn snapshot(terminals: &Value) -> HashMap<String, Facts> {
     records.into_iter().map(Record::facts).collect()
 }
 
-/// Apply every whole event line buffered so far.
-fn apply_events(routes: &mut Routes) {
+/// Apply every whole event line buffered so far. Answers whether one may
+/// have made a terminal adoptable.
+fn apply_events(routes: &mut Routes) -> bool {
+    let mut arrived = false;
     while let Some(end) = routes.partial_event.iter().position(|&byte| byte == b'\n') {
         let line: Vec<u8> = routes.partial_event.drain(..=end).collect();
         if let Ok(message) = serde_json::from_slice::<Value>(&line) {
-            apply_event(&mut routes.terminals, &message);
+            arrived |= apply_event(&mut routes.terminals, &message);
         }
     }
+    arrived
 }
 
 /// Fold one notification from the event stream into the terminals' facts.
-fn apply_event(terminals: &mut HashMap<String, Facts>, message: &Value) {
+/// Answers whether it may have made a terminal adoptable.
+fn apply_event(terminals: &mut HashMap<String, Facts>, message: &Value) -> bool {
     let params = &message["params"];
     if message["method"] == "missed" {
         *terminals = snapshot(&params["terminals"]);
-        return;
+        return true;
     }
     if message["method"] != "event" {
-        return;
+        return false;
     }
-    let Some(address) = params["terminal"].as_str() else { return };
+    let Some(address) = params["terminal"].as_str() else { return false };
     let data = &params["data"];
     match params["type"].as_str() {
         Some("created" | "restarted") => {
-            if let Ok(record) = serde_json::from_value::<Record>(data.clone()) {
-                let (address, facts) = record.facts();
-                terminals.insert(address, facts);
-            }
+            let Ok(record) = serde_json::from_value::<Record>(data.clone()) else { return false };
+            let (address, facts) = record.facts();
+            terminals.insert(address, facts);
+            true
+        },
+        Some("labels") => {
+            let Some(facts) = terminals.get_mut(address) else { return false };
+            facts.labels = serde_json::from_value(data["labels"].clone()).unwrap_or_default();
+            true
         },
         Some("foreground") => {
             let facts = terminals.entry(address.to_string()).or_default();
             facts.foreground = serde_json::from_value(data.clone()).ok();
+            false
         },
         Some("lost" | "finished") => {
             if let Some(facts) = terminals.get_mut(address) {
-                *facts = Facts::default();
+                facts.foreground = None;
+                facts.live = false;
             }
+            false
         },
         Some("removed") => {
             terminals.remove(address);
+            false
         },
-        _ => {},
+        _ => false,
     }
 }
 
@@ -473,6 +535,25 @@ mod tests {
         assert_eq!(terminals["t1"].foreground, None);
         apply_event(&mut terminals, &event("removed", "t1", json!({})));
         assert!(terminals.is_empty());
+    }
+
+    /// A label change can make a terminal adoptable, so it replaces the
+    /// label set and asks for a wake. Output facts such as the foreground
+    /// do not.
+    #[test]
+    fn a_label_event_replaces_the_labels_and_wakes() {
+        let mut terminals = HashMap::new();
+        let created = json!({ "address": "t1", "pid": 10, "foreground": null, "state": "live",
+                              "labels": { "where": "a / b" } });
+        assert!(apply_event(&mut terminals, &event("created", "t1", created)));
+        let labels = json!({ "labels": { "alacritree.workspace": "/src" } });
+
+        assert!(apply_event(&mut terminals, &event("labels", "t1", labels)));
+        assert!(!apply_event(&mut terminals, &event("foreground", "t1", foreground(11, "vim"))));
+
+        let facts = &terminals["t1"];
+        assert!(facts.live);
+        assert_eq!(facts.labels, HashMap::from([("alacritree.workspace".into(), "/src".into())]));
     }
 
     /// The core may cut an event line across frames.

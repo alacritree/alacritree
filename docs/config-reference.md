@@ -273,7 +273,7 @@ Terminals that a herdr-core core keeps alive, and whether new sessions run in on
 - `icon` (string or table, default `"􏼀"`): The glyph on a herdr-core pane's sidebar row and palette entry. A bare string sets the glyph; a table also styles its color, weight, slant and size, the way `[ui.icons]` keys do. An ordinary character such as `"◫"` is drawn by your own fonts, and a glyph from the bundled symbol font by that font.
   - The table form takes the same keys as `integrations.herdr.icon`.
 - `path` (string, default `"hc"`): The `hc` program to run on Windows or natively. Its own name is looked up on PATH; any other value runs as written. hc finds its core's socket in its own order: `HC_SOCKET`, then the `socket` key in its `config.toml`, then its runtime directory.
-- `session_backend` ("native" | "herdr_core", default `"native"`): Which backend runs the terminal of a new session on the native side. "native" opens a PTY that alacritree owns. "herdr_core" runs the session as a terminal in the native side's herdr-core core, through `hc connect`. When that core cannot be used, the session opens native and a notice names the cause. WSL sessions and diff panes stay native.
+- `session_backend` ("native" | "herdr_core", default `"native"`): Which backend runs the terminal of a new session on the native side. "native" opens a PTY that alacritree owns. "herdr_core" runs the session as a terminal in the native side's herdr-core core, through `hc connect`. Such a terminal outlives alacritree: quitting leaves it running, and the next launch puts it back in its workspace. When that core cannot be used, the session opens native and a notice names the cause. WSL sessions and diff panes stay native.
 
 ### `[integrations.tasks]`
 

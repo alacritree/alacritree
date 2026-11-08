@@ -311,7 +311,7 @@ impl AlacritreeApp {
     /// Like [`Self::known_worktree_path`], but a path anywhere *inside* a
     /// worktree's subtree counts. A mover reports its cwd, which is usually
     /// a subdirectory, not the worktree root itself.
-    fn workspace_for_path(&self, path: &Path) -> Option<PathBuf> {
+    pub(super) fn workspace_for_path(&self, path: &Path) -> Option<PathBuf> {
         let worktrees: Vec<PathBuf> =
             self.projects.iter().flat_map(|p| &p.checkouts).map(|wt| wt.path.clone()).collect();
         owning_worktree(&worktrees, path)

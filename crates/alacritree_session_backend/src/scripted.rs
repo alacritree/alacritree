@@ -12,8 +12,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use alacritty_terminal::event::{Event, EventListener, WindowSize};
 
 use crate::{
-    ForegroundProgram, OpenRequest, Operation, PaneKey, Screen, SessionBackend, SessionBackendKind,
-    SessionError, SessionHandle, ShellCommand, Signals,
+    Adoptable, AttachRequest, ForegroundProgram, OpenRequest, Operation, Placement, SessionBackend,
+    SessionBackendKind, SessionError, SessionHandle, ShellCommand, Signals,
 };
 
 /// What a session sent its scripted terminal, in the order it sent it.
@@ -32,9 +32,12 @@ pub struct Record {
     pub env: HashMap<String, String>,
     /// The size an open started the terminal at, as `(columns, lines)`.
     pub opened_at: Option<(u16, u16)>,
-    /// The pane an attach or a watch took over.
-    pub pane: Option<PaneKey>,
+    /// The terminal an attach or a watch took over.
+    pub terminal: Option<String>,
     pub watching: bool,
+    /// Where the app last placed the session, starting with the placement
+    /// the open carried.
+    pub placement: Option<Placement>,
     pub calls: Vec<Call>,
     pub focused: bool,
     pub killed: bool,
@@ -56,7 +59,9 @@ struct Started {
 struct State {
     unready: Option<SessionError>,
     failures: VecDeque<SessionError>,
-    adoptable: Vec<PaneKey>,
+    adoptable: Vec<Adoptable>,
+    /// Opened terminals outlive their session, as a core's do.
+    keeps_terminals: bool,
     started: Vec<Started>,
 }
 
@@ -91,6 +96,8 @@ pub struct Scripted {
 
 pub struct ScriptedHandle {
     record: Arc<Mutex<Record>>,
+    /// The terminal outlives this handle, so a detach may let go of it.
+    keeps: bool,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -112,8 +119,16 @@ impl Scripted {
         self
     }
 
-    pub fn set_adoptable(&self, panes: Vec<PaneKey>) -> &Self {
-        lock(&self.state).adoptable = panes;
+    /// The next [`SessionBackend::adoptable`] hands out `terminals`.
+    pub fn set_adoptable(&self, terminals: Vec<Adoptable>) -> &Self {
+        lock(&self.state).adoptable = terminals;
+        self
+    }
+
+    /// Terminals opened from now on outlive their session, so a detach lets
+    /// go of them, as a core's terminals do.
+    pub fn keep_terminals(&self) -> &Self {
+        lock(&self.state).keeps_terminals = true;
         self
     }
 
@@ -156,26 +171,22 @@ impl Scripted {
         if let Some(error) = state.failures.pop_front() {
             return Err(error);
         }
+        let keeps = state.keeps_terminals || record.terminal.is_some();
         let record = Arc::new(Mutex::new(record));
         state.started.push(Started {
             record: record.clone(),
             emit: Box::new(move |event| listener.send_event(event)),
         });
-        Ok(ScriptedHandle { record }.into())
+        Ok(ScriptedHandle { record, keeps }.into())
     }
 
-    fn take_over<L, H>(
-        &self,
-        pane: &PaneKey,
-        screen: Screen<L>,
-        watching: bool,
-    ) -> Result<H, SessionError>
+    fn take_over<L, H>(&self, request: AttachRequest<L>, watching: bool) -> Result<H, SessionError>
     where
         L: EventListener + Send + 'static,
         H: From<ScriptedHandle>,
     {
-        let record = Record { pane: Some(pane.clone()), watching, ..Record::default() };
-        self.start(record, screen.listener)
+        let record = Record { terminal: Some(request.terminal), watching, ..Record::default() };
+        self.start(record, request.screen.listener)
     }
 }
 
@@ -199,27 +210,28 @@ impl<H: From<ScriptedHandle>> SessionBackend<H> for Scripted {
             working_directory: request.working_directory,
             env: request.env,
             opened_at: Some((size.num_cols, size.num_lines)),
+            placement: Some(request.placement),
             ..Record::default()
         };
         self.start(record, request.screen.listener)
     }
 
-    fn adoptable(&self) -> Vec<PaneKey> {
-        lock(&self.state).adoptable.clone()
+    fn adoptable(&self) -> Vec<Adoptable> {
+        std::mem::take(&mut lock(&self.state).adoptable)
     }
 
-    fn attach<L>(&self, pane: &PaneKey, screen: Screen<L>) -> Result<H, SessionError>
+    fn attach<L>(&self, request: AttachRequest<L>) -> Result<H, SessionError>
     where
         L: EventListener + Send + 'static,
     {
-        self.take_over(pane, screen, false)
+        self.take_over(request, false)
     }
 
-    fn watch<L>(&self, pane: &PaneKey, screen: Screen<L>) -> Result<H, SessionError>
+    fn watch<L>(&self, request: AttachRequest<L>) -> Result<H, SessionError>
     where
         L: EventListener + Send + 'static,
     {
-        self.take_over(pane, screen, true)
+        self.take_over(request, true)
     }
 }
 
@@ -254,18 +266,22 @@ impl SessionHandle for ScriptedHandle {
         lock(&self.record).killed = true;
     }
 
-    /// Only a pane the session took over can be let go of. A terminal it opened
-    /// is the session's own, as a native PTY is.
+    /// Only a terminal that outlives its handle can be let go of: one the
+    /// session took over, or any under [`Scripted::keep_terminals`]. Without
+    /// that, a terminal the session opened is its own, as a native PTY is.
     fn detach(&mut self) -> Result<(), SessionError> {
-        let mut record = lock(&self.record);
-        if record.pane.is_none() {
+        if !self.keeps {
             return Err(SessionError::Unsupported {
                 backend: SessionBackendKind::Scripted,
                 operation: Operation::Detach,
             });
         }
-        record.detached = true;
+        lock(&self.record).detached = true;
         Ok(())
+    }
+
+    fn place(&mut self, placement: &Placement) {
+        lock(&self.record).placement = Some(placement.clone());
     }
 
     /// A scripted terminal tracks the cwd of the program it was told runs.
@@ -295,9 +311,7 @@ mod tests {
     use alacritty_terminal::term::{Config, Term};
 
     use super::*;
-    use alacritree_multiplexer::MultiplexerKind;
-
-    use crate::{ProcessTree, Side};
+    use crate::{ProcessTree, Screen};
 
     struct Size;
 
@@ -332,15 +346,17 @@ mod tests {
             wsl_probe: None,
             process_tree: ProcessTree::default(),
             colors: Default::default(),
+            placement: Placement::default(),
             screen: screen(),
         }
     }
 
-    fn pane() -> PaneKey {
-        PaneKey {
-            multiplexer: MultiplexerKind::Herdr,
-            side: Side::Native,
-            terminal_id: "t1".into(),
+    fn running(terminal: &str) -> AttachRequest<VoidListener> {
+        AttachRequest {
+            terminal: terminal.into(),
+            history: 0,
+            colors: Default::default(),
+            screen: screen(),
         }
     }
 
@@ -349,7 +365,7 @@ mod tests {
     #[test]
     fn a_watched_terminal_takes_no_input_and_no_resize() {
         let backend = Scripted::default();
-        let mut handle: ScriptedHandle = backend.watch(&pane(), screen()).unwrap();
+        let mut handle: ScriptedHandle = backend.watch(running("t1")).unwrap();
         handle.write(b"ls\n".to_vec());
         handle.resize(screen().window_size);
 
@@ -362,7 +378,7 @@ mod tests {
     fn only_a_terminal_taken_over_detaches() {
         let backend = Scripted::default();
         let mut opened: ScriptedHandle = backend.open(request(1)).unwrap();
-        let mut attached: ScriptedHandle = backend.attach(&pane(), screen()).unwrap();
+        let mut attached: ScriptedHandle = backend.attach(running("t1")).unwrap();
 
         assert!(matches!(
             opened.detach(),
