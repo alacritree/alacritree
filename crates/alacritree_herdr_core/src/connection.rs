@@ -126,6 +126,18 @@ impl Shared {
     fn routes(&self) -> MutexGuard<'_, Routes> {
         self.routes.lock().unwrap_or_else(PoisonError::into_inner)
     }
+
+    /// End the connection when either pipe breaks. Dropping the senders
+    /// ends every parser's stream and fails every call still waiting, so
+    /// nothing the child still writes reaches a session.
+    fn close(&self) {
+        self.alive.store(false, Ordering::Relaxed);
+        let mut routes = self.routes();
+        routes.streams.clear();
+        for (_, pending) in routes.calls.drain() {
+            let _ = pending.reply.send(Err(CoreError::Closed));
+        }
+    }
 }
 
 pub(crate) struct Connection {
@@ -176,6 +188,11 @@ impl Connection {
             Arc::new(Self { frames, shared, next_id: AtomicU64::new(1), automatic_input, child });
         connection.call_opening("events.subscribe", json!({}), Opens::Events)?;
         Ok(connection)
+    }
+
+    #[cfg(feature = "test-support")]
+    pub(crate) fn kill(&self) {
+        let _ = lock(&self.child).kill();
     }
 
     pub(crate) fn alive(&self) -> bool {
@@ -315,7 +332,7 @@ fn drain(mut stderr: impl Read + Send + 'static) -> Receiver<String> {
 }
 
 fn spawn_writer(
-    mut stdin: ChildStdin,
+    mut stdin: impl Write + Send + 'static,
     outgoing: Receiver<Vec<u8>>,
     shared: Arc<Shared>,
 ) -> Result<(), CoreError> {
@@ -324,8 +341,7 @@ fn spawn_writer(
         .spawn(move || {
             while let Ok(frame) = outgoing.recv() {
                 if stdin.write_all(&frame).and_then(|()| stdin.flush()).is_err() {
-                    shared.alive.store(false, Ordering::Relaxed);
-                    return;
+                    return shared.close();
                 }
             }
         })
@@ -344,14 +360,7 @@ fn spawn_demux(
             while let Ok(Some(frame)) = wire::read_frame(&mut stdout) {
                 route(&shared, &frames, frame);
             }
-            shared.alive.store(false, Ordering::Relaxed);
-            // Dropping the senders ends every parser thread and fails every
-            // call still waiting.
-            let mut routes = shared.routes();
-            routes.streams.clear();
-            for (_, pending) in routes.calls.drain() {
-                let _ = pending.reply.send(Err(CoreError::Closed));
-            }
+            shared.close();
         })
         .map(drop)
         .map_err(CoreError::Io)
@@ -506,6 +515,8 @@ fn apply_event(terminals: &mut HashMap<String, Facts>, message: &Value) -> bool 
 
 #[cfg(test)]
 mod tests {
+    use std::time::Instant;
+
     use super::*;
 
     fn event(kind: &str, terminal: &str, data: Value) -> Value {
@@ -554,6 +565,42 @@ mod tests {
         let facts = &terminals["t1"];
         assert!(facts.live);
         assert_eq!(facts.labels, HashMap::from([("alacritree.workspace".into(), "/src".into())]));
+    }
+
+    /// A broken pipe to `hc connect` ends the connection even while its
+    /// output still arrives, so what it says afterwards reaches no session,
+    /// whose parser has moved on to a new connection.
+    #[test]
+    fn once_the_writer_breaks_late_output_reaches_no_session() {
+        struct Broken;
+        impl Write for Broken {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::ErrorKind::BrokenPipe.into())
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let shared = Arc::new(Shared {
+            alive: AtomicBool::new(true),
+            routes: Default::default(),
+            waker: Default::default(),
+        });
+        let (session, stream) = mpsc::channel();
+        shared.routes().streams.insert(3, session);
+        let (frames, outgoing) = mpsc::channel();
+        spawn_writer(Broken, outgoing, shared.clone()).expect("the writer thread");
+
+        frames.send(wire::encode(3, wire::DATA, b"typed")).expect("the writer reads frames");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while shared.alive.load(Ordering::Relaxed) {
+            assert!(Instant::now() < deadline, "the broken pipe ends the connection");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        route(&shared, &frames, Frame { channel: 3, kind: wire::DATA, payload: b"late".to_vec() });
+
+        assert!(matches!(stream.try_recv(), Err(mpsc::TryRecvError::Disconnected)));
     }
 
     /// The core may cut an event line across frames.

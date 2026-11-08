@@ -20,8 +20,9 @@ use alacritree_session_backend::{
     SessionHandle, ShellCommand,
 };
 use alacritty_terminal::event::{Event, EventListener, WindowSize};
-use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::grid::{Dimensions, Grid};
 use alacritty_terminal::sync::FairMutex;
+use alacritty_terminal::term::cell::Cell;
 use alacritty_terminal::term::{Config, Term};
 use serde_json::Value;
 
@@ -148,7 +149,9 @@ fn screen_for() -> (Screen<Exits>, Arc<FairMutex<Term<Exits>>>, Receiver<ExitSta
     let listener = Exits(sender);
     let term =
         Arc::new(FairMutex::new(Term::new(Config::default(), &Size(80, 24), listener.clone())));
-    (Screen { term: term.clone(), listener, window_size: window(80, 24) }, term, exits)
+    let screen =
+        Screen { term: term.clone(), listener, window_size: window(80, 24), history: 1000 };
+    (screen, term, exits)
 }
 
 fn open_at(backend: &HerdrCore, shell: ShellCommand, dir: &Path, placement: Placement) -> Opened {
@@ -172,12 +175,7 @@ fn open_at(backend: &HerdrCore, shell: ShellCommand, dir: &Path, placement: Plac
 /// Take over a running terminal, as the app adopts one.
 fn attach(backend: &HerdrCore, terminal: &str) -> Opened {
     let (screen, term, exits) = screen_for();
-    let request = AttachRequest {
-        terminal: terminal.into(),
-        history: 1000,
-        colors: Default::default(),
-        screen,
-    };
+    let request = AttachRequest { terminal: terminal.into(), colors: Default::default(), screen };
     let handle = backend.attach(request).expect("the core attaches the terminal");
     Opened { handle, term, exits }
 }
@@ -198,11 +196,23 @@ fn placed(workspace: &Path, position: usize, title: &str) -> Placement {
 }
 
 fn screen(term: &FairMutex<Term<Exits>>) -> String {
+    rows(term, |grid| 0..grid.screen_lines() as i32)
+}
+
+/// The lines scrolled off the top of the screen.
+fn scrollback(term: &FairMutex<Term<Exits>>) -> String {
+    rows(term, |grid| -(grid.history_size() as i32)..0)
+}
+
+fn rows(
+    term: &FairMutex<Term<Exits>>,
+    range: impl FnOnce(&Grid<Cell>) -> std::ops::Range<i32>,
+) -> String {
     let term = term.lock();
     let grid = term.grid();
     let mut text = String::new();
-    for line in 0..grid.screen_lines() {
-        let row = &grid[alacritty_terminal::index::Line(line as i32)];
+    for line in range(grid) {
+        let row = &grid[alacritty_terminal::index::Line(line)];
         text.extend((0..grid.columns()).map(|col| row[alacritty_terminal::index::Column(col)].c));
         text.push('\n');
     }
@@ -384,6 +394,52 @@ fn after_a_quit_the_next_launch_finds_each_terminal_where_it_was() {
     assert!(core.get(&first)["state"] == "live" && core.get(&second)["state"] == "live");
     let reattached = attach(&after, &first);
     shows(&reattached, "left-running");
+}
+
+/// Killing the `hc connect` child shows the reconnecting state in each
+/// session. Then each one repaints from the core with its scrollback, and
+/// takes keys again.
+#[test]
+#[ignore = "needs hc on PATH"]
+fn after_the_connection_drops_each_session_comes_back_with_its_scrollback() {
+    let core = Core::start();
+    let backend = HerdrCore::new("hc");
+    let mut sessions = [open(&backend, shell(), core.dir()), open(&backend, shell(), core.dir())];
+    let count: &[u8] = if cfg!(windows) {
+        b"for /L %i in (1,1,40) do @echo line-%i\r"
+    } else {
+        b"i=0; while [ $i -lt 40 ]; do i=$((i+1)); echo line-$i; done\r"
+    };
+    for (index, opened) in sessions.iter().enumerate() {
+        opened.handle.write(format!("echo scrolled-away-{index}\r").into_bytes());
+        opened.handle.write(count.to_vec());
+        shows(opened, "line-40");
+        assert!(scrollback(&opened.term).contains(&format!("scrolled-away-{index}")));
+    }
+
+    backend.kill_connection();
+
+    for opened in &sessions {
+        shows(opened, "reconnecting");
+    }
+    // A session that moves while the connection is down records its new
+    // place once it is back.
+    sessions[0].handle.place(&placed(core.dir(), 4, "app / moved"));
+    for (index, opened) in sessions.iter().enumerate() {
+        let marker = format!("scrolled-away-{index}");
+        wait_until("the repaint from the core", PATIENCE, || {
+            let (screen, scrollback) = (screen(&opened.term), scrollback(&opened.term));
+            !screen.contains("reconnecting")
+                && !scrollback.contains("reconnecting")
+                && scrollback.contains(&marker)
+        });
+        opened.handle.write(format!("echo typed-after-{index}\r").into_bytes());
+        shows(opened, &format!("typed-after-{index}"));
+    }
+    let moved = sessions[0].handle.terminal().to_string();
+    wait_until("the moved session's labels", PATIENCE, || {
+        core.get(&moved)["labels"]["alacritree.position"] == "4"
+    });
 }
 
 /// An agent puts a terminal into a workspace with a label alone. It is

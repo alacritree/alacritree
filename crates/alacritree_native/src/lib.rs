@@ -209,7 +209,7 @@ where
         process_tree: ProcessTree { boost_on_focus: boost, reap_on_close: reap },
         colors: _,
         placement: _,
-        screen: Screen { term, listener, window_size },
+        screen: Screen { term, listener, window_size, history: _ },
     } = request;
 
     ensure_working_directory(working_directory.as_deref())?;
@@ -370,6 +370,7 @@ pub(crate) mod tests {
                     cell_width: 8,
                     cell_height: 16,
                 },
+                history: 0,
             },
         };
         (request, term)
@@ -411,10 +412,8 @@ pub(crate) mod tests {
     fn a_native_terminal_neither_detaches_nor_is_taken_over() {
         let (mut request, term) = request("sh", &[]);
         request.shell = None;
-        let screen =
-            Screen { term, listener: VoidListener, window_size: request.screen.window_size };
-        let running =
-            AttachRequest { terminal: "t".into(), history: 0, colors: request.colors, screen };
+        let screen = Screen { term, listener: VoidListener, ..request.screen };
+        let running = AttachRequest { terminal: "t".into(), colors: request.colors, screen };
 
         let attached: Result<NativeHandle, _> = Native::default().attach(running);
 

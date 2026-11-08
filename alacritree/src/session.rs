@@ -1022,12 +1022,7 @@ impl<R: Repaint> Session<R> {
             None,
             None,
         );
-        let request = AttachRequest {
-            terminal,
-            history: config.scrolling.history,
-            colors: request.colors,
-            screen: request.screen,
-        };
+        let request = AttachRequest { terminal, colors: request.colors, screen: request.screen };
         (session, request)
     }
 
@@ -1120,7 +1115,12 @@ impl<R: Repaint> Session<R> {
                 cursor: config.palette.cursor_bg,
             },
             placement: Placement::default(),
-            screen: Screen { term: term.clone(), listener: proxy.clone(), window_size },
+            screen: Screen {
+                term: term.clone(),
+                listener: proxy.clone(),
+                window_size,
+                history: config.scrolling.history,
+            },
         };
 
         let session = Self {
