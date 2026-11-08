@@ -727,6 +727,16 @@ impl Link {
             self.send(wire::FOCUS, &[u8::from(focused)]);
         }
     }
+
+    /// Input held for the first attach, in the order it was sent. A reply
+    /// goes as DATA when the stream does not take AUTOMATIC_INPUT.
+    fn take_held(&mut self) -> Vec<(u8, Vec<u8>)> {
+        let reply = if self.automatic_input { wire::AUTOMATIC_INPUT } else { wire::DATA };
+        std::mem::take(&mut self.held)
+            .into_iter()
+            .map(|(kind, bytes)| (if kind == wire::AUTOMATIC_INPUT { reply } else { kind }, bytes))
+            .collect()
+    }
 }
 
 /// What a session's parser follows once it waited for a connection.
@@ -810,7 +820,7 @@ impl Attached {
         if recorded.as_ref() != Some(&link.placement) {
             link.send_labels(&self.address);
         }
-        for (kind, bytes) in std::mem::take(&mut link.held) {
+        for (kind, bytes) in link.take_held() {
             link.send(kind, &bytes);
         }
         Ok(Resumed::Stream(opened.stream))
@@ -859,13 +869,15 @@ impl SessionHandle for HerdrCoreHandle {
     }
 
     /// Without AUTOMATIC_INPUT on the whole path a reply goes as DATA, which
-    /// the core counts as typing.
+    /// the core counts as typing. A reply held for the first attach waits to
+    /// learn the path.
     fn reply(&self, bytes: Vec<u8>) {
         if bytes.is_empty() {
             return;
         }
         let mut link = self.attached.link();
-        let kind = if link.automatic_input { wire::AUTOMATIC_INPUT } else { wire::DATA };
+        let automatic = link.automatic_input || link.connection.is_none();
+        let kind = if automatic { wire::AUTOMATIC_INPUT } else { wire::DATA };
         link.send(kind, &bytes);
     }
 
@@ -959,18 +971,83 @@ impl Drop for HerdrCoreHandle {
 mod tests {
     use super::*;
 
-    #[test]
-    fn display_facts_spell_colors_as_the_core_reads_them() {
-        let colors = TerminalColors {
+    fn colors() -> TerminalColors {
+        TerminalColors {
             foreground: Rgb { r: 0xff, g: 0x80, b: 0 },
             background: Rgb { r: 0, g: 0, b: 0x10 },
             cursor: None,
-        };
-        let size = WindowSize { num_lines: 24, num_cols: 80, cell_width: 9, cell_height: 18 };
+        }
+    }
 
+    fn size(num_cols: u16, num_lines: u16) -> WindowSize {
+        WindowSize { num_lines, num_cols, cell_width: 9, cell_height: 18 }
+    }
+
+    /// A session whose side had no connection when it opened, as a distro
+    /// session is while its resident connection starts.
+    fn waiting_for_its_first_attach() -> HerdrCoreHandle {
+        let link = Link {
+            connection: None,
+            channel: 0,
+            automatic_input: false,
+            size: (80, 24),
+            display: DisplayFacts::new(colors(), size(80, 24)),
+            focused: None,
+            placement: Placement::default(),
+            held: Vec::new(),
+            closed: false,
+        };
+        let core = Arc::new(SideCore::native("hc", Waker::default()));
+        let attached =
+            Arc::new(Attached { core, address: "t1".into(), history: 0, link: Mutex::new(link) });
+        HerdrCoreHandle { attached, probe: None, started: Facts::default(), killed: false }
+    }
+
+    #[test]
+    fn display_facts_spell_colors_as_the_core_reads_them() {
         assert_eq!(
-            DisplayFacts::new(colors, size).json(),
+            DisplayFacts::new(colors(), size(80, 24)).json(),
             json!({ "fg": "#ff8000", "bg": "#000010", "cursor": null, "cell": [9, 18] })
         );
+    }
+
+    /// Keys typed while the resident connection opens are not lost: they go
+    /// out once the stream attaches, in the order typed, and a query reply
+    /// still goes as automatic input. A resize waits for the attach, which
+    /// sends the latest size itself.
+    #[test]
+    fn input_sent_before_the_first_attach_goes_out_in_order() {
+        let mut handle = waiting_for_its_first_attach();
+        handle.write(b"ls".to_vec());
+        handle.reply(b"\x1b[0n".to_vec());
+        handle.resize(size(120, 40));
+        handle.write(b"\r".to_vec());
+
+        let mut link = handle.attached.link();
+        link.automatic_input = true;
+        assert_eq!(link.take_held(), vec![
+            (wire::DATA, b"ls".to_vec()),
+            (wire::AUTOMATIC_INPUT, b"\x1b[0n".to_vec()),
+            (wire::DATA, b"\r".to_vec()),
+        ]);
+        assert_eq!(link.size, (120, 40));
+    }
+
+    /// Without AUTOMATIC_INPUT on the stream, a held reply goes as DATA.
+    #[test]
+    fn a_held_reply_goes_as_data_on_a_stream_without_automatic_input() {
+        let handle = waiting_for_its_first_attach();
+        handle.reply(b"\x1b[0n".to_vec());
+
+        assert_eq!(handle.attached.link().take_held(), vec![(wire::DATA, b"\x1b[0n".to_vec())]);
+    }
+
+    /// A session let go before its first attach never takes a stream.
+    #[test]
+    fn a_session_detached_before_its_first_attach_never_attaches() {
+        let mut handle = waiting_for_its_first_attach();
+        handle.detach().expect("a detach");
+
+        assert!(matches!(handle.attached.resume(false), Resumed::Released));
     }
 }
