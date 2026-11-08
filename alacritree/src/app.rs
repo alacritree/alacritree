@@ -5302,6 +5302,44 @@ mod tests {
         assert!(native_core.session(id).is_some());
     }
 
+    /// A distro core lists the terminals it kept, and each comes back
+    /// through that core, not the native one.
+    #[test]
+    fn a_terminal_a_distro_core_kept_is_adopted_through_that_core() {
+        let (mut app, _native, native_core) = app_preferring_a_scripted_core();
+        let distro_core = ScriptedSessions::default();
+        if let Some(Cores::Scripted(cores)) = &mut app.cores {
+            cores.insert(Side::Wsl("d".into()), distro_core.clone());
+        }
+        distro_core.set_adoptable(vec![adoptable("t3", None, 0)]);
+
+        app.poll_core_terminals(&Context::default());
+
+        let attached: Vec<_> =
+            distro_core.records().into_iter().filter_map(|r| r.terminal).collect();
+        assert_eq!(attached, ["t3"]);
+        assert!(native_core.records().is_empty());
+        assert_eq!(ids_in(&app, &None).len(), 1);
+    }
+
+    /// A core that took the request and gave no answer may run the shell
+    /// already, so no native one opens beside it. The core reports the
+    /// terminal later and the app adopts it then.
+    #[test]
+    fn a_shell_the_core_may_have_started_opens_nowhere_else() {
+        let (mut app, native, core) = app_preferring_a_scripted_core();
+        core.fail_next(SessionError::Unconfirmed {
+            backend: alacritree_session_backend::SessionBackendKind::Scripted,
+            source: "no reply".into(),
+        });
+
+        let opened = app.spawn_session(&Context::default(), None);
+
+        assert!(matches!(opened, Err(SessionError::Unconfirmed { .. })), "{opened:?}");
+        assert!(native.records().is_empty());
+        assert!(app.sessions.iter().next().is_none());
+    }
+
     #[test]
     fn a_shell_opens_in_the_core_while_the_core_is_ready() {
         let (mut app, native, core) = app_preferring_a_scripted_core();
