@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -37,9 +37,7 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Facts {
     pub(crate) foreground: Option<Foreground>,
-    /// The program runs. A finished terminal, or one whose lost program
-    /// waits for its replacement, is not live.
-    pub(crate) live: bool,
+    pub(crate) state: State,
     pub(crate) pid: Option<u32>,
     pub(crate) labels: HashMap<String, String>,
     /// The name a client gave the terminal.
@@ -48,6 +46,30 @@ pub(crate) struct Facts {
     pub(crate) title: Option<String>,
     /// The directory the terminal started in.
     pub(crate) cwd: Option<PathBuf>,
+}
+
+/// Where a terminal's program stands. Only the core knows whether it keeps a
+/// terminal, so its events are what tell a loss from a final end.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum State {
+    Live,
+    /// The core lost the program of a kept terminal and starts a shell in
+    /// its place.
+    Lost,
+    #[default]
+    Finished,
+}
+
+impl State {
+    /// A record's state. A live record with no program is between a loss
+    /// and its new shell.
+    pub(crate) fn of_record(state: &str, pid: Option<u32>) -> Self {
+        match (state, pid) {
+            ("live", Some(_)) => Self::Live,
+            ("live", None) => Self::Lost,
+            _ => Self::Finished,
+        }
+    }
 }
 
 /// Called when the core reports a terminal that is new, back after a loss,
@@ -86,7 +108,7 @@ impl Record {
     fn facts(self) -> (String, Facts) {
         let facts = Facts {
             foreground: self.foreground,
-            live: self.state == "live",
+            state: State::of_record(&self.state, self.pid),
             pid: self.pid,
             labels: self.labels,
             name: self.name,
@@ -135,6 +157,8 @@ struct Routes {
 struct Shared {
     alive: AtomicBool,
     routes: Mutex<Routes>,
+    /// Signalled when the terminals' facts change or the connection closes.
+    changed: Condvar,
     waker: Waker,
 }
 
@@ -153,6 +177,7 @@ impl Shared {
         for (_, pending) in routes.calls.drain() {
             let _ = pending.reply.send(Err(CoreError::Closed));
         }
+        self.changed.notify_all();
     }
 }
 
@@ -198,8 +223,12 @@ impl Connection {
             },
         };
 
-        let shared =
-            Arc::new(Shared { alive: AtomicBool::new(true), routes: Default::default(), waker });
+        let shared = Arc::new(Shared {
+            alive: AtomicBool::new(true),
+            routes: Default::default(),
+            changed: Condvar::new(),
+            waker,
+        });
         let (frames, outgoing) = mpsc::channel();
         spawn_writer(stdin, outgoing, shared.clone())?;
         spawn_demux(stdout, frames.clone(), shared.clone())?;
@@ -277,6 +306,29 @@ impl Connection {
     /// What the core last said about `address`.
     pub(crate) fn facts(&self, address: &str) -> Option<Facts> {
         self.shared.routes().terminals.get(address).cloned()
+    }
+
+    /// Block until `check` finds an answer in the terminals' facts, which it
+    /// reads again on every change. `None` when the connection closes first.
+    pub(crate) fn wait<T>(
+        &self,
+        mut check: impl FnMut(&HashMap<String, Facts>) -> Option<T>,
+    ) -> Option<T> {
+        let mut routes = self.shared.routes();
+        while self.alive() {
+            if let Some(answer) = check(&routes.terminals) {
+                return Some(answer);
+            }
+            routes = self.shared.changed.wait(routes).unwrap_or_else(PoisonError::into_inner);
+        }
+        None
+    }
+
+    /// Make every [`Self::wait`] check again, for a change its check reads
+    /// outside the facts.
+    pub(crate) fn wake(&self) {
+        let _routes = self.shared.routes();
+        self.shared.changed.notify_all();
     }
 
     /// What `pick` takes from each terminal the core last reported.
@@ -401,6 +453,7 @@ fn route(shared: &Shared, frames: &Sender<Vec<u8>>, Frame { channel, kind, paylo
     if routes.events == Some(channel) {
         if kind == wire::DATA {
             take_events(&mut routes, frames, &shared.waker, channel, &payload);
+            shared.changed.notify_all();
         }
         return;
     }
@@ -527,10 +580,11 @@ fn apply_event(terminals: &mut HashMap<String, Facts>, message: &Value) -> bool 
             facts.foreground = serde_json::from_value(data.clone()).ok();
             false
         },
-        Some("lost" | "finished") => {
+        Some(kind @ ("lost" | "finished")) => {
             let Some(facts) = terminals.get_mut(address) else { return false };
             facts.foreground = None;
-            facts.live = false;
+            facts.state = if kind == "lost" { State::Lost } else { State::Finished };
+            facts.pid = None;
             true
         },
         Some("removed") => terminals.remove(address).is_some(),
@@ -588,8 +642,26 @@ mod tests {
         assert!(!apply_event(&mut terminals, &event("foreground", "t1", foreground(11, "vim"))));
 
         let facts = &terminals["t1"];
-        assert!(facts.live);
+        assert_eq!(facts.state, State::Live);
         assert_eq!(facts.labels, HashMap::from([("alacritree.workspace".into(), "/src".into())]));
+    }
+
+    /// The core sends `lost` only for a kept terminal it restarts, and
+    /// `finished` for every final end, a dead holder of an unkept one too.
+    #[test]
+    fn a_lost_terminal_waits_for_its_shell_and_a_finished_one_does_not() {
+        let mut terminals = HashMap::new();
+        for address in ["t1", "t2"] {
+            let created =
+                json!({ "address": address, "pid": 10, "foreground": null, "state": "live" });
+            apply_event(&mut terminals, &event("created", address, created));
+        }
+
+        apply_event(&mut terminals, &event("lost", "t1", json!({ "reason": "holder_lost" })));
+        apply_event(&mut terminals, &event("finished", "t2", json!({ "reason": "holder_lost" })));
+
+        assert_eq!((terminals["t1"].state, terminals["t1"].pid), (State::Lost, None));
+        assert_eq!((terminals["t2"].state, terminals["t2"].pid), (State::Finished, None));
     }
 
     /// A broken pipe to `hc connect` ends the connection even while its
@@ -610,6 +682,7 @@ mod tests {
         let shared = Arc::new(Shared {
             alive: AtomicBool::new(true),
             routes: Default::default(),
+            changed: Condvar::new(),
             waker: Default::default(),
         });
         let (session, stream) = mpsc::channel();

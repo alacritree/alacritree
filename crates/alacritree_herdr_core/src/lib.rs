@@ -5,7 +5,7 @@
 //! `labels` marks as alacritree's, and only detaches from any other.
 //! Quitting detaches, and the next launch adopts alacritree's own. A
 //! session's parser attaches its stream once the side's connection is up,
-//! and again after one drops.
+//! and again after a drop or a loss.
 
 mod connection;
 mod core;
@@ -17,8 +17,10 @@ mod parser;
 mod settings;
 mod wire;
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
@@ -33,7 +35,7 @@ use alacritty_terminal::event::{EventListener, WindowSize};
 use alacritty_terminal::vte::ansi::Rgb;
 use serde_json::{Value, json};
 
-use self::connection::{Answer, Connection, Facts, Foreground, Waker};
+use self::connection::{Answer, Connection, Facts, Foreground, State, Waker};
 use self::core::{RECONNECT_INTERVAL, SideCore};
 use self::elsewhere::HcPaths;
 pub use self::elsewhere::{CoreElsewhere, HcConfigError, Remedy};
@@ -84,6 +86,12 @@ impl CoreError {
     /// The call went out and no answer came back, so it may have run.
     fn unanswered(&self) -> bool {
         matches!(self, Self::Timeout(_) | Self::Helper(TransportError::NoReply(_)))
+    }
+
+    /// The core refused the call for now, such as an attach to a terminal
+    /// that waits for its new shell.
+    fn is_unavailable(&self) -> bool {
+        matches!(self, Self::Rpc { kind, .. } if kind == "unavailable")
     }
 
     fn unavailable(self) -> SessionError {
@@ -283,7 +291,7 @@ impl HerdrCore {
             focused: None,
             placement,
             held: Vec::new(),
-            closed: false,
+            pid: started.pid,
         };
         let stream = match self.core.live() {
             Some(connection) => {
@@ -297,9 +305,14 @@ impl HerdrCore {
             },
             None => None,
         };
-        let link = Mutex::new(link);
-        let attached =
-            Arc::new(Attached { core: self.core.clone(), address, history, access, link });
+        let attached = Arc::new(Attached {
+            core: self.core.clone(),
+            address,
+            history,
+            access,
+            link: Mutex::new(link),
+            closed: AtomicBool::new(false),
+        });
         if let Err(error) = parser::spawn(term, listener, stream, attached.clone()) {
             attached.link().send(wire::CLOSE, &[]);
             return Err(error.into());
@@ -308,7 +321,7 @@ impl HerdrCore {
         let native = matches!(self.core.side(), Side::Native);
         Ok(HerdrCoreHandle {
             attached,
-            probe: native.then(|| ProbeHandle::new(started.pid, None)),
+            probe: native.then(|| RefCell::new((started.pid, ProbeHandle::new(started.pid, None)))),
             started,
             killed: false,
         })
@@ -591,7 +604,7 @@ enum Access {
 
 fn adoptable(claims: &Claims, address: &str, facts: &Facts) -> Option<Adoptable> {
     let placement = labels::placement(&facts.labels)?;
-    (facts.live && !claims.held.contains(address))
+    (facts.state == State::Live && !claims.held.contains(address))
         .then(|| Adoptable { terminal: address.to_string(), placement })
 }
 
@@ -632,7 +645,7 @@ fn record_facts(record: &Value) -> (String, Facts) {
     let text = |key: &str| record[key].as_str().map(str::to_string);
     let facts = Facts {
         foreground: serde_json::from_value(record["foreground"].clone()).ok().or(started),
-        live: record["state"] == "live",
+        state: State::of_record(record["state"].as_str().unwrap_or_default(), pid),
         pid,
         labels: serde_json::from_value(record["labels"].clone()).unwrap_or_default(),
         name: text("name"),
@@ -737,6 +750,10 @@ struct Attached {
     history: usize,
     access: Access,
     link: Mutex<Link>,
+    /// The session let go of the stream, by a detach, a kill or a drop. It
+    /// changes only under the `link` lock, and a wait on the facts reads it
+    /// without that lock.
+    closed: AtomicBool,
 }
 
 /// The stream a session rides on now, and what the core must hear again on
@@ -755,8 +772,8 @@ struct Link {
     placement: Placement,
     /// Input typed before the first attach, sent in order once it is up.
     held: Vec<(u8, Vec<u8>)>,
-    /// The session let go of the stream, by a detach, a kill or a drop.
-    closed: bool,
+    /// The program the stream shows.
+    pid: Option<u32>,
 }
 
 impl Link {
@@ -808,7 +825,8 @@ impl Link {
     }
 }
 
-/// What a session's parser follows once it waited for a connection.
+/// What a session's parser follows once it waited for a connection, or for
+/// the shell the core starts after it lost the program.
 pub(crate) enum Resumed {
     /// A new stream, whose first paint restores the screen.
     Stream(Receiver<Chunk>),
@@ -816,11 +834,29 @@ pub(crate) enum Resumed {
     Gone,
     /// The session let go of the terminal while it waited.
     Released,
+    /// The connection dropped while the session waited for a new shell.
+    Dropped,
+}
+
+/// What the core says became of a terminal whose stream it closed.
+pub(crate) enum Ending {
+    /// The core starts a new shell in place of the lost program.
+    Lost,
+    /// The program ended for good, or the terminal is gone.
+    Final,
+    /// The session let go of the terminal while it waited.
+    Released,
+    /// The connection dropped before the core said.
+    Dropped,
 }
 
 impl Attached {
     fn link(&self) -> MutexGuard<'_, Link> {
         lock(&self.link)
+    }
+
+    fn closed(&self) -> bool {
+        self.closed.load(Ordering::Relaxed)
     }
 
     /// Tell the core that `bytes` of the current stream were parsed.
@@ -837,7 +873,7 @@ impl Attached {
     /// thread calls it.
     pub(crate) fn resume(&self, mut wait: bool) -> Resumed {
         loop {
-            if self.link().closed {
+            if self.closed() {
                 return Resumed::Released;
             }
             if std::mem::replace(&mut wait, true) {
@@ -846,9 +882,14 @@ impl Attached {
             let Some(connection) = self.core.reconnect() else { continue };
             match self.reattach(connection) {
                 Ok(resumed) => return resumed,
+                // The core refuses an attach while it starts a lost
+                // program's new shell.
+                Err(error @ CoreError::Rpc { .. }) if error.is_unavailable() => {
+                    log::debug!("herdr-core attach of {}: {error}", self.address);
+                },
                 // A session that closed while it waited may have killed and
                 // removed the terminal itself, and must not report an exit.
-                Err(CoreError::Rpc { .. } | CoreError::Protocol(_)) if self.link().closed => {
+                Err(CoreError::Rpc { .. } | CoreError::Protocol(_)) if self.closed() => {
                     return Resumed::Released;
                 },
                 Err(error @ (CoreError::Rpc { .. } | CoreError::Protocol(_))) => {
@@ -856,6 +897,70 @@ impl Attached {
                     return Resumed::Gone;
                 },
                 Err(error) => log::debug!("herdr-core attach of {}: {error}", self.address),
+            }
+        }
+    }
+
+    /// The connection the stream rides on, and the program it shows.
+    fn shown(&self) -> (Option<Arc<Connection>>, Option<u32>) {
+        let link = self.link();
+        (link.connection.clone(), link.pid)
+    }
+
+    /// Wait until the core's events say whether the stream it closed ended
+    /// the terminal or lost its program. Blocks, so only the parser thread
+    /// calls it.
+    pub(crate) fn ending(&self) -> Ending {
+        let (Some(connection), shown) = self.shown() else { return Ending::Dropped };
+        connection
+            .wait(|terminals| {
+                if self.closed() {
+                    return Some(Ending::Released);
+                }
+                let Some(facts) = terminals.get(&self.address) else { return Some(Ending::Final) };
+                match facts.state {
+                    State::Finished => Some(Ending::Final),
+                    State::Lost => Some(Ending::Lost),
+                    // The core already restarted it, before this client
+                    // applied the loss.
+                    State::Live => (shown.is_some() && facts.pid != shown).then_some(Ending::Lost),
+                }
+            })
+            .unwrap_or(Ending::Dropped)
+    }
+
+    /// Wait for the shell the core starts after it lost the terminal's
+    /// program, and attach to it. Blocks, so only the parser thread calls it.
+    pub(crate) fn restart(&self) -> Resumed {
+        loop {
+            let (Some(connection), shown) = self.shown() else { return Resumed::Dropped };
+            let restarted = connection.wait(|terminals| {
+                if self.closed() {
+                    return Some(Err(Resumed::Released));
+                }
+                let Some(facts) = terminals.get(&self.address) else {
+                    return Some(Err(Resumed::Gone));
+                };
+                match facts.state {
+                    State::Finished => Some(Err(Resumed::Gone)),
+                    State::Lost => None,
+                    State::Live => (facts.pid != shown).then_some(Ok(())),
+                }
+            });
+            match restarted {
+                None => return Resumed::Dropped,
+                Some(Err(resumed)) => return resumed,
+                Some(Ok(())) => {},
+            }
+            match self.reattach(connection) {
+                Ok(resumed) => return resumed,
+                Err(error) => {
+                    log::debug!(
+                        "herdr-core reattach of {} to its new shell: {error}",
+                        self.address
+                    );
+                    std::thread::sleep(RECONNECT_INTERVAL);
+                },
             }
         }
     }
@@ -873,10 +978,11 @@ impl Attached {
         let recorded = connection.facts(&self.address).and_then(|f| labels::placement(&f.labels));
 
         let mut link = self.link();
+        link.pid = connection.facts(&self.address).and_then(|facts| facts.pid);
         link.connection = Some(connection);
         link.channel = opened.channel;
         link.automatic_input = opened.automatic_input;
-        if link.closed {
+        if self.closed() {
             link.send(wire::CLOSE, &[]);
             return Ok(Resumed::Released);
         }
@@ -901,9 +1007,10 @@ impl Attached {
 /// on, or waits to attach on.
 pub struct HerdrCoreHandle {
     attached: Arc<Attached>,
-    /// Reads the programs under the terminal's shell, for a native core. On
-    /// Windows the core reports only the program it started.
-    probe: Option<ProbeHandle>,
+    /// Reads the programs under the terminal's shell, for a native core, and
+    /// that shell's pid. On Windows the core reports only the program it
+    /// started.
+    probe: Option<RefCell<(Option<u32>, ProbeHandle)>>,
     /// The facts until the side's connection reports this terminal.
     started: Facts,
     killed: bool,
@@ -930,9 +1037,16 @@ impl HerdrCoreHandle {
     }
 
     fn close_stream(&self) {
-        let mut link = self.attached.link();
-        if !std::mem::replace(&mut link.closed, true) {
+        let connection = {
+            let mut link = self.attached.link();
+            if self.attached.closed.swap(true, Ordering::Relaxed) {
+                return;
+            }
             link.send(wire::CLOSE, &[]);
+            link.connection.clone()
+        };
+        if let Some(connection) = connection {
+            connection.wake();
         }
     }
 }
@@ -1040,13 +1154,18 @@ impl SessionHandle for HerdrCoreHandle {
         })
     }
 
+    /// Follows the shell the stream shows, which a lost program replaces.
     fn signals(&self) -> Signals {
+        let pid = self.attached.link().pid;
         match &self.probe {
-            Some(probe) => probe.signals(),
-            None => alacritree_process_probe::reported_signals(
-                self.foreground().as_ref(),
-                self.started.pid,
-            ),
+            Some(probe) => {
+                let mut probe = probe.borrow_mut();
+                if probe.0 != pid {
+                    *probe = (pid, ProbeHandle::new(pid, None));
+                }
+                probe.1.signals()
+            },
+            None => alacritree_process_probe::reported_signals(self.foreground().as_ref(), pid),
         }
     }
 }
@@ -1086,7 +1205,7 @@ mod tests {
             focused: None,
             placement: Placement::default(),
             held: Vec::new(),
-            closed: false,
+            pid: None,
         };
         let core = Arc::new(SideCore::native("hc", Waker::default()));
         let attached = Arc::new(Attached {
@@ -1095,6 +1214,7 @@ mod tests {
             history: 0,
             access: Access::Own,
             link: Mutex::new(link),
+            closed: AtomicBool::new(false),
         });
         HerdrCoreHandle { attached, probe: None, started: Facts::default(), killed: false }
     }

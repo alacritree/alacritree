@@ -352,6 +352,127 @@ fn a_program_exit_closes_its_session_and_removes_its_record() {
     wait_until("the finished record to go", PATIENCE, || core.record(&address).is_none());
 }
 
+/// The holder that owns the core's terminals.
+fn holder_pid() -> u32 {
+    let status: Value = serde_json::from_slice(&hc(&["server", "status", "--json"]).stdout)
+        .expect("server status answers JSON");
+    let pid = status["holder"]["pid"].as_u64().expect("a holder runs the terminals");
+    u32::try_from(pid).expect("a pid")
+}
+
+fn kill_process(pid: u32) {
+    let pid = pid.to_string();
+    let killed = if cfg!(windows) {
+        Command::new("taskkill").args(["/F", "/PID", &pid]).output()
+    } else {
+        Command::new("kill").args(["-9", &pid]).output()
+    };
+    assert!(killed.expect("the kill command runs").status.success(), "the holder dies");
+}
+
+/// A lost program is not an exit. The core restarts a kept terminal with a
+/// fresh shell, and the session stays open and shows that shell.
+#[test]
+#[ignore = "needs hc on PATH"]
+fn a_lost_holder_keeps_each_session_open_on_its_new_shell() {
+    let core = Core::start();
+    let backend = HerdrCore::new("hc");
+    let sessions = [open(&backend, shell(), core.dir()), open(&backend, shell(), core.dir())];
+    for (index, opened) in sessions.iter().enumerate() {
+        opened.handle.write(format!("echo before-loss-{index}\r").into_bytes());
+        shows(opened, &format!("before-loss-{index}"));
+    }
+    let addresses: Vec<String> =
+        sessions.iter().map(|opened| opened.handle.terminal().to_string()).collect();
+
+    kill_process(holder_pid());
+
+    for (index, opened) in sessions.iter().enumerate() {
+        wait_until("the new shell", PATIENCE, || {
+            opened.handle.write(format!("echo after-loss-{index}\r").into_bytes());
+            std::thread::sleep(Duration::from_millis(500));
+            screen(&opened.term).contains(&format!("after-loss-{index}"))
+        });
+        assert!(opened.exits.try_recv().is_err(), "a loss reached the session as an exit");
+        let record = core.record(&addresses[index]).expect("the terminal's record stays");
+        assert_eq!(record["state"], "live");
+    }
+}
+
+/// A terminal that is not kept finishes when its holder dies, so the loss
+/// reaches the session as its program's exit.
+#[test]
+#[ignore = "needs hc on PATH"]
+fn a_lost_holder_ends_a_session_whose_terminal_is_not_kept() {
+    let core = Core::start();
+    let backend = HerdrCore::new("hc");
+    let opened = open(&backend, shell(), core.dir());
+    opened.handle.write(b"echo before-loss\r".to_vec());
+    shows(&opened, "before-loss");
+    let address = opened.handle.terminal().to_string();
+    let unkept = hc(&["keep", &address, "--off"]);
+    assert!(unkept.status.success(), "{unkept:?}");
+
+    kill_process(holder_pid());
+
+    opened.exits.recv_timeout(PATIENCE).expect("the loss arrives as an exit");
+    assert_eq!(
+        core.record(&address).map(|record| record["state"].clone()),
+        Some("finished".into())
+    );
+}
+
+/// A server stop parks a kept terminal and drops the connection. The next
+/// core gives it a new shell, and the session reconnects onto that shell.
+#[test]
+#[ignore = "needs hc on PATH"]
+fn a_server_stop_keeps_the_session_open_on_its_new_shell() {
+    let core = Core::start();
+    let backend = HerdrCore::new("hc");
+    let opened = open(&backend, shell(), core.dir());
+    opened.handle.write(b"echo before-stop\r".to_vec());
+    shows(&opened, "before-stop");
+    let address = opened.handle.terminal().to_string();
+
+    let stopped = hc(&["server", "stop"]);
+    assert!(stopped.status.success(), "{stopped:?}");
+
+    let deadline = Instant::now() + PATIENCE;
+    while !screen(&opened.term).contains("after-stop") {
+        assert!(
+            Instant::now() < deadline,
+            "no new shell; exit {:?}; record {:?}; screen:\n{}",
+            opened.exits.try_recv(),
+            core.record(&address),
+            screen(&opened.term)
+        );
+        opened.handle.write(b"echo after-stop\r".to_vec());
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    assert!(opened.exits.try_recv().is_err(), "a loss reached the session as an exit");
+    assert_eq!(core.record(&address).map(|record| record["state"].clone()), Some("live".into()));
+}
+
+/// A kill is final even for a kept terminal, so it reaches the session as
+/// its program's exit.
+#[test]
+#[ignore = "needs hc on PATH"]
+fn a_kill_from_outside_ends_the_session_as_an_exit() {
+    let core = Core::start();
+    let backend = HerdrCore::new("hc");
+    let opened = open(&backend, shell(), core.dir());
+    let address = opened.handle.terminal().to_string();
+
+    let killed = hc(&["kill", &address]);
+    assert!(killed.status.success(), "{killed:?}");
+
+    opened.exits.recv_timeout(PATIENCE).expect("the kill arrives as an exit");
+    assert_eq!(
+        core.record(&address).map(|record| record["state"].clone()),
+        Some("finished".into())
+    );
+}
+
 /// A session whose parser is stalled, as one is behind a UI that holds its
 /// grid, must not hold up the stream of another session on the same core.
 #[test]
