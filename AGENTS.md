@@ -23,7 +23,7 @@ From the workspace root these cover `alacritree/` and `crates/` and skip the ven
 
 ## Architecture
 
-- The app owns many sessions and paints their grids itself. A session's terminal is a PTY the app owns, or a terminal in the herdr-core core. A `WorkspaceKey` is `Option<PathBuf>`: `None` is the home tab, `Some(path)` a checkout. Each workspace remembers its active session.
+- The app owns many sessions and paints their grids itself. A session's terminal is a PTY the app owns, or a terminal in the herdr-core core of its side, native or a WSL distro. A `WorkspaceKey` is `Option<PathBuf>`: `None` is the home tab, `Some(path)` a checkout. Each workspace remembers its active session.
 - Sessions outlive workspace switches, on screen or not. A session leaves only through `SessionList::remove`, and a close that changes focus goes through `AlacritreeApp::close_sessions`.
 - PTY output wakes the UI only through `EventProxy`, which calls `request_repaint` when its session is on screen. A background thread that produces terminal events without it looks hung until the next input event.
 - The CLI, the MCP server (`alacritree mcp`) and a running window all speak `ipc::protocol::IpcRequest`. A new operation is one `IpcRequest` variant, placed once in `ipc/route.rs`. MCP tool names match its serde tags. With no window listening, the CLI falls back to `cli/offline.rs`.

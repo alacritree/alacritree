@@ -1003,7 +1003,8 @@ impl<R: Repaint> Session<R> {
 
     /// A pending session for `terminal`, which its backend already runs,
     /// plus what attaching it needs. The first paint restores as much
-    /// scrollback as `[scrolling] history` keeps.
+    /// scrollback as `[scrolling] history` keeps. `distro` is the distro the
+    /// terminal runs in, which translates its cwd reports.
     pub(crate) fn pending_attach(
         repaint: R,
         config: &Config,
@@ -1011,6 +1012,7 @@ impl<R: Repaint> Session<R> {
         size: TermSize,
         cell_size: (f32, f32),
         terminal: String,
+        distro: Option<String>,
     ) -> (Self, AttachRequest<R>) {
         let (session, request) = Self::pending_shell(
             repaint,
@@ -1019,7 +1021,7 @@ impl<R: Repaint> Session<R> {
             size,
             cell_size,
             None,
-            None,
+            distro,
             None,
         );
         let request = AttachRequest { terminal, colors: request.colors, screen: request.screen };
@@ -1642,6 +1644,7 @@ pub(crate) mod tests {
 
     use super::*;
     use crate::repaint::Recorder;
+    #[cfg(windows)]
     use crate::session_backend::Backend;
     use alacritree_common::side::Side;
     use alacritree_session_backend::{Call, Scripted, SessionBackend};

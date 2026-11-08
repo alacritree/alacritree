@@ -1,25 +1,27 @@
-//! The session backend that runs each terminal in the native side's
-//! herdr-core core, over one `hc connect` child in framed mode.
+//! The session backend that runs each terminal in its side's herdr-core
+//! core: the native core, or the core inside a WSL distro.
 //!
-//! Terminals start with `keep` and outlive alacritree. Closing a session
-//! kills its terminal, quitting only detaches, and the next launch adopts
-//! each terminal that the `labels` module marks as alacritree's. A demux
-//! thread routes each stream into a parser thread per session. When the
-//! connection drops, each parser reattaches its session on a new one.
+//! Terminals start with `keep`. Closing a session kills its terminal,
+//! quitting only detaches, and the next launch adopts each terminal that
+//! `labels` marks as alacritree's. A session's parser attaches its stream
+//! once the side's connection is up, and again after one drops.
 
 mod connection;
+mod core;
 mod elsewhere;
 mod labels;
+mod one_shot;
 mod parser;
 mod settings;
 mod wire;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, TryLockError};
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
+use alacritree_common::wsl;
+use alacritree_common::wsl_helper::{self, TransportError};
 use alacritree_process_probe::ProbeHandle;
 use alacritree_session_backend::{
     Adoptable, AttachRequest, ForegroundProgram, OpenRequest, Operation, Placement, Screen,
@@ -29,7 +31,8 @@ use alacritty_terminal::event::{EventListener, WindowSize};
 use alacritty_terminal::vte::ansi::Rgb;
 use serde_json::{Value, json};
 
-use self::connection::{Answer, Connection, Facts, Waker};
+use self::connection::{Answer, Connection, Facts, Foreground, Waker};
+use self::core::{RECONNECT_INTERVAL, SideCore};
 use self::elsewhere::HcPaths;
 pub use self::elsewhere::{CoreElsewhere, HcConfigError, Remedy};
 use self::parser::Chunk;
@@ -42,7 +45,7 @@ pub const DEFAULT_ICON: &str = "\u{10FF00}";
 /// Why the core could not be reached, or refused a call.
 #[derive(Debug, thiserror::Error)]
 pub enum CoreError {
-    #[error("could not start `{program} connect`: {source}")]
+    #[error("could not start `{program}`: {source}")]
     Spawn { program: String, source: std::io::Error },
     #[error("`hc connect` exited before it answered: {0}")]
     Refused(String),
@@ -54,18 +57,30 @@ pub enum CoreError {
     Closed,
     #[error("the core did not answer {0} in time")]
     Timeout(String),
-    #[error("the core refused the call ({kind}): {message}")]
-    Rpc { kind: String, message: String },
+    #[error("the core refused the call ({kind}): {message}{}", hint.as_ref().map(|hint| format!(". {hint}")).unwrap_or_default())]
+    Rpc { kind: String, message: String, hint: Option<String> },
+    /// The WSL helper took the call and gave no answer, so it may have run.
+    #[error(transparent)]
+    Helper(TransportError),
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
 
 impl CoreError {
+    /// A JSON-RPC error names its kind under `data`. `hc connect`'s own
+    /// refusal, sent before any request, names it beside its message.
     fn rpc(error: &Value) -> Self {
+        let field = |name: &str| error["data"][name].as_str().or_else(|| error[name].as_str());
         Self::Rpc {
-            kind: error["data"]["kind"].as_str().unwrap_or("unknown").to_string(),
+            kind: field("kind").unwrap_or("unknown").to_string(),
             message: error["message"].as_str().unwrap_or_default().to_string(),
+            hint: field("hint").map(str::to_string),
         }
+    }
+
+    /// The call went out and no answer came back, so it may have run.
+    fn unanswered(&self) -> bool {
+        matches!(self, Self::Timeout(_) | Self::Helper(TransportError::NoReply(_)))
     }
 
     fn unavailable(self) -> SessionError {
@@ -87,36 +102,21 @@ impl From<CoreError> for SessionError {
     fn from(error: CoreError) -> Self {
         match error {
             CoreError::Io(error) => SessionError::Io(error),
+            error if error.unanswered() => SessionError::Unconfirmed {
+                backend: SessionBackendKind::HerdrCore,
+                source: Box::new(error),
+            },
             error => SessionError::Io(std::io::Error::other(error)),
         }
     }
 }
 
-/// Runs terminals in the native side's core. Clones share one connection,
-/// which opens on first use and again after it drops.
+/// Runs terminals in one side's core. Clones share one connection, which
+/// opens on first use and again after it drops.
 #[derive(Clone)]
 pub struct HerdrCore {
-    program: Arc<str>,
-    connection: Arc<Mutex<Slot>>,
+    core: Arc<SideCore>,
     claims: Arc<Mutex<Claims>>,
-    waker: Waker,
-    /// The socket alacritree's own hc uses in place of the one hc resolves,
-    /// once the user chose a core of another session.
-    socket: Arc<Mutex<Option<PathBuf>>>,
-}
-
-/// The connection that clones share, and when the last attempt to open
-/// one failed.
-#[derive(Default)]
-struct Slot {
-    connection: Option<Arc<Connection>>,
-    failed_at: Option<Instant>,
-}
-
-impl Slot {
-    fn live(&self) -> Option<Arc<Connection>> {
-        self.connection.as_ref().filter(|connection| connection.alive()).cloned()
-    }
 }
 
 /// The terminals this process holds, so none is adopted twice.
@@ -127,38 +127,56 @@ struct Claims {
     /// Opens whose terminal the core may already report but whose address
     /// is not in `held` yet. Adoption waits while any is in flight.
     opening: usize,
+    /// The distro's terminals as its helper listed them, before the
+    /// resident connection reports them.
+    listing: Listing,
+    /// What the helper's listing said of each terminal, for an attach that
+    /// comes before the resident connection reports it.
+    listed: HashMap<String, Facts>,
+}
+
+#[derive(Default)]
+enum Listing {
+    #[default]
+    Unasked,
+    Asked,
+    Listed(HashMap<String, Facts>),
+    Taken,
 }
 
 impl HerdrCore {
-    /// `program` is the `hc` binary, as `[integrations.herdr_core] path`
-    /// names it.
+    /// The native side's core. `program` is the `hc` binary, as
+    /// `[integrations.herdr_core] path` names it.
     pub fn new(program: &str) -> Self {
-        Self {
-            program: program.into(),
-            connection: Default::default(),
-            claims: Default::default(),
-            waker: Default::default(),
-            socket: Default::default(),
-        }
+        Self::on(SideCore::native(program, Waker::default()))
+    }
+
+    /// `distro`'s core. `program` is `[integrations.herdr_core] wsl_path`,
+    /// or `None` to find `hc` through the distro's login shell.
+    pub fn wsl(distro: &str, program: Option<String>) -> Self {
+        Self::on(SideCore::wsl(distro, program, Waker::default()))
+    }
+
+    fn on(core: SideCore) -> Self {
+        Self { core: Arc::new(core), claims: Default::default() }
     }
 
     /// Call `wake` whenever the core reports a terminal that may be
     /// adoptable, so a terminal an agent starts shows up in an idle app.
     /// Only the first call counts.
     pub fn set_waker(&self, wake: impl Fn() + Send + Sync + 'static) {
-        let _ = self.waker.set(Box::new(wake));
+        let _ = self.core.waker().set(Box::new(wake));
     }
 
-    /// Connect, as `ready` does. When hc refuses, also look for a core that
-    /// serves hc's state on a socket hc does not resolve. A socket the user
-    /// already chose is not looked past.
+    /// Connect, as `ready` does. When the native side's hc refuses, also
+    /// look for a core that serves hc's state on a socket hc does not
+    /// resolve. A socket the user already chose is not looked past.
     pub fn connect(&self) -> Result<(), Unreachable> {
-        self.connection().map(drop).map_err(|error| {
+        self.core.connection().map(drop).map_err(|error| {
+            let unchosen = self.core.socket().is_some_and(|socket| socket.is_none());
             let elsewhere = match &error {
                 CoreError::Elsewhere(found) => Some(found.clone()),
-                CoreError::Refused(_) if lock(&self.socket).is_none() => {
-                    elsewhere::find(&HcPaths::from_env())
-                },
+                CoreError::Refused(_) if unchosen => elsewhere::find(&HcPaths::from_env()),
                 _ => None,
             };
             Unreachable { error, elsewhere }
@@ -171,67 +189,178 @@ impl HerdrCore {
         match found.remedy {
             Remedy::WriteConfig => elsewhere::point_hc_at(&HcPaths::from_env(), &found.socket),
             Remedy::SetEnv => {
-                *lock(&self.socket) = Some(found.socket.clone());
+                if let Some(mut socket) = self.core.socket() {
+                    *socket = Some(found.socket.clone());
+                }
                 Ok(())
             },
         }
     }
 
-    /// The live connection, opened first if there is none. Holding the slot
-    /// while it opens keeps concurrent opens on one connection.
-    fn connection(&self) -> Result<Arc<Connection>, CoreError> {
-        self.open_in(&mut lock(&self.connection))
-    }
-
-    /// The live connection, opened first unless an attempt failed within
-    /// the last [`RECONNECT_INTERVAL`]. Every session that waits out a
-    /// dropped connection asks here, so they share one attempt per interval.
-    fn reconnect(&self) -> Option<Arc<Connection>> {
-        let mut slot = lock(&self.connection);
-        if slot.live().is_none()
-            && slot.failed_at.is_some_and(|at| at.elapsed() < RECONNECT_INTERVAL)
-        {
-            return None;
-        }
-        self.open_in(&mut slot)
-            .inspect_err(|error| log::debug!("herdr-core reconnect: {error}"))
-            .ok()
-    }
-
-    fn open_in(&self, slot: &mut Slot) -> Result<Arc<Connection>, CoreError> {
-        if let Some(connection) = slot.live() {
-            return Ok(connection);
-        }
-        let socket = lock(&self.socket).clone();
-        let elsewhere = socket.is_none().then(|| elsewhere::before_hc(&HcPaths::from_env()));
-        let opened = match elsewhere.flatten() {
-            Some(found) => Err(CoreError::Elsewhere(found)),
-            None => Connection::open(&self.program, socket.as_deref(), self.waker.clone()),
-        };
-        slot.failed_at = opened.is_err().then(Instant::now);
-        let connection = opened?;
-        slot.connection = Some(connection.clone());
-        Ok(connection)
-    }
-
-    /// The live connection, if one is open. Never waits, so the UI thread
-    /// can ask while another thread holds the slot to open a connection,
-    /// which can take seconds.
-    fn open_connection(&self) -> Option<Arc<Connection>> {
-        let slot = match self.connection.try_lock() {
-            Ok(slot) => slot,
-            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
-            Err(TryLockError::WouldBlock) => return None,
-        };
-        slot.live()
-    }
-
     /// Kill the `hc connect` child, as a crash would.
     #[cfg(feature = "test-support")]
     pub fn kill_connection(&self) {
-        if let Some(connection) = lock(&self.connection).connection.as_ref() {
-            connection.kill();
+        self.core.kill_connection();
+    }
+
+    /// Open the side's connection in the background, so the first stream
+    /// does not wait for `hc connect` to start.
+    pub fn warm(&self) {
+        let core = self.core.clone();
+        let warming = std::thread::Builder::new().name("hc-warm".into()).spawn(move || {
+            if let Err(error) = core.connection() {
+                log::warn!("herdr-core ({}): {error}", core.side().name());
+            }
+        });
+        if let Err(error) = warming {
+            log::warn!("herdr-core warm thread: {error}");
         }
+    }
+
+    /// The distro's terminals from its helper, asked once while the
+    /// resident connection is not up yet. Empty until the answer is in.
+    fn listed(&self, claims: &mut Claims) -> HashMap<String, Facts> {
+        match std::mem::replace(&mut claims.listing, Listing::Taken) {
+            Listing::Unasked if self.core.helper_ready() => {
+                claims.listing = Listing::Asked;
+                self.list_through_helper();
+                HashMap::new()
+            },
+            Listing::Listed(listed) => listed,
+            unchanged => {
+                claims.listing = unchanged;
+                HashMap::new()
+            },
+        }
+    }
+
+    fn list_through_helper(&self) {
+        let (core, claims) = (self.core.clone(), self.claims.clone());
+        let listing = std::thread::Builder::new().name("hc-list".into()).spawn(move || {
+            let listed = core.call("terminal.list", json!({}));
+            let mut claims = lock(&claims);
+            claims.listing = match listed {
+                Ok(result) => Listing::Listed(records(&result["terminals"])),
+                Err(error) => {
+                    log::warn!("herdr-core ({}): could not list: {error}", core.side().name());
+                    Listing::Taken
+                },
+            };
+            drop(claims);
+            if let Some(wake) = core.waker().get() {
+                wake();
+            }
+        });
+        if let Err(error) = listing {
+            log::warn!("herdr-core list thread: {error}");
+        }
+    }
+
+    /// Show `terminal` in `screen`: attached at once while the side's
+    /// connection is up, else by its parser once it is. An attach that fails
+    /// at once ends nothing, and the caller decides whether the terminal
+    /// lives on.
+    fn show<L>(
+        &self,
+        terminal: Terminal,
+        Screen { term, listener, window_size, history }: Screen<L>,
+    ) -> Result<HerdrCoreHandle, SessionError>
+    where
+        L: EventListener + Send + 'static,
+    {
+        let Terminal { address, started, display, first_paint_history, placement } = terminal;
+        let size = (window_size.num_cols, window_size.num_lines);
+        let mut link = Link {
+            connection: None,
+            channel: 0,
+            automatic_input: false,
+            size,
+            display,
+            focused: None,
+            placement,
+            held: Vec::new(),
+            closed: false,
+        };
+        let stream = match self.core.live() {
+            Some(connection) => {
+                let opened =
+                    open_stream(&connection, &address, size, &link.display, first_paint_history)?;
+                link.connection = Some(connection);
+                link.channel = opened.channel;
+                link.automatic_input = opened.automatic_input;
+                Some(opened.stream)
+            },
+            None => None,
+        };
+        let link = Mutex::new(link);
+        let attached = Arc::new(Attached { core: self.core.clone(), address, history, link });
+        if let Err(error) = parser::spawn(term, listener, stream, attached.clone()) {
+            attached.link().send(wire::CLOSE, &[]);
+            return Err(error.into());
+        }
+
+        let native = matches!(self.core.side(), Side::Native);
+        Ok(HerdrCoreHandle {
+            attached,
+            probe: native.then(|| ProbeHandle::new(started.pid, None)),
+            started,
+            killed: false,
+        })
+    }
+}
+
+/// The core of every side, one per side for the whole run. Every core shares
+/// one waker.
+#[derive(Clone)]
+pub struct HerdrCores {
+    native: HerdrCore,
+    wsl_path: Option<String>,
+    waker: Waker,
+    distros: Arc<Mutex<HashMap<String, HerdrCore>>>,
+}
+
+impl HerdrCores {
+    pub fn new(config: &HerdrCoreConfig) -> Self {
+        let waker = Waker::default();
+        Self {
+            native: HerdrCore::on(SideCore::native(&config.path, waker.clone())),
+            wsl_path: config.wsl_path.clone(),
+            waker,
+            distros: Default::default(),
+        }
+    }
+
+    pub fn on(&self, side: &Side) -> HerdrCore {
+        match side {
+            Side::Native => self.native.clone(),
+            Side::Wsl(distro) => lock(&self.distros)
+                .entry(distro.clone())
+                .or_insert_with(|| {
+                    let core = SideCore::wsl(distro, self.wsl_path.clone(), self.waker.clone());
+                    HerdrCore::on(core)
+                })
+                .clone(),
+        }
+    }
+
+    /// Every side's core that this run has used so far, with its side.
+    pub fn all(&self) -> Vec<(Side, HerdrCore)> {
+        let distros = lock(&self.distros);
+        let wsl = distros.iter().map(|(distro, core)| (Side::Wsl(distro.clone()), core.clone()));
+        std::iter::once((Side::Native, self.native.clone())).chain(wsl).collect()
+    }
+
+    /// Call `wake` whenever any side's core reports a terminal that may be
+    /// adoptable. Only the first call counts.
+    pub fn set_waker(&self, wake: impl Fn() + Send + Sync + 'static) {
+        let _ = self.waker.set(Box::new(wake));
+    }
+
+    /// Open a distro's resident connection whenever its WSL helper starts,
+    /// so the two pay the distro's start together and a session finds both.
+    pub fn open_beside_wsl_helpers(&self) {
+        let cores = self.clone();
+        wsl_helper::on_spawn(move |distro| cores.on(&Side::Wsl(distro.to_string())).warm());
     }
 }
 
@@ -275,35 +404,52 @@ fn ensure_working_directory(dir: Option<&Path>) -> Result<(), SessionError> {
 const IDENTITY_ENV: [&str; 2] = ["TERM", "COLORTERM"];
 
 impl<H: From<HerdrCoreHandle>> SessionBackend<H> for HerdrCore {
+    /// A distro whose helper is up takes a terminal at once, through the
+    /// helper, while its resident connection may still be opening.
     fn ready(&self) -> Result<(), SessionError> {
-        self.connection().map(drop).map_err(CoreError::unavailable)
+        if self.core.helper_ready() {
+            return Ok(());
+        }
+        self.core.connection().map(drop).map_err(CoreError::unavailable)
     }
 
+    /// A distro's terminal runs the core's own shell in the distro, since
+    /// the request's shell is a `wsl.exe` launch that runs on Windows. It
+    /// starts where that launch would.
     fn open<L>(&self, request: OpenRequest<L>) -> Result<H, SessionError>
     where
         L: EventListener + Send + 'static,
     {
         let OpenRequest { shell, working_directory, mut env, colors, placement, screen, .. } =
             request;
-        ensure_working_directory(working_directory.as_deref())?;
-        let connection = self.connection().map_err(CoreError::unavailable)?;
-
+        let (argv, cwd) = match self.core.side() {
+            Side::Native => {
+                ensure_working_directory(working_directory.as_deref())?;
+                let argv: Vec<String> = shell
+                    .map(|shell| std::iter::once(shell.program).chain(shell.args).collect())
+                    .unwrap_or_default();
+                (argv, working_directory.map(|dir| dir.display().to_string()))
+            },
+            Side::Wsl(_) => {
+                let launch_dir =
+                    shell.as_ref().and_then(|shell| wsl_helper::launch_dir(&shell.args));
+                let dir = launch_dir.or_else(|| Some(working_directory?.display().to_string()));
+                (Vec::new(), wsl::linux_dir(dir.as_deref(), || self.core.home()))
+            },
+        };
         for name in IDENTITY_ENV {
             if let Ok(value) = std::env::var(name) {
                 env.entry(name.to_string()).or_insert(value);
             }
         }
-        let argv: Vec<String> = shell
-            .map(|shell| std::iter::once(shell.program).chain(shell.args).collect())
-            .unwrap_or_default();
         let window_size = screen.window_size;
         let display = DisplayFacts::new(colors, window_size);
         lock(&self.claims).opening += 1;
-        let run = connection.call(
+        let run = self.core.call(
             "terminal.run",
             json!({
                 "argv": argv,
-                "cwd": working_directory,
+                "cwd": cwd,
                 "env": env,
                 "size": { "cols": window_size.num_cols, "rows": window_size.num_lines },
                 "display": display.json(),
@@ -313,38 +459,47 @@ impl<H: From<HerdrCoreHandle>> SessionBackend<H> for HerdrCore {
                 "labels": labels::for_run(&placement),
             }),
         );
-        let (address, shell_pid) = {
+        let (address, started) = {
             let mut claims = lock(&self.claims);
             claims.opening -= 1;
-            let record = run?;
-            let address = record["address"].as_str().unwrap_or_default().to_string();
+            let (address, started) = record_facts(&run?);
             claims.held.insert(address.clone());
-            (address, record["pid"].as_u64().and_then(|pid| u32::try_from(pid).ok()))
+            (address, started)
         };
 
-        let stream = Stream {
+        let terminal = Terminal {
             address: address.clone(),
-            shell_pid,
+            started,
             display,
             first_paint_history: 0,
             placement,
         };
-        stream.attach(self, connection, screen).map(H::from).inspect_err(|_| {
-            end(self.clone(), address);
+        self.show(terminal, screen).map(H::from).inspect_err(|_| {
+            end(self.core.clone(), address);
         })
     }
 
+    /// Before a distro's resident connection is up, its terminals come from
+    /// one listing through its helper.
     fn adoptable(&self) -> Vec<Adoptable> {
-        let Some(connection) = self.open_connection() else { return Vec::new() };
         let mut claims = lock(&self.claims);
         if claims.opening > 0 {
             return Vec::new();
         }
-        let found = connection.pick_terminals(|address, facts| {
-            let placement = labels::placement(&facts.labels)?;
-            (facts.live && !claims.held.contains(address))
-                .then(|| Adoptable { terminal: address.to_string(), placement })
-        });
+        let found: Vec<Adoptable> = match self.core.live() {
+            Some(connection) => {
+                connection.pick_terminals(|address, facts| adoptable(&claims, address, facts))
+            },
+            None => {
+                let listed = self.listed(&mut claims);
+                let found = listed
+                    .iter()
+                    .filter_map(|(address, facts)| adoptable(&claims, address, facts))
+                    .collect();
+                claims.listed.extend(listed);
+                found
+            },
+        };
         claims.held.extend(found.iter().map(|adoptable| adoptable.terminal.clone()));
         found
     }
@@ -354,16 +509,20 @@ impl<H: From<HerdrCoreHandle>> SessionBackend<H> for HerdrCore {
         L: EventListener + Send + 'static,
     {
         let AttachRequest { terminal, colors, screen } = request;
-        let connection = self.connection().map_err(CoreError::unavailable)?;
-        let facts = connection.facts(&terminal).unwrap_or_default();
-        let stream = Stream {
+        let facts = self
+            .core
+            .live()
+            .and_then(|connection| connection.facts(&terminal))
+            .or_else(|| lock(&self.claims).listed.remove(&terminal))
+            .unwrap_or_default();
+        let terminal = Terminal {
             address: terminal,
-            shell_pid: facts.pid,
+            placement: labels::placement(&facts.labels).unwrap_or_default(),
+            started: facts,
             display: DisplayFacts::new(colors, screen.window_size),
             first_paint_history: screen.history,
-            placement: labels::placement(&facts.labels).unwrap_or_default(),
         };
-        stream.attach(self, connection, screen).map(H::from)
+        self.show(terminal, screen).map(H::from)
     }
 
     fn watch<L>(&self, _request: AttachRequest<L>) -> Result<H, SessionError>
@@ -374,60 +533,52 @@ impl<H: From<HerdrCoreHandle>> SessionBackend<H> for HerdrCore {
     }
 }
 
+fn adoptable(claims: &Claims, address: &str, facts: &Facts) -> Option<Adoptable> {
+    let placement = labels::placement(&facts.labels)?;
+    (facts.live && !claims.held.contains(address))
+        .then(|| Adoptable { terminal: address.to_string(), placement })
+}
+
 /// A terminal in the core, about to be shown in a session.
-struct Stream {
+struct Terminal {
     address: String,
-    shell_pid: Option<u32>,
+    /// The facts until the side's connection reports this terminal.
+    started: Facts,
     display: DisplayFacts,
     /// Scrollback lines the first paint restores. A new terminal has none,
-    /// while a reattach restores what the grid keeps.
+    /// while an adopted one restores what the grid keeps.
     first_paint_history: usize,
     /// What the terminal's labels record.
     placement: Placement,
 }
 
-impl Stream {
-    /// Attach to the terminal and feed `screen` from it. A failure ends
-    /// nothing, and the caller decides whether the terminal lives on.
-    fn attach<L>(
-        self,
-        core: &HerdrCore,
-        connection: Arc<Connection>,
-        Screen { term, listener, window_size, history }: Screen<L>,
-    ) -> Result<HerdrCoreHandle, SessionError>
-    where
-        L: EventListener + Send + 'static,
-    {
-        let size = (window_size.num_cols, window_size.num_lines);
-        let opened =
-            open_stream(&connection, &self.address, size, &self.display, self.first_paint_history)?;
-        let link = Link {
-            connection,
-            channel: opened.channel,
-            automatic_input: opened.automatic_input,
-            size,
-            display: self.display,
-            focused: None,
-            placement: self.placement,
-            closed: false,
-        };
-        let attached = Arc::new(Attached {
-            core: core.clone(),
-            address: self.address,
-            history,
-            link: Mutex::new(link),
-        });
-        if let Err(error) = parser::spawn(term, listener, opened.stream, attached.clone()) {
-            attached.link().send(wire::CLOSE, &[]);
-            return Err(error.into());
-        }
+/// Each terminal record of a `terminal.list` answer, by address.
+fn records(terminals: &Value) -> HashMap<String, Facts> {
+    terminals.as_array().into_iter().flatten().map(record_facts).collect()
+}
 
-        Ok(HerdrCoreHandle {
-            attached,
-            probe: ProbeHandle::new(self.shell_pid, None),
-            killed: false,
-        })
-    }
+/// A terminal record's address and facts. A record without a foreground
+/// report has its shell in the foreground, as the core started it.
+fn record_facts(record: &Value) -> (String, Facts) {
+    let address = record["address"].as_str().unwrap_or_default().to_string();
+    let pid = record["pid"].as_u64().and_then(|pid| u32::try_from(pid).ok());
+    let argv: Vec<String> = serde_json::from_value(record["argv"].clone()).unwrap_or_default();
+    let started = match (argv.first(), pid, record["cwd"].as_str()) {
+        (Some(arg0), Some(pid), Some(cwd)) => Some(Foreground {
+            pid: i32::try_from(pid).unwrap_or_default(),
+            name: arg0.rsplit(['/', '\\']).next().unwrap_or(arg0).to_string(),
+            argv: argv.clone(),
+            cwd: PathBuf::from(cwd),
+        }),
+        _ => None,
+    };
+    let facts = Facts {
+        foreground: serde_json::from_value(record["foreground"].clone()).ok().or(started),
+        live: record["state"] == "live",
+        pid,
+        labels: serde_json::from_value(record["labels"].clone()).unwrap_or_default(),
+    };
+    (address, facts)
 }
 
 /// A stream that `terminal.attach` opened.
@@ -471,10 +622,10 @@ fn unsupported(operation: Operation) -> SessionError {
 }
 
 /// Kill a terminal and remove its finished record, off the caller's thread,
-/// since a kill escalates through signals and can take seconds. Through a
-/// dropped connection it tries again every [`RECONNECT_INTERVAL`], so a
+/// since a kill escalates through signals and can take seconds. Without the
+/// side's connection it tries again every [`RECONNECT_INTERVAL`], so a
 /// closed session never leaves its terminal running.
-fn end(core: HerdrCore, address: String) {
+fn end(core: Arc<SideCore>, address: String) {
     let ended = std::thread::Builder::new().name("hc-kill".into()).spawn(move || {
         let terminal = json!({ "terminal": address });
         loop {
@@ -509,13 +660,10 @@ fn kill_and_remove(connection: &Connection, terminal: &Value) -> bool {
     true
 }
 
-/// How long a session waits between attempts to reattach after its
-/// connection drops.
-const RECONNECT_INTERVAL: Duration = Duration::from_secs(1);
-
-/// A session's terminal in the core, shared by its handle and its parser.
+/// A session's terminal in its side's core, shared by its handle and its
+/// parser.
 struct Attached {
-    core: HerdrCore,
+    core: Arc<SideCore>,
     address: String,
     /// Scrollback lines a reattach restores.
     history: usize,
@@ -523,9 +671,11 @@ struct Attached {
 }
 
 /// The stream a session rides on now, and what the core must hear again on
-/// a new one. The parser replaces the stream when the connection drops.
+/// a new one. The parser sets the stream once the side's connection is up,
+/// and replaces it when the connection drops.
 struct Link {
-    connection: Arc<Connection>,
+    /// `None` until the first attach.
+    connection: Option<Arc<Connection>>,
     channel: u32,
     /// The stream takes AUTOMATIC_INPUT end to end.
     automatic_input: bool,
@@ -534,39 +684,62 @@ struct Link {
     focused: Option<bool>,
     /// Where the session sits, which the terminal's labels record.
     placement: Placement,
+    /// Input typed before the first attach, sent in order once it is up.
+    held: Vec<(u8, Vec<u8>)>,
     /// The session let go of the stream, by a detach, a kill or a drop.
     closed: bool,
 }
 
 impl Link {
-    fn send(&self, kind: u8, payload: &[u8]) {
-        self.connection.send(self.channel, kind, payload);
+    /// Before the first attach, input waits in `held` and every other frame
+    /// is dropped, since the attach carries the state it would set.
+    fn send(&mut self, kind: u8, payload: &[u8]) {
+        match &self.connection {
+            Some(connection) => connection.send(self.channel, kind, payload),
+            None if matches!(kind, wire::DATA | wire::AUTOMATIC_INPUT) => {
+                self.held.push((kind, payload.to_vec()));
+            },
+            None => {},
+        }
     }
 
     /// Never blocks, since nothing waits for the label call's answer.
     fn send_labels(&self, address: &str) {
-        let labels = labels::of(&self.placement);
-        self.connection.cast("terminal.label", json!({ "terminal": address, "labels": labels }));
+        if let Some(connection) = &self.connection {
+            let labels = labels::of(&self.placement);
+            connection.cast("terminal.label", json!({ "terminal": address, "labels": labels }));
+        }
     }
 
-    fn send_size(&self) {
+    fn send_size(&mut self) {
         let [c0, c1] = self.size.0.to_le_bytes();
         let [r0, r1] = self.size.1.to_le_bytes();
         self.send(wire::RESIZE, &[c0, c1, r0, r1]);
     }
 
-    fn send_display(&self) {
-        self.send(wire::FACTS, self.display.json().to_string().as_bytes());
+    fn send_display(&mut self) {
+        let display = self.display.json().to_string();
+        self.send(wire::FACTS, display.as_bytes());
     }
 
-    fn send_focus(&self) {
+    fn send_focus(&mut self) {
         if let Some(focused) = self.focused {
             self.send(wire::FOCUS, &[u8::from(focused)]);
         }
     }
+
+    /// Input held for the first attach, in the order it was sent. A reply
+    /// goes as DATA when the stream does not take AUTOMATIC_INPUT.
+    fn take_held(&mut self) -> Vec<(u8, Vec<u8>)> {
+        let reply = if self.automatic_input { wire::AUTOMATIC_INPUT } else { wire::DATA };
+        std::mem::take(&mut self.held)
+            .into_iter()
+            .map(|(kind, bytes)| (if kind == wire::AUTOMATIC_INPUT { reply } else { kind }, bytes))
+            .collect()
+    }
 }
 
-/// What a session's parser follows after its connection drops.
+/// What a session's parser follows once it waited for a connection.
 pub(crate) enum Resumed {
     /// A new stream, whose first paint restores the screen.
     Stream(Receiver<Chunk>),
@@ -584,18 +757,23 @@ impl Attached {
     /// Tell the core that `bytes` of the current stream were parsed.
     pub(crate) fn credit(&self, bytes: usize) {
         let link = self.link();
-        link.connection.credit(link.channel, bytes);
+        if let Some(connection) = &link.connection {
+            connection.credit(link.channel, bytes);
+        }
     }
 
-    /// Attach again after the connection dropped, trying every
-    /// [`RECONNECT_INTERVAL`] until the core answers. Blocks, so only the
-    /// parser thread calls it.
-    pub(crate) fn resume(&self) -> Resumed {
+    /// Attach once the side's connection is up, trying every
+    /// [`RECONNECT_INTERVAL`] until the core answers. `wait` holds the first
+    /// try back by one interval, as after a drop. Blocks, so only the parser
+    /// thread calls it.
+    pub(crate) fn resume(&self, mut wait: bool) -> Resumed {
         loop {
             if self.link().closed {
                 return Resumed::Released;
             }
-            std::thread::sleep(RECONNECT_INTERVAL);
+            if std::mem::replace(&mut wait, true) {
+                std::thread::sleep(RECONNECT_INTERVAL);
+            }
             let Some(connection) = self.core.reconnect() else { continue };
             match self.reattach(connection) {
                 Ok(resumed) => return resumed,
@@ -605,25 +783,27 @@ impl Attached {
                     return Resumed::Released;
                 },
                 Err(error @ (CoreError::Rpc { .. } | CoreError::Protocol(_))) => {
-                    log::warn!("herdr-core could not reattach {}: {error}", self.address);
+                    log::warn!("herdr-core could not attach {}: {error}", self.address);
                     return Resumed::Gone;
                 },
-                Err(error) => log::debug!("herdr-core reattach of {}: {error}", self.address),
+                Err(error) => log::debug!("herdr-core attach of {}: {error}", self.address),
             }
         }
     }
 
     /// Move the session onto a new stream on `connection`, and repeat what
-    /// changed while it was being opened.
+    /// changed while it was being opened. Input held for the first attach
+    /// goes out last.
     fn reattach(&self, connection: Arc<Connection>) -> Result<Resumed, CoreError> {
         let (size, display) = {
             let link = self.link();
             (link.size, link.display.clone())
         };
         let opened = open_stream(&connection, &self.address, size, &display, self.history)?;
+        let recorded = connection.facts(&self.address).and_then(|f| labels::placement(&f.labels));
 
         let mut link = self.link();
-        link.connection = connection;
+        link.connection = Some(connection);
         link.channel = opened.channel;
         link.automatic_input = opened.automatic_input;
         if link.closed {
@@ -637,21 +817,25 @@ impl Attached {
             link.send_display();
         }
         link.send_focus();
-        let recorded =
-            link.connection.facts(&self.address).and_then(|f| labels::placement(&f.labels));
         if recorded.as_ref() != Some(&link.placement) {
             link.send_labels(&self.address);
+        }
+        for (kind, bytes) in link.take_held() {
+            link.send(kind, &bytes);
         }
         Ok(Resumed::Stream(opened.stream))
     }
 }
 
-/// A session's terminal in the core, and the stream it is attached on.
+/// A session's terminal in its side's core, and the stream it is attached
+/// on, or waits to attach on.
 pub struct HerdrCoreHandle {
     attached: Arc<Attached>,
-    /// Reads the programs under the terminal's shell. The core runs on this
-    /// machine, and on Windows it reports only the program it started.
-    probe: ProbeHandle,
+    /// Reads the programs under the terminal's shell, for a native core. On
+    /// Windows the core reports only the program it started.
+    probe: Option<ProbeHandle>,
+    /// The facts until the side's connection reports this terminal.
+    started: Facts,
     killed: bool,
 }
 
@@ -664,7 +848,9 @@ impl HerdrCoreHandle {
     /// What the current connection last heard about the terminal.
     fn facts(&self) -> Facts {
         let connection = self.attached.link().connection.clone();
-        connection.facts(&self.attached.address).unwrap_or_default()
+        connection
+            .and_then(|connection| connection.facts(&self.attached.address))
+            .unwrap_or_else(|| self.started.clone())
     }
 
     fn close_stream(&self) {
@@ -683,13 +869,16 @@ impl SessionHandle for HerdrCoreHandle {
     }
 
     /// Without AUTOMATIC_INPUT on the whole path a reply goes as DATA, which
-    /// the core counts as typing.
+    /// the core counts as typing. A reply held for the first attach waits to
+    /// learn the path.
     fn reply(&self, bytes: Vec<u8>) {
         if bytes.is_empty() {
             return;
         }
-        let link = self.attached.link();
-        link.send(if link.automatic_input { wire::AUTOMATIC_INPUT } else { wire::DATA }, &bytes);
+        let mut link = self.attached.link();
+        let automatic = link.automatic_input || link.connection.is_none();
+        let kind = if automatic { wire::AUTOMATIC_INPUT } else { wire::DATA };
+        link.send(kind, &bytes);
     }
 
     fn resize(&mut self, size: WindowSize) {
@@ -730,7 +919,7 @@ impl SessionHandle for HerdrCoreHandle {
         Ok(())
     }
 
-    /// A move while the connection is down reaches the labels on reattach.
+    /// A move while the stream is not up reaches the labels on attach.
     fn place(&mut self, placement: &Placement) {
         let mut link = self.attached.link();
         if *placement != link.placement {
@@ -739,15 +928,21 @@ impl SessionHandle for HerdrCoreHandle {
         }
     }
 
-    /// As fresh as the core's last foreground poll.
+    /// As fresh as the core's last foreground poll, as this machine reaches
+    /// the path.
     fn cwd(&self) -> Option<PathBuf> {
-        self.facts().foreground.map(|foreground| foreground.cwd)
+        let cwd = self.facts().foreground?.cwd;
+        match self.attached.core.side() {
+            Side::Native => Some(cwd),
+            Side::Wsl(distro) => Some(wsl::linux_to_windows(&cwd.to_string_lossy(), distro)),
+        }
     }
 
+    /// The cwd as the side spells it.
     fn foreground(&self) -> Option<ForegroundProgram> {
         let foreground = self.facts().foreground?;
         Some(ForegroundProgram {
-            side: Side::Native,
+            side: self.attached.core.side().clone(),
             pid: u32::try_from(foreground.pid).ok(),
             argv: if foreground.argv.is_empty() { vec![foreground.name] } else { foreground.argv },
             cwd: Some(foreground.cwd),
@@ -755,7 +950,13 @@ impl SessionHandle for HerdrCoreHandle {
     }
 
     fn signals(&self) -> Signals {
-        self.probe.signals()
+        match &self.probe {
+            Some(probe) => probe.signals(),
+            None => alacritree_process_probe::reported_signals(
+                self.foreground().as_ref(),
+                self.started.pid,
+            ),
+        }
     }
 }
 
@@ -770,18 +971,83 @@ impl Drop for HerdrCoreHandle {
 mod tests {
     use super::*;
 
-    #[test]
-    fn display_facts_spell_colors_as_the_core_reads_them() {
-        let colors = TerminalColors {
+    fn colors() -> TerminalColors {
+        TerminalColors {
             foreground: Rgb { r: 0xff, g: 0x80, b: 0 },
             background: Rgb { r: 0, g: 0, b: 0x10 },
             cursor: None,
-        };
-        let size = WindowSize { num_lines: 24, num_cols: 80, cell_width: 9, cell_height: 18 };
+        }
+    }
 
+    fn size(num_cols: u16, num_lines: u16) -> WindowSize {
+        WindowSize { num_lines, num_cols, cell_width: 9, cell_height: 18 }
+    }
+
+    /// A session whose side had no connection when it opened, as a distro
+    /// session is while its resident connection starts.
+    fn waiting_for_its_first_attach() -> HerdrCoreHandle {
+        let link = Link {
+            connection: None,
+            channel: 0,
+            automatic_input: false,
+            size: (80, 24),
+            display: DisplayFacts::new(colors(), size(80, 24)),
+            focused: None,
+            placement: Placement::default(),
+            held: Vec::new(),
+            closed: false,
+        };
+        let core = Arc::new(SideCore::native("hc", Waker::default()));
+        let attached =
+            Arc::new(Attached { core, address: "t1".into(), history: 0, link: Mutex::new(link) });
+        HerdrCoreHandle { attached, probe: None, started: Facts::default(), killed: false }
+    }
+
+    #[test]
+    fn display_facts_spell_colors_as_the_core_reads_them() {
         assert_eq!(
-            DisplayFacts::new(colors, size).json(),
+            DisplayFacts::new(colors(), size(80, 24)).json(),
             json!({ "fg": "#ff8000", "bg": "#000010", "cursor": null, "cell": [9, 18] })
         );
+    }
+
+    /// Keys typed while the resident connection opens are not lost: they go
+    /// out once the stream attaches, in the order typed, and a query reply
+    /// still goes as automatic input. A resize waits for the attach, which
+    /// sends the latest size itself.
+    #[test]
+    fn input_sent_before_the_first_attach_goes_out_in_order() {
+        let mut handle = waiting_for_its_first_attach();
+        handle.write(b"ls".to_vec());
+        handle.reply(b"\x1b[0n".to_vec());
+        handle.resize(size(120, 40));
+        handle.write(b"\r".to_vec());
+
+        let mut link = handle.attached.link();
+        link.automatic_input = true;
+        assert_eq!(link.take_held(), vec![
+            (wire::DATA, b"ls".to_vec()),
+            (wire::AUTOMATIC_INPUT, b"\x1b[0n".to_vec()),
+            (wire::DATA, b"\r".to_vec()),
+        ]);
+        assert_eq!(link.size, (120, 40));
+    }
+
+    /// Without AUTOMATIC_INPUT on the stream, a held reply goes as DATA.
+    #[test]
+    fn a_held_reply_goes_as_data_on_a_stream_without_automatic_input() {
+        let handle = waiting_for_its_first_attach();
+        handle.reply(b"\x1b[0n".to_vec());
+
+        assert_eq!(handle.attached.link().take_held(), vec![(wire::DATA, b"\x1b[0n".to_vec())]);
+    }
+
+    /// A session let go before its first attach never takes a stream.
+    #[test]
+    fn a_session_detached_before_its_first_attach_never_attaches() {
+        let mut handle = waiting_for_its_first_attach();
+        handle.detach().expect("a detach");
+
+        assert!(matches!(handle.attached.resume(false), Resumed::Released));
     }
 }

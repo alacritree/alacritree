@@ -8,7 +8,7 @@
 
 use std::io;
 use std::path::Path;
-use std::process::{Output, Stdio};
+use std::process::{Command, Output, Stdio};
 use std::time::Duration;
 
 use crate::jobs::Blocking;
@@ -158,6 +158,20 @@ const LOGIN_SHELL: &str = r#"s=$(getent passwd "$(id -un)" 2>/dev/null | cut -d:
 /// single quotes, so it must not contain one.
 pub fn login_shell_script(inner: &str) -> String {
     format!(r#"{LOGIN_SHELL}; exec "$s" -lc '{inner}' "$s" "$@""#)
+}
+
+/// A command that runs `program <args>` in `distro` with only the program's
+/// own output on stdout. A bare name is found through the distro user's
+/// login shell, whose rc output is dropped, and the program then runs
+/// outside that shell. A program that speaks a protocol on stdout needs this
+/// rather than [`login_shell_script`].
+pub fn wsl_command_with_clean_stdout(distro: &str, program: &str, args: &[&str]) -> Command {
+    let script = format!(
+        r#"n=$1; shift; case $n in */*) p=$n ;; *) {LOGIN_SHELL}; p=$("$s" -lc 'command -v "$1"' "$s" "$n" </dev/null 2>/dev/null | tail -n 1) ;; esac; exec "${{p:-$n}}" "$@""#
+    );
+    let mut command = wsl::command(distro, None);
+    command.args(["sh", "-c", &script, "sh", program]).args(args);
+    command
 }
 
 fn invocation(side: &Side, program: &Program, args: &[String]) -> Invocation {

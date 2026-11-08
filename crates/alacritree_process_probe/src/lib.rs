@@ -1,10 +1,11 @@
 //! What runs under a shell process on this machine.
 //!
 //! One question, four operating systems, and a cache that keeps the answer
-//! for a beat so a frame does not walk the process table. [`ProbeHandle`] is
-//! the whole interface: hand it the shell's pid and, for a shimmed WSL
-//! session, the helper's probe key, and ask it for [`Signals`] or the
-//! [`ForegroundProgram`].
+//! for a beat so a frame does not walk the process table. Hand
+//! [`ProbeHandle`] the shell's pid and, for a shimmed WSL session, the
+//! helper's probe key, and ask it for [`Signals`] or the
+//! [`ForegroundProgram`]. [`reported_signals`] answers instead for a
+//! terminal whose server reports its foreground program.
 //!
 //! Everything below that is per-platform: `/proc` on Linux, `sysctl` on
 //! macOS, a background refresher over `sysinfo` on Windows, and the WSL
@@ -32,7 +33,6 @@ const AGENT_PROCESS_NAMES: &[&str] =
 /// `comm` values (`tmux: client`) and Windows image names (`nvim.exe`)
 /// alike. gvim stays out because it owns its own window. The WSL helper's
 /// `PROBE` script carries the same list.
-#[cfg(any(test, target_os = "linux", target_os = "macos", windows))]
 fn is_nav_tui_name(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
     ["nvim", "vim", "tmux", "zellij", "herdr"].iter().any(|tui| n.starts_with(tui))
@@ -110,6 +110,26 @@ impl ProbeHandle {
         }
         let Program { pid, argv, cwd } = foreground_program(self.shell_pid?)?;
         Some(ForegroundProgram { side: Side::Native, pid: Some(pid), argv, cwd })
+    }
+}
+
+/// What a terminal's own server reports about its foreground program, for a
+/// terminal whose processes this machine's process table cannot see, such
+/// as one in a WSL distro's herdr-core core. The shell itself in the
+/// foreground is no job.
+pub fn reported_signals(foreground: Option<&ForegroundProgram>, shell_pid: Option<u32>) -> Signals {
+    let Some(program) = foreground else { return Signals::default() };
+    let name = program
+        .argv
+        .first()
+        .map(|arg0| arg0.rsplit(['/', '\\']).next().unwrap_or(arg0).to_ascii_lowercase())
+        .unwrap_or_default();
+    let cmdline = program.argv.join(" ").to_ascii_lowercase();
+    Signals {
+        agent: agent_named(&name, &cmdline),
+        foreground_job: program.pid.is_some() && program.pid != shell_pid,
+        nav_tui: is_nav_tui_name(&name),
+        answered: true,
     }
 }
 
@@ -204,18 +224,19 @@ fn agent_name_by_cmdline(cmds: impl IntoIterator<Item = impl AsRef<str>>) -> Opt
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn agent_name_for(comm: Option<&str>, cmdline: Option<&str>) -> Option<&'static str> {
     let comm_trim = comm.map(str::trim).unwrap_or("");
-    let by_comm = AGENT_PROCESS_NAMES.iter().find(|name| comm_trim.starts_with(*name)).copied();
-    if by_comm.is_some() {
-        return by_comm;
-    }
-    if let Some(cmd) = cmdline {
-        let name = AGENT_PROCESS_NAMES.iter().find(|name| cmd.contains(*name)).copied();
-        if name.is_some() {
-            return name;
-        }
+    let name = agent_named(comm_trim, cmdline.unwrap_or(""));
+    if let (None, Some(cmd)) = (name, cmdline) {
         log::debug!("foreground process not matched: comm={comm_trim:?} cmdline={cmd:?}");
     }
-    None
+    name
+}
+
+fn agent_named(comm: &str, cmdline: &str) -> Option<&'static str> {
+    AGENT_PROCESS_NAMES
+        .iter()
+        .find(|name| comm.starts_with(*name))
+        .or_else(|| AGENT_PROCESS_NAMES.iter().find(|name| cmdline.contains(*name)))
+        .copied()
 }
 
 #[cfg(target_os = "linux")]

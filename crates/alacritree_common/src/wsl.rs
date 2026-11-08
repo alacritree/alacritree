@@ -193,6 +193,21 @@ fn windows_to_linux_with(path: &Path, automount_root: &str) -> Option<String> {
     Some(out)
 }
 
+/// Where a shell inside a distro starts for `dir`, read the way
+/// `wsl.exe --cd` reads it. A Linux path stays, `~` and `~/...` go under
+/// `home`, and a Windows path is translated. No `dir`, or one with no Linux
+/// spelling, starts in `home`.
+pub fn linux_dir(dir: Option<&str>, home: impl FnOnce() -> Option<String>) -> Option<String> {
+    match dir {
+        Some(dir) if dir.starts_with('/') => Some(dir.to_string()),
+        Some(dir) if dir == "~" || dir.starts_with("~/") => {
+            Some(format!("{}{}", home()?, &dir[1..]))
+        },
+        Some(dir) => windows_to_linux(Path::new(dir)).or_else(home),
+        None => home(),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WslDistro {
     pub name: String,
@@ -803,6 +818,27 @@ mod tests {
 
     fn distro(name: &str) -> WslDistro {
         WslDistro { name: name.to_string(), is_default: true }
+    }
+
+    #[test]
+    fn a_launch_dir_maps_to_where_the_shell_starts_inside_the_distro() {
+        let home = || Some("/home/me".to_string());
+
+        assert_eq!(linux_dir(Some("/srv/app"), home), Some("/srv/app".into()));
+        assert_eq!(linux_dir(Some("~"), home), Some("/home/me".into()));
+        assert_eq!(linux_dir(Some("~/src"), home), Some("/home/me/src".into()));
+        assert_eq!(linux_dir(None, home), Some("/home/me".into()));
+    }
+
+    /// Only Windows parses a UNC path, as for every `windows_to_linux` case.
+    #[cfg(windows)]
+    #[test]
+    fn a_windows_launch_dir_maps_to_its_linux_path_or_home() {
+        let home = || Some("/home/me".to_string());
+        let unc = r"\\wsl.localhost\kali-linux\home\me\x";
+
+        assert_eq!(linux_dir(Some(unc), home), Some("/home/me/x".into()));
+        assert_eq!(linux_dir(Some(r"\\server\share"), home), Some("/home/me".into()));
     }
 
     #[test]

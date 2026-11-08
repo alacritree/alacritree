@@ -416,7 +416,7 @@ impl AlacritreeApp {
         let Some(found) = self.modals.core_elsewhere.take() else {
             return;
         };
-        let pointed = self.core_backend.as_ref().map_or(Ok(()), |core| core.use_core(&found));
+        let pointed = self.cores.as_ref().map_or(Ok(()), |cores| cores.use_core(&found));
         match pointed {
             Ok(()) => self.start_core_connect(),
             Err(error) => {
