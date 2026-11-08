@@ -203,7 +203,9 @@ impl SideCore {
         let Launch::Wsl { distro, .. } = &self.launch else { return None };
         let output = match self.helper() {
             Some((client, _)) => client.run(HOME_SCRIPT, &[]).ok()?.1,
-            None => wsl::command(distro, None).args(["sh", "-c", HOME_SCRIPT]).output().ok()?.stdout,
+            None => {
+                wsl::command(distro, None).args(["sh", "-c", HOME_SCRIPT]).output().ok()?.stdout
+            },
         };
         let home = String::from_utf8_lossy(&output).trim().to_string();
         (!home.is_empty()).then(|| self.home.get_or_init(|| home).clone())

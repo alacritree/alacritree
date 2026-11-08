@@ -517,7 +517,7 @@ pub fn is_wsl_program(program: &str) -> bool {
 
 /// The directory a `wsl.exe` argv starts in through `--cd`, as written.
 pub fn launch_dir(args: &[String]) -> Option<String> {
-    let (flags, _, _) = split_leading_flags(args)?;
+    let (flags, ..) = split_leading_flags(args)?;
     flags.chunks(2).rfind(|pair| pair[0] == "--cd").map(|pair| pair[1].clone())
 }
 

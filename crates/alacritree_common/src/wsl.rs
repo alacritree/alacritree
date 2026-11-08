@@ -200,7 +200,9 @@ fn windows_to_linux_with(path: &Path, automount_root: &str) -> Option<String> {
 pub fn linux_dir(dir: Option<&str>, home: impl FnOnce() -> Option<String>) -> Option<String> {
     match dir {
         Some(dir) if dir.starts_with('/') => Some(dir.to_string()),
-        Some(dir) if dir == "~" || dir.starts_with("~/") => Some(format!("{}{}", home()?, &dir[1..])),
+        Some(dir) if dir == "~" || dir.starts_with("~/") => {
+            Some(format!("{}{}", home()?, &dir[1..]))
+        },
         Some(dir) => windows_to_linux(Path::new(dir)).or_else(home),
         None => home(),
     }
