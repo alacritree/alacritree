@@ -915,7 +915,7 @@
         },
         "session_backend": {
           "default": "native",
-          "description": "Which backend runs the terminal of a new session.\n\n\"native\" opens a PTY that alacritree owns. \"herdr_core\" runs the\nsession as a terminal in the core of the session's side, through\n`hc connect`. A native shell runs in the native core, and a shell in\na WSL distro runs in the distro's core. Such a terminal outlives\nalacritree while its core runs. Quitting leaves it running, and the\nnext launch puts it back in its workspace. When that core cannot be\nused, the session opens native and a notice names the cause. When the\ncore takes the request and gives no answer, no session opens until\nthe core reports the terminal. Diff panes stay native.",
+          "description": "Which backend runs the terminal of a new session.\n\n\"native\" opens a PTY that alacritree owns. \"herdr_core\" runs the\nsession as a terminal in the core of the session's side, through\n`hc connect`. A native shell runs in the native core, and a shell in\na WSL distro runs in the distro's core. Such a terminal outlives\nalacritree while its core runs. Quitting leaves it running, and the\nnext launch puts it back in its workspace. When that core cannot be\nused, the session opens native and a notice names the cause. When the\nside has no `hc`, the notice instead offers hc's official installer\nand shows its command, which runs only once the user confirms. When\nthe core takes the request and gives no answer, no session opens\nuntil the core reports the terminal. Diff panes stay native.",
           "enum": [
             "native",
             "herdr_core"

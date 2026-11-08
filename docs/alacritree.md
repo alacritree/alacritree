@@ -11,7 +11,7 @@ A **workspace** in Alacritree is either the *home* workspace or a specific Git *
 - `Ctrl+T` (or `Cmd+T` / `Cmd+N` on macOS) opens a new shell session in the current workspace. The session inherits the workspace directory as cwd.
 - `Ctrl+Tab` / `Ctrl+Shift+Tab` cycle sessions within the current workspace. On macOS, `Cmd+1` to `Cmd+9`, `Cmd+Shift+]` and `Cmd+Shift+[` mirror Terminal.app.
 - `Alt+Right` / `Alt+Left` jump between workspaces.
-- Sessions are **not** killed when you switch workspaces. Scrollback, running commands, and PTY state survive switches between worktrees. A native session ends when you close it or quit the app. With `[integrations.herdr_core] session_backend = "herdr_core"`, a new session runs in a herdr-core core instead, so quitting leaves it running and the next launch puts it back in its workspace.
+- Sessions are **not** killed when you switch workspaces. Scrollback, running commands, and PTY state survive switches between worktrees. A native session ends when you close it or quit the app. With `[integrations.herdr_core] session_backend = "herdr_core"`, a new session runs in a herdr-core core instead, so quitting leaves it running and the next launch puts it back in its workspace. On a side without `hc`, the session opens native and alacritree offers to run hc's official installer there: the PowerShell script on Windows, and the shell script inside a WSL distro, on Linux and on macOS. The popup shows the exact command, and the command runs only after you confirm. After a decline, later sessions on that side get the plain notice for the rest of the run.
 
 ### Workspace scratchpads
 
