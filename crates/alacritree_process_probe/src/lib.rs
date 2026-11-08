@@ -73,20 +73,17 @@ impl ProbeHandle {
                 answered: cached.answered,
             };
         }
-        let (agent, foreground_job, nav_tui, answered) = match &self.wsl {
-            Some(probe) => {
-                let program = wsl_helper::foreground(&probe.distro, &probe.key);
-                let comm = program.as_ref().map(|program| program.comm.as_str());
-                let (foreground_job, nav_tui) = wsl_probe_signals(comm);
-                let agent = comm.and_then(|comm| agent_named(comm, ""));
-                (agent, foreground_job, nav_tui, comm.is_some())
+        let Signals { agent, foreground_job, nav_tui, answered } = match &self.wsl {
+            // The Windows tree under the shell pid reads every idle WSL shell
+            // as busy, because wsl.exe keeps its plumbing children alive. The
+            // helper answers nothing for an idle shell, so no pid is the shell's.
+            Some(_) => reported_signals(self.foreground().as_ref(), None),
+            None => Signals {
+                agent: self.shell_pid.and_then(foreground_agent_name),
+                foreground_job: self.shell_pid.is_some_and(shell_has_foreground_job),
+                nav_tui: self.shell_pid.is_some_and(foreground_nav_tui),
+                answered: self.shell_pid.is_some_and(probe_has_answered),
             },
-            None => (
-                self.shell_pid.and_then(foreground_agent_name),
-                self.shell_pid.is_some_and(shell_has_foreground_job),
-                self.shell_pid.is_some_and(foreground_nav_tui),
-                self.shell_pid.is_some_and(probe_has_answered),
-            ),
         };
         self.cache.set(AgentCache {
             polled_at: Some(Instant::now()),
@@ -106,7 +103,7 @@ impl ProbeHandle {
             return Some(ForegroundProgram {
                 side: Side::Wsl(probe.distro.clone()),
                 pid: Some(program.pid),
-                argv: vec![program.comm],
+                argv: program.argv,
                 cwd: program.cwd.map(PathBuf::from),
             });
         }
@@ -117,8 +114,7 @@ impl ProbeHandle {
 
 /// What a terminal's own server reports about its foreground program, for a
 /// terminal whose processes this machine's process table cannot see, such
-/// as one in a WSL distro's herdr-core core. The shell itself in the
-/// foreground is no job.
+/// as one in a WSL distro. The shell itself in the foreground is no job.
 pub fn reported_signals(foreground: Option<&ForegroundProgram>, shell_pid: Option<u32>) -> Signals {
     let Some(program) = foreground else { return Signals::default() };
     let name = program
@@ -181,32 +177,6 @@ fn agent_name_by_name(names: impl IntoIterator<Item = impl AsRef<str>>) -> Optio
         let n = n.as_ref().to_ascii_lowercase();
         AGENT_PROCESS_NAMES.iter().find(|name| n.starts_with(*name)).copied()
     })
-}
-
-/// FocusLeft/FocusRight passthrough decision for a shimmed WSL session: the
-/// helper's cached foreground `comm`, matched like the native Linux probe.
-/// Unknown means no TUI — the keys move panel focus. Gated the same as
-/// `is_nav_tui_name` (plus its `not(...)` fallback below) since `Session`
-/// always carries a `wsl_probe` field, so `process_probe`'s match on it must
-/// compile everywhere, even though a shimmed session only exists on Windows.
-#[cfg(any(test, target_os = "linux", windows))]
-fn wsl_nav_tui(comm: Option<&str>) -> bool {
-    comm.is_some_and(is_nav_tui_name)
-}
-
-#[cfg(not(any(test, target_os = "linux", windows)))]
-fn wsl_nav_tui(_comm: Option<&str>) -> bool {
-    // Same gap as the agent probe: macOS isn't wired up yet.
-    false
-}
-
-/// `(foreground_job, nav_tui)` for a shimmed WSL session, from the helper's
-/// cached foreground `comm`. Any comm at all means a job owns the tty — the
-/// helper reports nothing for an idle shell. The Windows descendant probe
-/// can't stand in here: wsl.exe keeps plumbing children alive for the life
-/// of the session, so it reads every idle WSL shell as busy.
-fn wsl_probe_signals(comm: Option<&str>) -> (bool, bool) {
-    (comm.is_some(), wsl_nav_tui(comm))
 }
 
 /// Match full command lines against the agent list — picks up
@@ -1157,27 +1127,31 @@ mod tests {
         assert_eq!(agent_name_by_name(["not-claude.exe"]), None);
         assert_eq!(agent_name_by_name(std::iter::empty::<&str>()), None);
     }
+    /// A WSL session's signals come from the helper's last probe answer.
     #[test]
-    fn wsl_busy_needs_a_foreground_comm() {
-        // Idle shell: the helper reports no foreground comm at all.
-        assert_eq!(wsl_probe_signals(None), (false, false));
-        // Any foreground job counts as busy, cooperating TUI or not.
-        assert_eq!(wsl_probe_signals(Some("sleep")), (true, false));
-        assert_eq!(wsl_probe_signals(Some("claude")), (true, false));
-        assert_eq!(wsl_probe_signals(Some("nvim")), (true, true));
-    }
-    #[test]
-    fn wsl_nav_tui_needs_a_known_cooperating_comm() {
-        assert!(wsl_nav_tui(Some("nvim")));
-        assert!(wsl_nav_tui(Some("vim")));
-        assert!(wsl_nav_tui(Some("tmux: client")));
-        assert!(wsl_nav_tui(Some("zellij")));
-        assert!(wsl_nav_tui(Some("herdr")));
-        // A shell, an agent, or an unknown probe must move panel focus —
-        // losing passthrough beats losing the keys.
-        assert!(!wsl_nav_tui(Some("bash")));
-        assert!(!wsl_nav_tui(Some("claude")));
-        assert!(!wsl_nav_tui(None));
+    fn a_wsl_session_reads_its_signals_from_the_probe_answer() {
+        use alacritree_common::wsl_helper::{WslForeground, set_cached_foreground};
+        const DISTRO: &str = "no-such-distro";
+        let session = |key: &str, argv: Option<&[&str]>| {
+            let program = argv.map(|argv| WslForeground {
+                pid: 7,
+                argv: argv.iter().map(|arg| arg.to_string()).collect(),
+                cwd: None,
+            });
+            set_cached_foreground(DISTRO, key, program);
+            ProbeHandle::new(None, Some(WslProbe { distro: DISTRO.into(), key: key.into() }))
+        };
+
+        let codex = session("wsl-codex", Some(&["node", "/opt/codex/bin/codex.js"])).signals();
+        assert_eq!(codex.agent, Some("codex"), "an agent behind its runtime");
+        assert!(codex.foreground_job && !codex.nav_tui);
+
+        let nvim = session("wsl-nvim", Some(&["/usr/bin/nvim", "notes.md"])).signals();
+        assert!(nvim.nav_tui && nvim.foreground_job);
+        assert_eq!(nvim.agent, None);
+
+        let idle = session("wsl-idle", None).signals();
+        assert_eq!(idle, Signals::default(), "an idle shell or an unknown probe");
     }
     #[test]
     fn nav_tui_name_match_covers_both_platforms_naming() {

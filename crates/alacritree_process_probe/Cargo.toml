@@ -12,6 +12,9 @@ alacritree_common.workspace = true
 alacritree_session_backend.workspace = true
 log = "0.4"
 
+[dev-dependencies]
+alacritree_common = { workspace = true, features = ["test-support"] }
+
 # macOS reads the foreground group, its argv and its cwd through libc.
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2"
