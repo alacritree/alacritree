@@ -174,8 +174,11 @@ mod tests {
     use strum::IntoEnumIterator;
 
     use super::*;
-    use crate::bindings::{RawBinding, action, parse_bindings};
+    use crate::bindings::parse_bindings;
+    #[cfg(not(target_os = "macos"))]
+    use crate::bindings::{RawBinding, action};
 
+    #[cfg(not(target_os = "macos"))]
     fn named(shortcuts: &Shortcuts, key: egui::Key, mods: egui::Modifiers) -> Vec<NamedAction> {
         shortcuts
             .matches(key, mods)

@@ -2829,6 +2829,7 @@ mod tests {
     /// 3 start together, as two cell sizes sent back to back do. Each reading
     /// waits up to 5 s for the size it expects, so a slow runner does not
     /// read the tty before the watcher writes it.
+    #[cfg(any(windows, target_os = "linux"))]
     const PIXEL_SIZE_HARNESS: &str = r##"echo harness
 command -v perl >/dev/null && command -v script >/dev/null && command -v pgrep >/dev/null || { echo "skip: needs perl, script and pgrep"; exit 0; }
 pixel_size_script=$(cat <<'EOF_PIXEL_SIZE_SCRIPT'
@@ -2926,6 +2927,7 @@ rm -rf "$XDG_RUNTIME_DIR"
     /// The FIFO is made after the hello, since the startup sweep reads every
     /// pidfile too. The helper runs under `setsid` because its EXIT trap
     /// signals its whole process group.
+    #[cfg(any(windows, target_os = "linux"))]
     const PROBE_QUEUE_HARNESS: &str = r##"echo harness
 command -v setsid >/dev/null && command -v base64 >/dev/null || { echo "skip: needs setsid and base64"; exit 0; }
 helper_script=$(cat <<'EOF_HELPER_SCRIPT'
@@ -2975,6 +2977,7 @@ rm -rf "$XDG_RUNTIME_DIR"
     /// A watch sits open on a directory that never changes, then a `RUN` and a
     /// `PROBE` are sent behind it. The watch answers on its own id once the
     /// directory changes, and neither request waits for that answer.
+    #[cfg(any(windows, target_os = "linux"))]
     const WATCH_QUEUE_HARNESS: &str = r##"echo harness
 command -v setsid >/dev/null && command -v base64 >/dev/null || { echo "skip: needs setsid and base64"; exit 0; }
 helper_script=$(cat <<'EOF_HELPER_SCRIPT'
@@ -3016,6 +3019,7 @@ rm -rf "$XDG_RUNTIME_DIR"
 
     /// An empty path and a missing directory are answers, not waits, and a
     /// watch whose helper dies answers as a failure rather than hanging.
+    #[cfg(any(windows, target_os = "linux"))]
     const WATCH_EDGE_HARNESS: &str = r##"echo harness
 command -v setsid >/dev/null && command -v base64 >/dev/null || { echo "skip: needs setsid and base64"; exit 0; }
 helper_script=$(cat <<'EOF_HELPER_SCRIPT'
@@ -3076,6 +3080,7 @@ rm -rf "$XDG_RUNTIME_DIR"
     /// The helper waits with `inotifywait` when that program is on `PATH`, and
     /// with a `stat` loop that never leaves the distro otherwise. The loop is
     /// forced by hiding `inotifywait` behind a `PATH` that does not have it.
+    #[cfg(any(windows, target_os = "linux"))]
     const WATCH_WAIT_HARNESS: &str = r##"echo harness
 command -v setsid >/dev/null && command -v base64 >/dev/null || { echo "skip: needs setsid and base64"; exit 0; }
 helper_script=$(cat <<'EOF_HELPER_SCRIPT'
@@ -3157,6 +3162,7 @@ rm -rf "$bin"
     /// lost. The wait is bounded, and the stamp after it sees the write. The
     /// `inotifywait` on `PATH` writes the file and times out without an
     /// event, so the write always lands after the helper's first stamp.
+    #[cfg(any(windows, target_os = "linux"))]
     const WATCH_RACE_HARNESS: &str = r##"echo harness
 command -v setsid >/dev/null && command -v base64 >/dev/null || { echo "skip: needs setsid and base64"; exit 0; }
 helper_script=$(cat <<'EOF_HELPER_SCRIPT'
