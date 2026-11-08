@@ -2,17 +2,19 @@
 name = "alacritree_herdr_core"
 version = "0.0.0"
 license = "Apache-2.0"
-description = "The session backend that runs each terminal in a herdr-core core"
+description = "The session backend that runs each terminal in a herdr-core core, and the multiplexer that lists the core's other terminals"
 edition.workspace = true
 rust-version.workspace = true
 publish = false
 
 [features]
-# A way to kill the `hc connect` child, so a test can drop the connection.
+# A way to kill the `hc connect` child, so a test can drop the connection,
+# and to hand the pane listing a test's own panes.
 test-support = []
 
 [dependencies]
 alacritree_common.workspace = true
+alacritree_multiplexer.workspace = true
 alacritree_process_probe.workspace = true
 alacritree_session_backend.workspace = true
 alacritty_terminal = { path = "../../alacritty_terminal" }

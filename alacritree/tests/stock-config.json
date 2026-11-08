@@ -118,6 +118,7 @@
       "wsl_path": null
     },
     "herdr_core": {
+      "enabled": true,
       "icon": {
         "bold": false,
         "color": null,

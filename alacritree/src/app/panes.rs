@@ -40,10 +40,18 @@ impl AlacritreeApp {
         let target = multiplexer
             .find(&key.side, &key.terminal_id)
             .map_or(unlisted, |pane| pane.target(&key.side));
-        if let Some(launch) = multiplexer.open_directly(&target) {
-            // Nothing to ask the multiplexer first: the pane id is the whole
-            // target, and the client attaches to it directly.
-            let opened = self.open_pane_session(ctx, key, switch.to.clone(), launch, false, focus);
+        let backend_terminal = multiplexer.backend_terminals();
+        let launch = multiplexer.open_directly(&target);
+        if backend_terminal || launch.is_some() {
+            // Nothing to ask the multiplexer first. The pane id is the whole
+            // target, and the client or the session backend attaches to it
+            // directly.
+            let opened = match launch {
+                Some(launch) => {
+                    self.open_pane_session(ctx, key, switch.to.clone(), launch, false, focus)
+                },
+                None => self.open_backend_pane(ctx, key, switch.to.clone(), focus, false),
+            };
             return match opened {
                 Some(id) => {
                     self.park_attach_reply(id, waiter);
@@ -87,9 +95,10 @@ impl AlacritreeApp {
         }
     }
 
-    /// Open a session on every listed pane no session holds yet.  The listing
-    /// is the one the sidebar and the palette both draw, so this opens exactly
-    /// the rows the user could have opened one at a time.
+    /// Open a session on every listed pane no session holds yet, except the
+    /// herdr-core panes. The listing is the one the sidebar and the palette
+    /// both draw, so this opens the rows the user could have opened one at a
+    /// time.
     ///
     /// The batch attaches in the background: each session files under its own
     /// pane's workspace, and neither the screen nor the multiplexer's focus
@@ -99,9 +108,16 @@ impl AlacritreeApp {
             self.modals.error_dialog = Some(self.multiplexers.disabled_reason().to_string());
             return;
         }
+        if self.multiplexers.default_enabled().is_none() {
+            self.modals.error_dialog = Some(PaneError::NoneCreates.to_string());
+            return;
+        }
         let panes: Vec<(PaneKey, String, WorkspaceKey)> = self
             .pane_listing()
             .into_iter()
+            // Another client shows a terminal a session backend runs, and a
+            // takeover would resize it under that client.
+            .filter(|listed| !self.multiplexers.get(listed.key.multiplexer).backend_terminals())
             .map(|listed| (listed.key, listed.pane.pane_id.clone(), listed.workspace))
             .collect();
         for (key, pane_id, workspace) in panes {
@@ -350,6 +366,62 @@ impl AlacritreeApp {
                     Some(format!("failed to attach {} agent: {e}", key.multiplexer));
                 None
             },
+        }
+    }
+
+    /// Open the session on a pane whose terminal the session backend runs,
+    /// with no attach client between them. A `watch` session follows the
+    /// terminal and never types into it or resizes it.
+    pub(super) fn open_backend_pane(
+        &mut self,
+        ctx: &Context,
+        key: PaneKey,
+        workspace: WorkspaceKey,
+        focus: AttachFocus,
+        watch: bool,
+    ) -> Option<SessionId> {
+        let (size, cell_size) = self.next_spawn_geometry();
+        let (mut session, request) = Session::pending_attach(
+            ctx.clone(),
+            &self.config,
+            workspace.clone(),
+            size,
+            cell_size,
+            key.terminal_id.clone(),
+            None,
+        );
+        let kind = key.multiplexer;
+        session.bind_pane(key, false);
+        let id = session.id;
+        self.sessions.push(session);
+        let backend = self.pane_backend.clone();
+        let opened = self.start_open(id, move || {
+            let handle = if watch { backend.watch(request) } else { backend.attach(request) }?;
+            Ok(Opened { handle, fell_back: None })
+        });
+        if let Err(e) = opened {
+            self.modals.error_dialog = Some(format!("failed to attach {kind} pane: {e}"));
+            return None;
+        }
+        if focus.takes() || !self.sessions.has_active(&workspace) {
+            self.sessions.set_active(workspace, id);
+        }
+        Some(id)
+    }
+
+    /// Open a session that follows the terminal behind `key` without taking
+    /// it over. A session already showing the pane is brought forward
+    /// instead.
+    pub(super) fn watch_pane(&mut self, ctx: &Context, key: PaneKey) {
+        if let Some(id) = self.pane_session(&key) {
+            self.activate_session_by_id(id);
+            return;
+        }
+        let workspace =
+            self.pane_row_workspace(&key).unwrap_or_else(|| self.current_workspace.clone());
+        if let Some(id) = self.open_backend_pane(ctx, key, workspace, AttachFocus::Take, true) {
+            self.activate_session_by_id(id);
+            self.focus_terminal();
         }
     }
 
@@ -706,7 +778,7 @@ impl AlacritreeApp {
         let focused = self
             .active_session_index()
             .and_then(|idx| self.sessions[idx].pane_key.as_ref())
-            .filter(|key| self.multiplexers.get(key.multiplexer).enabled())
+            .filter(|key| self.multiplexers.get(key.multiplexer).creates_panes())
             .filter(|key| only.is_none_or(|kind| kind == key.multiplexer));
         if let Some(key) = focused {
             return Ok((key.multiplexer, named.unwrap_or_else(|| key.side.clone())));
@@ -716,7 +788,7 @@ impl AlacritreeApp {
             None => self.multiplexers.default_enabled(),
         };
         let Some(multiplexer) = default else {
-            return Err(PaneError::AllDisabled);
+            return Err(PaneError::NoneCreates);
         };
         let side = match named {
             Some(side) => side,
@@ -751,6 +823,44 @@ impl Action for action::AttachAllMultiplexerPanes {
 impl Action for action::DetachAllMultiplexerPanes {
     fn run(&self, app: &mut AlacritreeApp, ctx: &Context, _: ActionOrigin) {
         app.detach_every_multiplexer_pane(ctx);
+    }
+}
+
+impl Action for action::KillTerminal {
+    fn run(&self, app: &mut AlacritreeApp, _: &Context, _: ActionOrigin) {
+        match app.kill_terminal_target() {
+            Some(key) => app.modals.pending_kill_terminal = Some(key),
+            None => {
+                app.modals.error_dialog = Some(
+                    "Kill terminal acts on a herdr-core terminal alacritree did not create. Open \
+                     one, or put the sidebar cursor on its row"
+                        .to_string(),
+                )
+            },
+        }
+    }
+}
+
+impl AlacritreeApp {
+    /// The terminal "Kill terminal" acts on. That is the row under the
+    /// sidebar cursor while the sidebar has focus, else the active session's.
+    fn kill_terminal_target(&self) -> Option<PaneKey> {
+        let cursor = match self.sidebar.model.cursor() {
+            Some(SidebarRow::Pane(key)) => Some(key.clone()),
+            Some(SidebarRow::Session(id)) => {
+                self.sessions.iter().find(|s| s.id == *id).and_then(|s| s.pane_key.clone())
+            },
+            _ => None,
+        };
+        let active = self.active_session_index().and_then(|at| self.sessions[at].pane_key.clone());
+        let ordered = match self.focus {
+            PaneFocus::ProjectsSidebar => [cursor, active],
+            PaneFocus::Terminal | PaneFocus::GitSidebar => [active, cursor],
+        };
+        ordered
+            .into_iter()
+            .flatten()
+            .find(|key| self.multiplexers.get(key.multiplexer).backend_terminals())
     }
 }
 

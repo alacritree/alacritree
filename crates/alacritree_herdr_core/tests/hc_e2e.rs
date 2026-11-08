@@ -14,7 +14,10 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
-use alacritree_herdr_core::{CoreElsewhere, HerdrCore, HerdrCoreHandle, Remedy};
+use alacritree_herdr_core::{
+    CoreElsewhere, HerdrCore, HerdrCoreConfig, HerdrCoreHandle, HerdrCorePanes, Remedy,
+};
+use alacritree_multiplexer::{MultiplexerSession, Side};
 use alacritree_session_backend::{
     Adoptable, AttachRequest, OpenRequest, Placement, ProcessTree, Screen, SessionBackend,
     SessionHandle, ShellCommand,
@@ -167,12 +170,17 @@ fn open(backend: &HerdrCore, shell: ShellCommand, dir: &Path) -> Opened {
 
 /// A grid for a session to paint into, and the exits it reports.
 fn screen_for() -> (Screen<Exits>, Arc<FairMutex<Term<Exits>>>, Receiver<ExitStatus>) {
+    screen_sized(window(80, 24))
+}
+
+fn screen_sized(
+    window_size: WindowSize,
+) -> (Screen<Exits>, Arc<FairMutex<Term<Exits>>>, Receiver<ExitStatus>) {
     let (sender, exits) = mpsc::channel();
     let listener = Exits(sender);
-    let term =
-        Arc::new(FairMutex::new(Term::new(Config::default(), &Size(80, 24), listener.clone())));
-    let screen =
-        Screen { term: term.clone(), listener, window_size: window(80, 24), history: 1000 };
+    let size = Size(window_size.num_cols.into(), window_size.num_lines.into());
+    let term = Arc::new(FairMutex::new(Term::new(Config::default(), &size, listener.clone())));
+    let screen = Screen { term: term.clone(), listener, window_size, history: 1000 };
     (screen, term, exits)
 }
 
@@ -755,4 +763,126 @@ fn distro_sessions_share_one_resident_connection() {
     wait_until("the core's cwd", PATIENCE, || first.handle.cwd().is_some());
     assert_eq!(first.handle.cwd(), Some(core.windows_dir()));
     assert_eq!(core.live_terminals(), 2, "both sessions run in the distro's core");
+}
+
+/// Start `argv` the way another client does: kept, and with no alacritree
+/// label. Answers its address.
+fn run_foreign(argv: &[&str]) -> String {
+    let mut args = vec!["run", "--bg", "--keep", "--no-parent", "--json"];
+    args.extend_from_slice(argv);
+    let started = hc(&args);
+    assert!(started.status.success(), "{started:?}");
+    let record: Value = serde_json::from_slice(&started.stdout).expect("run answers JSON");
+    record["address"].as_str().expect("an address").to_string()
+}
+
+fn foreign_shell() -> String {
+    run_foreign(&[])
+}
+
+/// Watch a running terminal from a grid of `window_size`.
+fn watch(backend: &HerdrCore, terminal: &str, window_size: WindowSize) -> Opened {
+    let (screen, term, exits) = screen_sized(window_size);
+    let request = AttachRequest { terminal: terminal.into(), colors: Default::default(), screen };
+    let handle = backend.watch(request).expect("the core lets a session watch the terminal");
+    Opened { handle, term, exits }
+}
+
+/// The size the core keeps for `address`, as `(cols, rows)`.
+fn size_of(core: &Core, address: &str) -> (Value, Value) {
+    let record = core.get(address);
+    (record["cols"].clone(), record["rows"].clone())
+}
+
+/// A terminal that `hc run` started carries no alacritree label, so it is
+/// listed as a pane, and opening it types into it.
+#[test]
+#[ignore = "needs hc on PATH"]
+fn a_terminal_hc_runs_without_labels_lists_as_a_pane_and_opens_interactively() {
+    let core = Core::start();
+    let backend = HerdrCore::new("hc");
+    let own = open(&backend, shell(), core.dir());
+    let address = foreign_shell();
+    let mut panes = HerdrCorePanes::new(backend.clone(), HerdrCoreConfig::default());
+
+    wait_until("the foreign pane to list", PATIENCE, || {
+        panes.poll(&|_| false);
+        panes.find(&Side::Native, &address).is_some()
+    });
+    let listed: Vec<&str> = panes.panes().iter().map(|(_, p)| p.terminal_id.as_str()).collect();
+    assert_eq!(listed, vec![address.as_str()], "alacritree's own terminal is no pane");
+    assert!(panes.find(&Side::Native, own.handle.terminal()).is_none());
+
+    let opened = attach(&backend, &address);
+    opened.handle.write(b"echo typed-into-foreign\r".to_vec());
+    shows(&opened, "typed-into-foreign");
+}
+
+/// A watching session follows the terminal's output, and what it types or
+/// how it is sized never reaches the terminal.
+#[test]
+#[ignore = "needs hc on PATH"]
+fn watching_a_terminal_never_types_into_it_or_resizes_it() {
+    let core = Core::start();
+    let backend = HerdrCore::new("hc");
+    let address = foreign_shell();
+    wait_until("the terminal to start", PATIENCE, || core.get(&address)["state"] == "live");
+    let before = size_of(&core, &address);
+
+    let mut watched = watch(&backend, &address, window(97, 33));
+    watched.handle.write(b"echo typed-by-watcher\r".to_vec());
+    watched.handle.resize(window(101, 31));
+    assert!(hc(&["send", &address, "echo sent-by-hc"]).status.success());
+
+    shows(&watched, "sent-by-hc");
+    assert!(!screen(&watched.term).contains("typed-by-watcher"), "{}", screen(&watched.term));
+    assert_eq!(size_of(&core, &address), before, "the watch left the terminal's size alone");
+}
+
+/// Closing a session on a foreign terminal only lets go of it. The terminal
+/// keeps running and takes keys from the next session.
+#[test]
+#[ignore = "needs hc on PATH"]
+fn closing_a_foreign_session_leaves_its_terminal_running() {
+    let core = Core::start();
+    let backend = HerdrCore::new("hc");
+    let address = foreign_shell();
+    let mut first = attach(&backend, &address);
+    first.handle.write(b"echo first-session\r".to_vec());
+    shows(&first, "first-session");
+
+    first.handle.kill();
+
+    let second = attach(&backend, &address);
+    second.handle.write(b"echo second-session\r".to_vec());
+    shows(&second, "second-session");
+    assert_eq!(core.get(&address)["state"], "live");
+}
+
+/// The record of a foreign terminal whose program ended is its creator's to
+/// remove, so closing the session it ended in leaves the record.
+#[test]
+#[ignore = "needs hc on PATH"]
+fn a_foreign_terminal_keeps_its_record_after_its_program_ends() {
+    let core = Core::start();
+    let backend = HerdrCore::new("hc");
+    let exiting: &[&str] = if cfg!(windows) {
+        &["cmd.exe", "/c", "ping -n 3 127.0.0.1 >nul & exit 3"]
+    } else {
+        &["sh", "-c", "sleep 2; exit 3"]
+    };
+    let address = run_foreign(exiting);
+    let mut opened = attach(&backend, &address);
+
+    let status = opened.exits.recv_timeout(PATIENCE).expect("the program's exit arrives");
+    assert_eq!(status.code(), Some(3));
+    opened.handle.kill();
+    // Closing an own terminal removes its record, so once that one is gone
+    // a removal of the foreign record would have landed too.
+    let mut own = open(&backend, shell(), core.dir());
+    let own_address = own.handle.terminal().to_string();
+    own.handle.kill();
+    wait_until("the own record to go", PATIENCE, || core.record(&own_address).is_none());
+
+    assert!(core.record(&address).is_some(), "the foreign record stays");
 }

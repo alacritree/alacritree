@@ -161,5 +161,6 @@ pub(super) fn pane(
             title: Some(title.into()),
             status,
         },
+        backend_terminal: false,
     }
 }

@@ -32,6 +32,8 @@ pub(super) struct Modals {
     /// it counted rather than whatever is attached by the time it is
     /// answered.
     pub(super) pending_detach_all: Option<Vec<SessionId>>,
+    /// The terminal "Kill terminal" is waiting to be confirmed for.
+    pub(super) pending_kill_terminal: Option<PaneKey>,
     /// A core that hc does not reach, offered until the user uses it or
     /// skips it.
     pub(super) core_elsewhere: Option<CoreElsewhere>,
@@ -339,6 +341,66 @@ impl AlacritreeApp {
         }
         if cancel_via_key || cancelled || modal.should_close() {
             self.modals.pending_detach_all = None;
+        }
+    }
+
+    /// Ask before ending the program in a terminal alacritree did not
+    /// create, since other clients may be using it.
+    pub(super) fn show_kill_terminal_dialog(&mut self, ctx: &Context) {
+        let theme = self.theme;
+        let Some(key) = self.modals.pending_kill_terminal.clone() else {
+            return;
+        };
+        let name = self
+            .find_pane(&key)
+            .and_then(|pane| pane.title.clone())
+            .unwrap_or_else(|| key.terminal_id.clone());
+        let (cancel_via_key, confirm_via_key) =
+            consume_modal_keys(ctx, &self.modals.gate, ModalKind::KillTerminal);
+        let frame = modal_frame(&theme);
+        let mut confirmed = false;
+        let mut cancelled = false;
+
+        let s = theme.ui_scale;
+        let modal = egui::Modal::new(egui::Id::new("alacritree_kill_terminal_dialog"))
+            .frame(frame)
+            .show(ctx, |ui| {
+                ui.set_width(320.0 * s);
+                ui.spacing_mut().item_spacing.y = 6.0 * s;
+                ui.label(
+                    RichText::new(format!("Kill terminal {name}?")).color(theme.text).strong(),
+                );
+                ui.label(
+                    RichText::new("Its program ends for every client attached to it.")
+                        .color(theme.text_dim),
+                );
+                ui.add_space(4.0 * s);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("Enter to kill · Esc to cancel")
+                            .color(theme.text_muted)
+                            .small(),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let kill_btn = modal_button(ui, &theme, "Kill", theme.text);
+                        if kill_btn.clicked() {
+                            confirmed = true;
+                        }
+                        if modal_button(ui, &theme, "Cancel", theme.text_dim).clicked() {
+                            cancelled = true;
+                        }
+                        focus_default(ui.ctx(), kill_btn.id);
+                    });
+                });
+            });
+
+        if confirm_via_key || confirmed {
+            self.modals.pending_kill_terminal = None;
+            self.multiplexers.get_mut(key.multiplexer).kill_terminal(&key);
+            return;
+        }
+        if cancel_via_key || cancelled || modal.should_close() {
+            self.modals.pending_kill_terminal = None;
         }
     }
 

@@ -7,7 +7,7 @@
 //! session.
 
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, TryLockError};
 use std::time::{Duration, Instant};
 
@@ -166,6 +166,21 @@ impl SideCore {
                 Ok((command, format!("wsl.exe -d {distro} -- {hc} connect")))
             },
         }
+    }
+
+    /// Answers whether the native core already serves, without starting one.
+    /// A distro's core is never asked, so it answers no.
+    pub(crate) fn serving(&self) -> bool {
+        let Launch::Native { program, socket } = &self.launch else { return false };
+        let mut command = command_ext::hidden(program);
+        command.args(["server", "status", "--json"]);
+        command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        if let Some(socket) = lock(socket).as_ref() {
+            command.env("HC_SOCKET", socket);
+        }
+        // Only the pane listing asks, from a thread of its own.
+        #[allow(clippy::disallowed_methods)]
+        command.status().is_ok_and(|status| status.success())
     }
 
     /// Kill the `hc connect` child, as a crash would.

@@ -608,7 +608,11 @@ impl AlacritreeApp {
 
     /// Applies the clicks that act on a workspace or session, and reports
     /// whether one of them activated a workspace.
-    fn apply_sidebar_activations(&mut self, ctx: &Context, requests: &mut SidebarRequests) -> bool {
+    pub(super) fn apply_sidebar_activations(
+        &mut self,
+        ctx: &Context,
+        requests: &mut SidebarRequests,
+    ) -> bool {
         let mut workspace_activated = false;
         if requests.home {
             self.activate_home(ctx);
@@ -639,6 +643,13 @@ impl AlacritreeApp {
             } else {
                 self.current_workspace = switch.from;
             }
+        }
+        if let Some(key) = requests.watch_pane.take() {
+            self.watch_pane(ctx, key);
+            workspace_activated = true;
+        }
+        if let Some(key) = requests.kill_terminal.take() {
+            self.modals.pending_kill_terminal = Some(key);
         }
         if let Some(ws) = requests.spawn_shell.take() {
             // Spawning activates the workspace and the new session, matching
@@ -835,7 +846,7 @@ struct WorktreeView {
 /// What the paint pass asks for, applied once the panel closure has released
 /// its borrows.
 #[derive(Default)]
-struct SidebarRequests {
+pub(super) struct SidebarRequests {
     add_project: bool,
     open_tasks: bool,
     reorder_toggled: bool,
@@ -859,6 +870,8 @@ struct SidebarRequests {
     activate_session: Option<(WorkspaceKey, SessionId)>,
     close_session: Option<SessionId>,
     attach_pane: Option<(WorkspaceKey, PaneKey, String)>,
+    pub(super) watch_pane: Option<PaneKey>,
+    pub(super) kill_terminal: Option<PaneKey>,
     /// Worktree rows painted on a probe frame, the only ones worth probing.
     drawn_worktrees: Vec<PathBuf>,
 }
@@ -1044,6 +1057,12 @@ fn paint_workspace_children(
                 let act = pane_row(ui, row, is_cursor, scroll, paint.icons, &paint.view.theme);
                 if act.attach {
                     requests.attach_pane = Some((ws.clone(), row.key.clone(), row.pane_id.clone()));
+                }
+                if act.watch {
+                    requests.watch_pane = Some(row.key.clone());
+                }
+                if act.kill {
+                    requests.kill_terminal = Some(row.key.clone());
                 }
             },
             WorkspaceRowData::Temporary(row) => {
@@ -2289,7 +2308,20 @@ pub(super) fn pane_row(
     if scroll_into_view {
         ui.scroll_to_rect(full_rect, None);
     }
-    PaneRowAction { attach: resp.clicked() }
+    let mut action = PaneRowAction { attach: resp.clicked(), watch: false, kill: false };
+    if row.backend_terminal {
+        resp.context_menu(|ui| {
+            if ui.button("Watch").clicked() {
+                action.watch = true;
+                ui.close_menu();
+            }
+            if ui.button("Kill terminal\u{2026}").clicked() {
+                action.kill = true;
+                ui.close_menu();
+            }
+        });
+    }
+    action
 }
 
 impl AlacritreeApp {
@@ -2654,11 +2686,15 @@ pub(super) struct PaneRowData {
     pub(super) pane_id: String,
     pub(super) name: RowName,
     pub(super) managed: Managed,
+    /// A session backend runs the pane's terminal, so its menu can watch it
+    /// and kill it.
+    pub(super) backend_terminal: bool,
 }
 
 impl PaneRowData {
-    pub(super) fn new(key: PaneKey, pane: &Pane, managed: Managed) -> Self {
-        Self { key, pane_id: pane.pane_id.clone(), name: pane_display_name(pane), managed }
+    pub(super) fn new(key: PaneKey, pane: &Pane, managed: Managed, backend_terminal: bool) -> Self {
+        let name = pane_display_name(pane);
+        Self { key, pane_id: pane.pane_id.clone(), name, managed, backend_terminal }
     }
 }
 
@@ -2761,6 +2797,8 @@ pub(super) fn profile_menu_label(index: usize, name: &str) -> String {
 
 pub(super) struct PaneRowAction {
     pub(super) attach: bool,
+    pub(super) watch: bool,
+    pub(super) kill: bool,
 }
 
 /// What the × on a session row does.  Ending a harness-managed session ends

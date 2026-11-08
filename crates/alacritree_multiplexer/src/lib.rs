@@ -48,6 +48,9 @@ pub type Reply = Result<serde_json::Value, String>;
 pub enum PaneError {
     #[error("{}", all_disabled_reason())]
     AllDisabled,
+    /// A multiplexer is on, but none of the ones on creates panes.
+    #[error("{}", none_creates_reason())]
+    NoneCreates,
     #[error("{}", .0.disabled_reason())]
     Disabled(MultiplexerKind),
     #[error("`{name}` is not a multiplexer, expected {}", known_names())]
@@ -87,6 +90,20 @@ pub fn all_disabled_reason() -> &'static str {
     })
 }
 
+fn none_creates_reason() -> &'static str {
+    static REASON: OnceLock<String> = OnceLock::new();
+    REASON.get_or_init(|| {
+        let tables: Vec<String> = MultiplexerKind::real()
+            .filter(|kind| kind.creates_panes())
+            .map(|kind| format!("[integrations.{kind}]"))
+            .collect();
+        format!(
+            "no enabled multiplexer integration creates panes ({} enabled)",
+            tables.join(" or ")
+        )
+    })
+}
+
 fn known_names() -> String {
     let known: Vec<String> = MultiplexerKind::real().map(|k| format!("`{k}`")).collect();
     known.join(" or ")
@@ -99,6 +116,11 @@ fn known_names() -> String {
 pub enum MultiplexerKind {
     Herdr,
     Zellij,
+    /// The terminals of the native side's herdr-core core that alacritree did
+    /// not create. Last, so a request naming no multiplexer still reaches
+    /// one that can create a pane.
+    #[strum(serialize = "herdr_core")]
+    HerdrCore,
     /// Answers from a script instead of a server, so app behaviour can be
     /// tested at the trait rather than through one multiplexer's wire
     /// format.  Left out of [`MultiplexerKind::real`], so nothing builds it,
@@ -120,6 +142,12 @@ impl MultiplexerKind {
     #[cfg(any(test, feature = "test-support"))]
     pub fn real() -> impl Iterator<Item = Self> {
         Self::iter().filter(|kind| *kind != Self::Scripted)
+    }
+
+    /// Whether this multiplexer creates panes. herdr-core only lists the
+    /// terminals that other clients started.
+    pub fn creates_panes(self) -> bool {
+        self != Self::HerdrCore
     }
 
     /// Why a request that named this multiplexer is refused while it is off.
@@ -342,6 +370,19 @@ pub trait MultiplexerSession {
         id: ::alacritree_multiplexer::SessionId,
         key: Option<&::alacritree_multiplexer::PaneKey>,
     );
+
+    /// Whether each pane is a terminal of a session backend, whose
+    /// `terminal_id` names it there. The app then opens a pane through that
+    /// backend instead of an attach client, can watch it, and can kill it.
+    fn backend_terminals(&self) -> bool {
+        false
+    }
+
+    /// End the program in `key`'s pane. Only a multiplexer with
+    /// [`Self::backend_terminals`] is asked.
+    fn kill_terminal(&mut self, key: &::alacritree_multiplexer::PaneKey) {
+        let _ = key;
+    }
 }
 
 #[cfg(test)]
@@ -357,6 +398,7 @@ mod tests {
     fn a_multiplexer_reads_back_as_the_name_it_spelled() {
         assert_eq!(MultiplexerKind::Herdr.to_string(), "herdr");
         assert_eq!(MultiplexerKind::Zellij.to_string(), "zellij");
+        assert_eq!(MultiplexerKind::HerdrCore.to_string(), "herdr_core");
         for kind in MultiplexerKind::iter() {
             assert_eq!(MultiplexerKind::from_str(&kind.to_string()), Ok(kind));
         }

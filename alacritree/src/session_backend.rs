@@ -49,11 +49,11 @@ pub(crate) enum Cores {
 }
 
 impl Cores {
-    /// `None` when the config picks native.
-    pub(crate) fn from_config(config: &HerdrCoreConfig) -> Option<Self> {
+    /// `cores` when the config picks herdr-core, `None` when it picks native.
+    pub(crate) fn from_config(config: &HerdrCoreConfig, cores: &HerdrCores) -> Option<Self> {
         match config.session_backend {
             SessionBackendChoice::Native => None,
-            SessionBackendChoice::HerdrCore => Some(Self::HerdrCore(HerdrCores::new(config))),
+            SessionBackendChoice::HerdrCore => Some(Self::HerdrCore(cores.clone())),
         }
     }
 
@@ -118,19 +118,6 @@ impl Cores {
             Self::HerdrCore(cores) => Some(Backend::HerdrCore(cores.on(side))),
             #[cfg(test)]
             Self::Scripted(cores) => cores.get(side).cloned().map(Backend::Scripted),
-        }
-    }
-
-    /// Repaint whenever a core reports a terminal that may be adoptable, so
-    /// an idle window still picks it up.
-    pub(crate) fn wake_on_new_terminals(&self, ctx: &egui::Context) {
-        match self {
-            Self::HerdrCore(cores) => {
-                let ctx = ctx.clone();
-                cores.set_waker(move || ctx.request_repaint());
-            },
-            #[cfg(test)]
-            Self::Scripted(_) => {},
         }
     }
 }

@@ -99,6 +99,7 @@ alacritree_common = { workspace = true, features = ["test-support"] }
 alacritree_forge = { workspace = true, features = ["test-support"] }
 alacritree_git = { workspace = true, features = ["test-support"] }
 alacritree_herdr = { workspace = true, features = ["test-support"] }
+alacritree_herdr_core = { workspace = true, features = ["test-support"] }
 alacritree_multiplexer = { workspace = true, features = ["test-support"] }
 alacritree_session_backend = { workspace = true, features = ["test-support"] }
 alacritree_tasks = { workspace = true, features = ["test-support"] }

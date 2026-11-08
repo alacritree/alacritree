@@ -1,16 +1,18 @@
 //! The session backend that runs each terminal in its side's herdr-core
 //! core: the native core, or the core inside a WSL distro.
 //!
-//! Terminals start with `keep`. Closing a session kills its terminal,
-//! quitting only detaches, and the next launch adopts each terminal that
-//! `labels` marks as alacritree's. A session's parser attaches its stream
-//! once the side's connection is up, and again after one drops.
+//! Terminals start with `keep`. Closing a session kills a terminal that
+//! `labels` marks as alacritree's, and only detaches from any other.
+//! Quitting detaches, and the next launch adopts alacritree's own. A
+//! session's parser attaches its stream once the side's connection is up,
+//! and again after one drops.
 
 mod connection;
 mod core;
 mod elsewhere;
 mod labels;
 mod one_shot;
+mod panes;
 mod parser;
 mod settings;
 mod wire;
@@ -24,8 +26,8 @@ use alacritree_common::wsl;
 use alacritree_common::wsl_helper::{self, TransportError};
 use alacritree_process_probe::ProbeHandle;
 use alacritree_session_backend::{
-    Adoptable, AttachRequest, ForegroundProgram, OpenRequest, Operation, Placement, Screen,
-    SessionBackend, SessionBackendKind, SessionError, SessionHandle, Side, Signals, TerminalColors,
+    Adoptable, AttachRequest, ForegroundProgram, OpenRequest, Placement, Screen, SessionBackend,
+    SessionBackendKind, SessionError, SessionHandle, Side, Signals, TerminalColors,
 };
 use alacritty_terminal::event::{EventListener, WindowSize};
 use alacritty_terminal::vte::ansi::Rgb;
@@ -35,6 +37,7 @@ use self::connection::{Answer, Connection, Facts, Foreground, Waker};
 use self::core::{RECONNECT_INTERVAL, SideCore};
 use self::elsewhere::HcPaths;
 pub use self::elsewhere::{CoreElsewhere, HcConfigError, Remedy};
+pub use self::panes::HerdrCorePanes;
 use self::parser::Chunk;
 pub use self::settings::{HerdrCoreConfig, RawHerdrCore, SessionBackendChoice};
 
@@ -162,8 +165,8 @@ impl HerdrCore {
     }
 
     /// Call `wake` whenever the core reports a terminal that may be
-    /// adoptable, so a terminal an agent starts shows up in an idle app.
-    /// Only the first call counts.
+    /// adoptable or listed, so a terminal an agent starts shows up in an
+    /// idle app. Only the first call counts.
     pub fn set_waker(&self, wake: impl Fn() + Send + Sync + 'static) {
         let _ = self.core.waker().set(Box::new(wake));
     }
@@ -268,7 +271,8 @@ impl HerdrCore {
     where
         L: EventListener + Send + 'static,
     {
-        let Terminal { address, started, display, first_paint_history, placement } = terminal;
+        let Terminal { address, started, display, first_paint_history, placement, access } =
+            terminal;
         let size = (window_size.num_cols, window_size.num_lines);
         let mut link = Link {
             connection: None,
@@ -283,8 +287,9 @@ impl HerdrCore {
         };
         let stream = match self.core.live() {
             Some(connection) => {
-                let opened =
-                    open_stream(&connection, &address, size, &link.display, first_paint_history)?;
+                let view =
+                    View { size, display: &link.display, history: first_paint_history, access };
+                let opened = open_stream(&connection, &address, view)?;
                 link.connection = Some(connection);
                 link.channel = opened.channel;
                 link.automatic_input = opened.automatic_input;
@@ -293,7 +298,8 @@ impl HerdrCore {
             None => None,
         };
         let link = Mutex::new(link);
-        let attached = Arc::new(Attached { core: self.core.clone(), address, history, link });
+        let attached =
+            Arc::new(Attached { core: self.core.clone(), address, history, access, link });
         if let Err(error) = parser::spawn(term, listener, stream, attached.clone()) {
             attached.link().send(wire::CLOSE, &[]);
             return Err(error.into());
@@ -473,9 +479,10 @@ impl<H: From<HerdrCoreHandle>> SessionBackend<H> for HerdrCore {
             display,
             first_paint_history: 0,
             placement,
+            access: Access::Own,
         };
         self.show(terminal, screen).map(H::from).inspect_err(|_| {
-            end(self.core.clone(), address);
+            end(self.core.clone(), address, KILL_AND_REMOVE);
         })
     }
 
@@ -508,29 +515,78 @@ impl<H: From<HerdrCoreHandle>> SessionBackend<H> for HerdrCore {
     where
         L: EventListener + Send + 'static,
     {
-        let AttachRequest { terminal, colors, screen } = request;
+        self.take_over(request, None).map(H::from)
+    }
+
+    fn watch<L>(&self, request: AttachRequest<L>) -> Result<H, SessionError>
+    where
+        L: EventListener + Send + 'static,
+    {
+        self.take_over(request, Some(Access::Watch)).map(H::from)
+    }
+}
+
+impl HerdrCore {
+    /// Show a running terminal in a session. Without an `access`, the
+    /// terminal's labels say whether it is alacritree's own.
+    fn take_over<L>(
+        &self,
+        AttachRequest { terminal, colors, screen }: AttachRequest<L>,
+        access: Option<Access>,
+    ) -> Result<HerdrCoreHandle, SessionError>
+    where
+        L: EventListener + Send + 'static,
+    {
         let facts = self
             .core
             .live()
             .and_then(|connection| connection.facts(&terminal))
             .or_else(|| lock(&self.claims).listed.remove(&terminal))
             .unwrap_or_default();
+        let placement = labels::placement(&facts.labels);
+        let access =
+            access.unwrap_or(if placement.is_some() { Access::Own } else { Access::Foreign });
         let terminal = Terminal {
             address: terminal,
-            placement: labels::placement(&facts.labels).unwrap_or_default(),
+            placement: placement.unwrap_or_default(),
             started: facts,
             display: DisplayFacts::new(colors, screen.window_size),
             first_paint_history: screen.history,
+            access,
         };
-        self.show(terminal, screen).map(H::from)
+        self.show(terminal, screen)
     }
 
-    fn watch<L>(&self, _request: AttachRequest<L>) -> Result<H, SessionError>
-    where
-        L: EventListener + Send + 'static,
-    {
-        Err(unsupported(Operation::Watch))
+    /// End the program in `address` and keep its record, off the caller's
+    /// thread. The record is for its creator to remove. With no connection
+    /// open there is no core to ask, and connecting could start one.
+    pub fn kill_terminal(&self, address: &str) {
+        let Some(connection) = self.core.live() else {
+            log::warn!("herdr-core: no core to kill {address} in");
+            return;
+        };
+        let terminal = json!({ "terminal": address });
+        let killed = std::thread::Builder::new()
+            .name("hc-kill".into())
+            .spawn(move || heard(&connection, &["terminal.kill"], &terminal));
+        if let Err(error) = killed {
+            log::warn!("herdr-core kill thread: {error}");
+        }
     }
+}
+
+/// What a session may do to the terminal it shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Access {
+    /// A terminal alacritree created. The session types into it, sizes it
+    /// and records its place, and closing the session kills it.
+    Own,
+    /// A terminal another client created. The session types into it and
+    /// sizes it, and closing the session only detaches.
+    Foreign,
+    /// Any terminal, shown without typing into it or sizing it. Closing the
+    /// session only detaches.
+    Watch,
 }
 
 fn adoptable(claims: &Claims, address: &str, facts: &Facts) -> Option<Adoptable> {
@@ -550,6 +606,7 @@ struct Terminal {
     first_paint_history: usize,
     /// What the terminal's labels record.
     placement: Placement,
+    access: Access,
 }
 
 /// Each terminal record of a `terminal.list` answer, by address.
@@ -572,11 +629,15 @@ fn record_facts(record: &Value) -> (String, Facts) {
         }),
         _ => None,
     };
+    let text = |key: &str| record[key].as_str().map(str::to_string);
     let facts = Facts {
         foreground: serde_json::from_value(record["foreground"].clone()).ok().or(started),
         live: record["state"] == "live",
         pid,
         labels: serde_json::from_value(record["labels"].clone()).unwrap_or_default(),
+        name: text("name"),
+        title: text("title"),
+        cwd: text("cwd").map(PathBuf::from),
     };
     (address, facts)
 }
@@ -588,14 +649,20 @@ struct Opened {
     automatic_input: bool,
 }
 
-/// Attach to `address` on `connection`, with a first paint that restores
-/// `history` scrollback lines.
+/// How a session attaches to its terminal.
+struct View<'a> {
+    size: (u16, u16),
+    display: &'a DisplayFacts,
+    /// Scrollback lines the first paint restores.
+    history: usize,
+    access: Access,
+}
+
+/// Attach to `address` on `connection` as `view` says.
 fn open_stream(
     connection: &Connection,
     address: &str,
-    (cols, rows): (u16, u16),
-    display: &DisplayFacts,
-    history: usize,
+    View { size: (cols, rows), display, history, access }: View<'_>,
 ) -> Result<Opened, CoreError> {
     let attached = connection.call_streaming(
         "terminal.attach",
@@ -605,6 +672,8 @@ fn open_stream(
             "rows": rows,
             "display": display.json(),
             "history": history,
+            // The core takes no input and no size from a watching stream.
+            "observe": access == Access::Watch,
         }),
     )?;
     match attached {
@@ -617,20 +686,19 @@ fn open_stream(
     }
 }
 
-fn unsupported(operation: Operation) -> SessionError {
-    SessionError::Unsupported { backend: SessionBackendKind::HerdrCore, operation }
-}
+/// The calls that end a terminal alacritree created and remove its record.
+const KILL_AND_REMOVE: &[&str] = &["terminal.kill", "terminal.rm"];
 
-/// Kill a terminal and remove its finished record, off the caller's thread,
-/// since a kill escalates through signals and can take seconds. Without the
-/// side's connection it tries again every [`RECONNECT_INTERVAL`], so a
-/// closed session never leaves its terminal running.
-fn end(core: Arc<SideCore>, address: String) {
+/// Make the `methods` calls on a terminal, off the caller's thread, since a
+/// kill escalates through signals and can take seconds. Without the side's
+/// connection it tries again every [`RECONNECT_INTERVAL`], so a closed
+/// session never leaves its terminal running.
+fn end(core: Arc<SideCore>, address: String, methods: &'static [&'static str]) {
     let ended = std::thread::Builder::new().name("hc-kill".into()).spawn(move || {
         let terminal = json!({ "terminal": address });
         loop {
             if let Some(connection) = core.reconnect()
-                && kill_and_remove(&connection, &terminal)
+                && heard(&connection, methods, &terminal)
             {
                 return;
             }
@@ -642,10 +710,10 @@ fn end(core: Arc<SideCore>, address: String) {
     }
 }
 
-/// Answers whether the core heard both calls. A refusal counts as heard,
+/// Answers whether the core heard every call. A refusal counts as heard,
 /// such as a kill of a terminal that already finished.
-fn kill_and_remove(connection: &Connection, terminal: &Value) -> bool {
-    for method in ["terminal.kill", "terminal.rm"] {
+fn heard(connection: &Connection, methods: &[&str], terminal: &Value) -> bool {
+    for method in methods {
         match connection.call(method, terminal.clone()) {
             Ok(_) => {},
             Err(error @ CoreError::Rpc { .. }) => {
@@ -667,6 +735,7 @@ struct Attached {
     address: String,
     /// Scrollback lines a reattach restores.
     history: usize,
+    access: Access,
     link: Mutex<Link>,
 }
 
@@ -799,7 +868,8 @@ impl Attached {
             let link = self.link();
             (link.size, link.display.clone())
         };
-        let opened = open_stream(&connection, &self.address, size, &display, self.history)?;
+        let view = View { size, display: &display, history: self.history, access: self.access };
+        let opened = open_stream(&connection, &self.address, view)?;
         let recorded = connection.facts(&self.address).and_then(|f| labels::placement(&f.labels));
 
         let mut link = self.link();
@@ -817,7 +887,7 @@ impl Attached {
             link.send_display();
         }
         link.send_focus();
-        if recorded.as_ref() != Some(&link.placement) {
+        if self.access == Access::Own && recorded.as_ref() != Some(&link.placement) {
             link.send_labels(&self.address);
         }
         for (kind, bytes) in link.take_held() {
@@ -845,6 +915,12 @@ impl HerdrCoreHandle {
         &self.attached.address
     }
 
+    /// The session watches the terminal: it neither types into it nor
+    /// sizes it.
+    fn watching(&self) -> bool {
+        self.attached.access == Access::Watch
+    }
+
     /// What the current connection last heard about the terminal.
     fn facts(&self) -> Facts {
         let connection = self.attached.link().connection.clone();
@@ -863,7 +939,7 @@ impl HerdrCoreHandle {
 
 impl SessionHandle for HerdrCoreHandle {
     fn write(&self, bytes: Vec<u8>) {
-        if !bytes.is_empty() {
+        if !bytes.is_empty() && !self.watching() {
             self.attached.link().send(wire::DATA, &bytes);
         }
     }
@@ -872,7 +948,7 @@ impl SessionHandle for HerdrCoreHandle {
     /// the core counts as typing. A reply held for the first attach waits to
     /// learn the path.
     fn reply(&self, bytes: Vec<u8>) {
-        if bytes.is_empty() {
+        if bytes.is_empty() || self.watching() {
             return;
         }
         let mut link = self.attached.link();
@@ -882,6 +958,9 @@ impl SessionHandle for HerdrCoreHandle {
     }
 
     fn resize(&mut self, size: WindowSize) {
+        if self.watching() {
+            return;
+        }
         let mut link = self.attached.link();
         let cells = (size.num_cols, size.num_lines);
         if cells != link.size {
@@ -898,6 +977,9 @@ impl SessionHandle for HerdrCoreHandle {
     /// The core forwards focus to a program that asked for focus reports.
     /// Nothing here holds a scheduling boost, so it always answers false.
     fn set_focused(&self, focused: bool) -> bool {
+        if self.watching() {
+            return false;
+        }
         let mut link = self.attached.link();
         if link.focused.replace(focused) != Some(focused) {
             link.send_focus();
@@ -905,12 +987,17 @@ impl SessionHandle for HerdrCoreHandle {
         false
     }
 
+    /// Only a terminal alacritree created ends here. The session lets go of
+    /// any other one, so a close never kills a terminal another client
+    /// started, and its record stays for that client.
     fn kill(&mut self) {
         if std::mem::replace(&mut self.killed, true) {
             return;
         }
         self.close_stream();
-        end(self.attached.core.clone(), self.attached.address.clone());
+        if self.attached.access == Access::Own {
+            end(self.attached.core.clone(), self.attached.address.clone(), KILL_AND_REMOVE);
+        }
     }
 
     /// The terminal runs on in the core, where the next launch adopts it.
@@ -919,8 +1006,12 @@ impl SessionHandle for HerdrCoreHandle {
         Ok(())
     }
 
-    /// A move while the stream is not up reaches the labels on attach.
+    /// A move while the stream is not up reaches the labels on attach. A
+    /// terminal another client created keeps its labels as they are.
     fn place(&mut self, placement: &Placement) {
+        if self.attached.access != Access::Own {
+            return;
+        }
         let mut link = self.attached.link();
         if *placement != link.placement {
             link.placement = placement.clone();
@@ -998,8 +1089,13 @@ mod tests {
             closed: false,
         };
         let core = Arc::new(SideCore::native("hc", Waker::default()));
-        let attached =
-            Arc::new(Attached { core, address: "t1".into(), history: 0, link: Mutex::new(link) });
+        let attached = Arc::new(Attached {
+            core,
+            address: "t1".into(),
+            history: 0,
+            access: Access::Own,
+            link: Mutex::new(link),
+        });
         HerdrCoreHandle { attached, probe: None, started: Facts::default(), killed: false }
     }
 

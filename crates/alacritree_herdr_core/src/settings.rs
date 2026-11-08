@@ -19,7 +19,8 @@ pub enum SessionBackendChoice {
 }
 
 /// `[integrations.herdr_core]`: where the `hc` binary lives on each side, the
-/// glyph that marks its terminals, and whether new sessions run in its cores.
+/// glyph that marks its terminals, whether new sessions run in its cores, and
+/// whether the terminals that alacritree did not create are listed.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct HerdrCoreConfig {
     /// The native `hc` binary.
@@ -30,6 +31,8 @@ pub struct HerdrCoreConfig {
     pub icon: IconStyle,
     /// Which backend runs the terminal of a new session.
     pub session_backend: SessionBackendChoice,
+    /// List the core's terminals that alacritree did not create as panes.
+    pub enabled: bool,
 }
 
 impl Default for HerdrCoreConfig {
@@ -68,6 +71,14 @@ pub struct RawHerdrCore {
     /// core takes the request and gives no answer, no session opens until
     /// the core reports the terminal. Diff panes stay native.
     session_backend: ClosedSet<SessionBackendChoice>,
+    /// List the native core's terminals that alacritree did not create, such
+    /// as the ones herdr-app or an agent started, as panes in the sidebar.
+    ///
+    /// Opening such a pane attaches to it, and closing that session only
+    /// detaches. Its row's menu can also watch it, which never types into it
+    /// or resizes it, and kill it after a confirmation. alacritree reads the
+    /// list from a core that already runs, and never starts one for it.
+    enabled: bool,
 }
 
 impl Default for RawHerdrCore {
@@ -77,6 +88,7 @@ impl Default for RawHerdrCore {
             wsl_path: String::new(),
             icon: None,
             session_backend: ClosedSet::default(),
+            enabled: true,
         }
     }
 }
@@ -93,6 +105,7 @@ impl RawHerdrCore {
             wsl_path: tool.wsl_path,
             icon: self.icon.unwrap_or_else(default_icon).into(),
             session_backend: self.session_backend.get(),
+            enabled: self.enabled,
         }
     }
 }
