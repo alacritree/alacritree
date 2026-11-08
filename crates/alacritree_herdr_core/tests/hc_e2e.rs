@@ -181,6 +181,23 @@ fn shows(opened: &Opened, needle: &str) {
     wait_until(needle, PATIENCE, || screen(&opened.term).contains(needle));
 }
 
+/// A job the shell runs makes the session busy, as the close confirmation
+/// reads it, on every platform the core runs on.
+#[test]
+#[ignore = "needs hc on PATH"]
+fn a_job_under_the_shell_reads_as_busy() {
+    let core = Core::start();
+    let backend = HerdrCore::new("hc");
+    let opened = open(&backend, shell(), core.dir());
+    opened.handle.write(b"echo shell-is-up\r".to_vec());
+    shows(&opened, "shell-is-up");
+    assert!(!opened.handle.signals().foreground_job, "an idle shell reads as idle");
+
+    let job: &[u8] = if cfg!(windows) { b"ping -n 60 127.0.0.1\r" } else { b"sleep 60\r" };
+    opened.handle.write(job.to_vec());
+    wait_until("the job to read as busy", PATIENCE, || opened.handle.signals().foreground_job);
+}
+
 #[test]
 #[ignore = "needs hc on PATH"]
 fn a_session_paints_takes_keys_resizes_and_reports_its_foreground() {

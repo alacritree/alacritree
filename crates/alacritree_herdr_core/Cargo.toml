@@ -9,6 +9,7 @@ publish = false
 
 [dependencies]
 alacritree_common.workspace = true
+alacritree_process_probe.workspace = true
 alacritree_session_backend.workspace = true
 alacritty_terminal = { path = "../../alacritty_terminal" }
 log = "0.4"

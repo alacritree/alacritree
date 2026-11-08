@@ -36,8 +36,6 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 /// What the core says about a terminal's program, kept current from events.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Facts {
-    /// The program the terminal started.
-    pub(crate) pid: Option<u32>,
     pub(crate) foreground: Option<Foreground>,
 }
 
@@ -55,13 +53,12 @@ pub(crate) struct Foreground {
 #[derive(Debug, Deserialize)]
 struct Record {
     address: String,
-    pid: Option<u32>,
     foreground: Option<Foreground>,
 }
 
 impl Record {
     fn facts(self) -> (String, Facts) {
-        (self.address, Facts { pid: self.pid, foreground: self.foreground })
+        (self.address, Facts { foreground: self.foreground })
     }
 }
 
@@ -469,9 +466,8 @@ mod tests {
         apply_event(&mut terminals, &event("created", "t1", created));
         apply_event(&mut terminals, &event("foreground", "t1", foreground(11, "claude")));
 
-        let facts = &terminals["t1"];
-        assert_eq!(facts.pid, Some(10));
-        assert_eq!(facts.foreground.as_ref().map(|f| f.name.as_str()), Some("claude"));
+        let foreground = terminals["t1"].foreground.as_ref();
+        assert_eq!(foreground.map(|f| f.name.as_str()), Some("claude"));
 
         apply_event(&mut terminals, &event("finished", "t1", json!({})));
         assert_eq!(terminals["t1"].foreground, None);

@@ -14,10 +14,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
+use alacritree_process_probe::ProbeHandle;
 use alacritree_session_backend::{
-    AGENT_PROCESS_NAMES, ForegroundProgram, OpenRequest, Operation, PaneKey, Screen,
-    SessionBackend, SessionBackendKind, SessionError, SessionHandle, Side, Signals, TerminalColors,
-    is_nav_tui_name,
+    ForegroundProgram, OpenRequest, Operation, PaneKey, Screen, SessionBackend, SessionBackendKind,
+    SessionError, SessionHandle, Side, Signals, TerminalColors,
 };
 use alacritty_terminal::event::{EventListener, WindowSize};
 use alacritty_terminal::vte::ansi::Rgb;
@@ -181,6 +181,7 @@ impl<H: From<HerdrCoreHandle>> SessionBackend<H> for HerdrCore {
             }),
         )?;
         let address = record["address"].as_str().unwrap_or_default().to_string();
+        let shell_pid = record["pid"].as_u64().and_then(|pid| u32::try_from(pid).ok());
 
         let attached = connection.call_streaming(
             "terminal.attach",
@@ -211,6 +212,7 @@ impl<H: From<HerdrCoreHandle>> SessionBackend<H> for HerdrCore {
             connection,
             channel,
             address,
+            probe: ProbeHandle::new(shell_pid, None),
             size: (cols, rows),
             display,
             focused: AtomicU8::new(UNKNOWN),
@@ -268,6 +270,9 @@ pub struct HerdrCoreHandle {
     connection: Arc<Connection>,
     channel: u32,
     address: String,
+    /// Reads the programs under the terminal's shell. The core runs on this
+    /// machine, and on Windows it reports only the program it started.
+    probe: ProbeHandle,
     /// The stream takes AUTOMATIC_INPUT end to end.
     automatic_input: bool,
     size: (u16, u16),
@@ -358,24 +363,8 @@ impl SessionHandle for HerdrCoreHandle {
     }
 
     fn signals(&self) -> Signals {
-        let Facts { pid, foreground } = self.facts();
-        let Some(foreground) = foreground else { return Signals::default() };
-        Signals {
-            agent: agent_named(&foreground.name, &foreground.argv),
-            foreground_job: pid.is_some_and(|pid| i64::from(pid) != i64::from(foreground.pid)),
-            nav_tui: is_nav_tui_name(&foreground.name),
-            answered: true,
-        }
+        self.probe.signals()
     }
-}
-
-/// The agent a foreground program is, by its name first and then anywhere in
-/// its arguments, which catches `node .../claude-code/cli.js`.
-fn agent_named(name: &str, argv: &[String]) -> Option<&'static str> {
-    let name = name.to_ascii_lowercase();
-    let by_name = AGENT_PROCESS_NAMES.iter().find(|agent| name.starts_with(*agent));
-    let command = argv.join(" ").to_ascii_lowercase();
-    by_name.or_else(|| AGENT_PROCESS_NAMES.iter().find(|agent| command.contains(*agent))).copied()
 }
 
 /// Dropping a handle detaches its stream and leaves the terminal running.
@@ -390,14 +379,6 @@ impl Drop for HerdrCoreHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn an_agent_behind_its_runtime_is_named_from_its_arguments() {
-        let argv = ["node".to_string(), "/usr/lib/claude-code/cli.js".to_string()];
-        assert_eq!(agent_named("node", &argv), Some("claude"));
-        assert_eq!(agent_named("codex.exe", &[]), Some("codex"));
-        assert_eq!(agent_named("bash", &["bash".to_string()]), None);
-    }
 
     #[test]
     fn display_facts_spell_colors_as_the_core_reads_them() {

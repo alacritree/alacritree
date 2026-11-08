@@ -1,0 +1,22 @@
+[package]
+name = "alacritree_process_probe"
+version = "0.0.0"
+license = "Apache-2.0"
+description = "Reads which program runs under a shell process on this machine"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+alacritree_common.workspace = true
+alacritree_session_backend.workspace = true
+log = "0.4"
+
+# macOS reads the foreground group, its argv and its cwd through libc.
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+
+# Windows walks the shell's descendant process tree. Linux reads /proc
+# directly, so the dependency is Windows-only.
+[target.'cfg(windows)'.dependencies]
+sysinfo = { version = "0.36", default-features = false, features = ["system"] }
