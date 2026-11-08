@@ -1644,6 +1644,7 @@ pub(crate) mod tests {
 
     use super::*;
     use crate::repaint::Recorder;
+    #[cfg(windows)]
     use crate::session_backend::Backend;
     use alacritree_common::side::Side;
     use alacritree_session_backend::{Call, Scripted, SessionBackend};
