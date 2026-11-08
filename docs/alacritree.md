@@ -232,6 +232,17 @@ The native herdr-core core also runs terminals that alacritree did not create, s
 - **Killing.** The row's menu offers `Kill terminal`, and `KillTerminal` does the same from the command palette or a key binding. Both ask first, since the program ends for every client attached to it. The terminal's record stays in the core after its program ends, for the client that created it to read and remove.
 - **Opt-out.** `[integrations.herdr_core] enabled = false` hides these panes.
 
+### Sub-agents
+
+A session running Claude Code or Codex lists the sub-agents its agent has running, one level below the session's row. Each row carries the working mark and is named by the task the sub-agent was given. A workspace whose only session is folded into its row lists them under that row instead. Hovering a row adds what else the agent says about the sub-agent: for Claude Code its type, or its workflow and phase, and for Codex its nickname. Clicking one brings its session on screen. A row leaves within a couple of seconds of its sub-agent finishing or being interrupted. A Claude Code sub-agent that stops to wait on background work it started, such as a long command, stays listed until that work reports back. The rows are not sessions, so the cursor, search and reordering pass over them.
+
+Both are read from the files each agent keeps, for a session on the native backend or in a herdr-core core alike. Each backend reports the program in the session's foreground, and that program names the agent:
+
+- **Claude Code** registers each process in `~/.claude/sessions/<pid>.json`, so the foreground program's pid names its conversation. Its sub-agents, workflow agents included, are read from their transcripts under `~/.claude/projects/`. alacritree reads `CLAUDE_CONFIG_DIR` from its own environment, so set it where alacritree starts too if you move the folder.
+- **Codex** registers no process, so a session running Codex lists the sub-agents of the thread started in the foreground program's directory, read from the rollouts under `~/.codex/sessions/`. Two Codex sessions in one directory list none, since nothing says which thread is whose. `CODEX_HOME` moves the folder, read the same way.
+
+A session running inside WSL lists none, since its agent keeps these files in the distro's home. `[integrations.claude] subagents` and `[integrations.codex] subagents` turn each listing off.
+
 ### Creating a worktree
 
 The create modal validates the proposed branch name against `git

@@ -63,6 +63,8 @@ version = "0.15.0"
 dependencies = [
  "ab_glyph",
  "alacritree_checkout_hooks",
+ "alacritree_claude",
+ "alacritree_codex",
  "alacritree_common",
  "alacritree_diff_viewer",
  "alacritree_doppler",
@@ -75,6 +77,7 @@ dependencies = [
  "alacritree_multiplexer",
  "alacritree_native",
  "alacritree_session_backend",
+ "alacritree_subagents",
  "alacritree_tasks",
  "alacritree_taskwarrior",
  "alacritree_vcs",
@@ -139,6 +142,32 @@ dependencies = [
  "serde",
  "tempfile",
  "thiserror 2.0.17",
+ "toml",
+]
+
+[[package]]
+name = "alacritree_claude"
+version = "0.0.0"
+dependencies = [
+ "alacritree_subagents",
+ "home",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml",
+]
+
+[[package]]
+name = "alacritree_codex"
+version = "0.0.0"
+dependencies = [
+ "alacritree_subagents",
+ "home",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
  "toml",
 ]
 
@@ -319,6 +348,16 @@ dependencies = [
  "alacritty_terminal",
  "ambassador",
  "strum 0.28.0",
+ "thiserror 2.0.17",
+]
+
+[[package]]
+name = "alacritree_subagents"
+version = "0.0.0"
+dependencies = [
+ "alacritree_session_backend",
+ "ambassador",
+ "tempfile",
  "thiserror 2.0.17",
 ]
 
