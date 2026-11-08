@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -151,9 +151,17 @@ pub(crate) struct Connection {
 
 impl Connection {
     /// Start `hc connect`, switch it to framed mode and follow its events.
-    pub(crate) fn open(program: &str, waker: Waker) -> Result<Arc<Self>, CoreError> {
+    /// `socket` replaces the socket hc resolves.
+    pub(crate) fn open(
+        program: &str,
+        socket: Option<&Path>,
+        waker: Waker,
+    ) -> Result<Arc<Self>, CoreError> {
         let mut command = alacritree_common::command_ext::hidden(program);
         command.arg("connect").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        if let Some(socket) = socket {
+            command.env("HC_SOCKET", socket);
+        }
         // Backend calls may block, as the trait says. The app connects on a
         // job at startup so the first session finds the connection open.
         #[allow(clippy::disallowed_methods)]

@@ -3,7 +3,9 @@
 //! `alacritree_session_backend`; this module decides which ones exist and
 //! wires them to the window.
 
-use alacritree_herdr_core::{HerdrCore, HerdrCoreConfig, HerdrCoreHandle, SessionBackendChoice};
+use alacritree_herdr_core::{
+    CoreElsewhere, HcConfigError, HerdrCore, HerdrCoreConfig, HerdrCoreHandle, SessionBackendChoice,
+};
 use alacritree_native::{Native, NativeHandle};
 use alacritree_session_backend::{
     Adoptable, AttachRequest, OpenRequest, SessionBackend, SessionError, SessionHandle,
@@ -37,6 +39,29 @@ impl Backend {
         match config.session_backend {
             SessionBackendChoice::Native => None,
             SessionBackendChoice::HerdrCore => Some(Self::HerdrCore(HerdrCore::new(&config.path))),
+        }
+    }
+
+    /// Connect ahead of the first session. When hc does not reach the core,
+    /// answer a core that listens where hc does not look.
+    pub(crate) fn connect(&self) -> Option<CoreElsewhere> {
+        let Self::HerdrCore(core) = self else {
+            if let Err(error) = SessionBackend::<Handle>::ready(self) {
+                log::warn!("herdr-core: {error}");
+            }
+            return None;
+        };
+        let unreachable = core.connect().err()?;
+        log::warn!("herdr-core: {unreachable}");
+        unreachable.elsewhere
+    }
+
+    /// Reach the core that `found` names. Only a herdr-core backend has an
+    /// hc to point.
+    pub(crate) fn use_core(&self, found: &CoreElsewhere) -> Result<(), HcConfigError> {
+        match self {
+            Self::HerdrCore(core) => core.use_core(found),
+            _ => Ok(()),
         }
     }
 

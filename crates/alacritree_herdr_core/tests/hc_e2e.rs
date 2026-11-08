@@ -8,13 +8,13 @@
 #![allow(clippy::disallowed_methods)]
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
-use alacritree_herdr_core::{HerdrCore, HerdrCoreHandle};
+use alacritree_herdr_core::{CoreElsewhere, HerdrCore, HerdrCoreHandle, Remedy};
 use alacritree_session_backend::{
     Adoptable, AttachRequest, OpenRequest, Placement, ProcessTree, Screen, SessionBackend,
     SessionHandle, ShellCommand,
@@ -31,21 +31,36 @@ const PATIENCE: Duration = Duration::from_secs(20);
 /// A core of this test's own, stopped when the test ends.
 struct Core {
     home: tempfile::TempDir,
+    /// Where it listens, which a test may hide from hc.
+    socket: String,
 }
 
 impl Core {
     fn start() -> Self {
+        Self::start_in(&format!("alacritree-e2e-{}", std::process::id()))
+    }
+
+    /// A core of the hc session `session`. No other core listens where hc
+    /// puts that session's default socket: on Unix the runtime dir is this
+    /// test's own, and on Windows the pipe names carry a user of its own.
+    fn start_in(session: &str) -> Self {
         let home = tempfile::tempdir().expect("a temp dir");
         let socket = if cfg!(windows) {
             format!(r"\\.\pipe\alacritree-hc-e2e-{}", std::process::id())
         } else {
             home.path().join("hc.sock").display().to_string()
         };
+        let (runtime, isolated) = if cfg!(windows) {
+            ("USERNAME", format!("alacritreee2e{}", std::process::id()))
+        } else {
+            ("XDG_RUNTIME_DIR", home.path().join("run").display().to_string())
+        };
         let vars = [
-            ("HC_SOCKET", socket),
-            ("HC_SESSION", format!("alacritree-e2e-{}", std::process::id())),
+            ("HC_SOCKET", socket.clone()),
+            ("HC_SESSION", session.to_string()),
             ("XDG_STATE_HOME", home.path().join("state").display().to_string()),
             ("XDG_CONFIG_HOME", home.path().join("config").display().to_string()),
+            (runtime, isolated),
             ("TERM", "xterm-256color".to_string()),
         ];
         for (name, value) in vars {
@@ -55,7 +70,7 @@ impl Core {
         }
         // SAFETY: as above.
         unsafe { std::env::remove_var("HC_TERMINAL_ID") };
-        let core = Self { home };
+        let core = Self { home, socket };
         let started = hc(&["server", "start"]);
         assert!(started.status.success(), "the throwaway core starts: {started:?}");
         core
@@ -79,11 +94,18 @@ impl Core {
     fn dir(&self) -> &Path {
         self.home.path()
     }
+
+    /// The process that serves, which a restart replaces.
+    fn pid(&self) -> u64 {
+        let status: Value = serde_json::from_slice(&hc(&["server", "status", "--json"]).stdout)
+            .expect("server status answers JSON");
+        status["pid"].as_u64().expect("a serving core names its pid")
+    }
 }
 
 impl Drop for Core {
     fn drop(&mut self) {
-        let _ = hc(&["server", "stop"]);
+        let _ = Command::new("hc").args(["server", "stop"]).env("HC_SOCKET", &self.socket).output();
     }
 }
 
@@ -470,6 +492,82 @@ fn a_terminal_an_agent_labels_with_a_workspace_is_adoptable_once() {
     assert_eq!(found[0].terminal, address);
     assert_eq!(found[0].placement.workspace.as_deref(), Some(core.dir()));
     assert!(SessionBackend::<HerdrCoreHandle>::adoptable(&backend).is_empty());
+}
+
+/// A core of `session` with a live terminal, on a socket hc stops looking
+/// at, and the core's pid and terminal address.
+fn hidden_core(session: &str) -> (Core, u64, String) {
+    let core = Core::start_in(session);
+    let terminal = {
+        let before = HerdrCore::new("hc");
+        let mut opened = open(&before, shell(), core.dir());
+        opened.handle.detach().expect("a core terminal detaches");
+        opened.handle.terminal().to_string()
+    };
+    let pid = core.pid();
+    // SAFETY: as in `Core::start`; no thread reads the environment here.
+    unsafe { std::env::remove_var("HC_SOCKET") };
+    (core, pid, terminal)
+}
+
+/// The core that `backend`'s refused connect finds elsewhere. It comes
+/// without waiting out hc's start of a second core, so a new session never
+/// stalls on a core it cannot reach.
+fn found_elsewhere(backend: &HerdrCore) -> CoreElsewhere {
+    let asked = Instant::now();
+    let refused = backend.connect().expect_err("hc does not reach the core");
+    assert!(asked.elapsed() < Duration::from_secs(5), "the refusal took {:?}", asked.elapsed());
+    refused.elsewhere.expect("the core's lock names where it listens")
+}
+
+/// A core of the default session that listens where hc no longer looks is
+/// found through its lock. hc's config takes its socket, so alacritree and
+/// `hc` both reach that same core, its terminal still live.
+#[test]
+#[ignore = "needs hc on PATH"]
+fn a_default_core_hc_does_not_resolve_is_reached_through_hcs_config() {
+    let (core, pid, terminal) = hidden_core("default");
+
+    let backend = HerdrCore::new("hc");
+    let found = found_elsewhere(&backend);
+    assert_eq!(found, CoreElsewhere {
+        socket: PathBuf::from(&core.socket),
+        remedy: Remedy::WriteConfig
+    });
+
+    backend.use_core(&found).expect("hc's config takes the socket");
+
+    backend.connect().expect("alacritree reaches the core");
+    assert!(hc(&["ls", "--json"]).status.success(), "hc ls reaches the core");
+    assert_eq!(core.pid(), pid, "the same core answers");
+    assert_eq!(core.get(&terminal)["state"], "live");
+}
+
+/// hc's `socket` key serves every session, so a core of another session
+/// is reached through `HC_SOCKET` on alacritree's own hc, and hc's config
+/// stays untouched.
+#[test]
+#[ignore = "needs hc on PATH"]
+fn a_core_of_another_session_is_reached_without_touching_hcs_config() {
+    let (core, pid, terminal) = hidden_core(&format!("alacritree-e2e-{}", std::process::id()));
+
+    let backend = HerdrCore::new("hc");
+    let found = found_elsewhere(&backend);
+    assert_eq!(found, CoreElsewhere {
+        socket: PathBuf::from(&core.socket),
+        remedy: Remedy::SetEnv
+    });
+
+    backend.use_core(&found).expect("alacritree's own hc takes the socket");
+
+    backend.connect().expect("alacritree reaches the core");
+    assert!(!core.dir().join("config").join("herdr-core").join("config.toml").exists());
+    let ours = attach(&backend, &terminal);
+    assert_eq!(ours.handle.terminal(), terminal);
+    // `Core::pid` runs hc outside alacritree, which still looks elsewhere.
+    // SAFETY: as in `Core::start`; no thread reads the environment here.
+    unsafe { std::env::set_var("HC_SOCKET", &core.socket) };
+    assert_eq!(core.pid(), pid, "the same core answers");
 }
 
 /// alacritree's terminals carry no `herdr.*` label, so herdr-app neither

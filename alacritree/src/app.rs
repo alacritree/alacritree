@@ -52,7 +52,7 @@ use crate::session::{
     self, AttentionVerdict, LiveState, PendingAttention, Session, SessionActivity, SessionId,
     SessionKind, ShellCommand, ShownState, TermSize, poll_attention_debounce,
 };
-use crate::session_backend::{self, Backend, Handle, Opened};
+use crate::session_backend::{self, Backend, Opened};
 use crate::shell_decision::{ShellDecision, shell_decision};
 use crate::sidebar_model::{SidebarInputs, SidebarModel, Step};
 use crate::sidebar_nav::{self, SidebarRow, StepTarget};
@@ -64,6 +64,7 @@ use crate::{
     clipboard_image, file_drop, ipc, mouse_hide, notify, paste, path_style, scratchpad,
     sidebar_focus, temporary, terminal_view, worktree_liveness,
 };
+use alacritree_herdr_core::{CoreElsewhere, Remedy};
 use alacritree_session_backend::{
     Adoptable, Placement, SessionBackend, SessionError, SessionHandle,
 };
@@ -560,8 +561,9 @@ pub struct AlacritreeApp {
     core_backend: Option<Backend>,
     /// The startup connect to `core_backend`. The home tab's first shell
     /// waits for it, so a home tab whose terminals the core kept gets them
-    /// back rather than one more.
-    core_connect: Option<jobs::Job<()>>,
+    /// back rather than one more. It answers a core that hc does not reach,
+    /// when one listens elsewhere.
+    core_connect: Option<jobs::Job<Option<CoreElsewhere>>>,
     /// Terminals opened on a worker, adopted in `poll_pending_spawns`. A
     /// client that creates a session to write to it is answered once the
     /// terminal is live, or it would race its own shell.
@@ -845,14 +847,10 @@ impl AlacritreeApp {
         // `hc connect` may start the core. Clones share one connection, so
         // connecting here keeps that wait off the frame that opens the first
         // session.
-        if let Some(core) = app.core_backend.clone() {
+        if let Some(core) = &app.core_backend {
             core.wake_on_new_terminals(&cc.egui_ctx);
-            app.core_connect = Some(jobs::pool().spawn(jobs::Priority::Interactive, move |_| {
-                if let Err(error) = SessionBackend::<Handle>::ready(&core) {
-                    log::warn!("herdr-core: {error}");
-                }
-            }));
         }
+        app.start_core_connect();
 
         let wsl_indices: Vec<usize> = app
             .projects
@@ -1184,18 +1182,32 @@ impl AlacritreeApp {
         Ok(())
     }
 
+    /// Connect to the core on a job, which `poll_core_terminals` follows.
+    fn start_core_connect(&mut self) {
+        let Some(core) = self.core_backend.clone() else { return };
+        self.core_connect =
+            Some(jobs::pool().spawn(jobs::Priority::Interactive, move |_| core.connect()));
+    }
+
     /// Once the startup connect to the core is done, take in the terminals
     /// it kept and give the workspace on screen a shell if none came back to
     /// it. After that, take in every terminal the core reports as adoptable.
+    /// A core that hc does not reach is offered to the user first, and the
+    /// shell waits for the answer.
     fn poll_core_terminals(&mut self, ctx: &Context) {
         let Some(connect) = &self.core_connect else {
             self.adopt_core_terminals(ctx);
             return;
         };
-        if connect.poll().is_none() && !connect.failed() {
+        let finished = connect.poll();
+        if finished.is_none() && !connect.failed() {
             return;
         }
         self.core_connect = None;
+        if let Some(Some(found)) = finished {
+            self.modals.core_elsewhere = Some(found);
+            return;
+        }
         self.adopt_core_terminals(ctx);
         self.ensure_active_session(ctx);
     }
@@ -1694,8 +1706,12 @@ impl AlacritreeApp {
         }
         self.adopt_active_session();
         // The core may still hold this workspace's kept terminals, and
-        // `poll_core_terminals` calls back here once they are in.
-        if self.active_session_index().is_some() || self.core_connect.is_some() {
+        // `poll_core_terminals` calls back here once they are in. The dialog
+        // that offers a core elsewhere calls back here once it is answered.
+        if self.active_session_index().is_some()
+            || self.core_connect.is_some()
+            || self.modals.core_elsewhere.is_some()
+        {
             return;
         }
         let ws = self.current_workspace.clone();
@@ -2462,6 +2478,7 @@ impl AlacritreeApp {
             || self.modals.pending_create.is_some()
             || self.modals.pending_session_close.is_some()
             || self.modals.pending_detach_all.is_some()
+            || self.modals.core_elsewhere.is_some()
             || self.modals.pending_rename.is_some()
             || self.modals.pending_base_branch.is_some()
             || self.modals.pending_project_remove.is_some()
@@ -3776,6 +3793,9 @@ impl AlacritreeApp {
         }
         if self.modals.pending_detach_all.is_some() {
             self.show_detach_all_dialog(ctx);
+        }
+        if self.modals.core_elsewhere.is_some() {
+            self.show_core_elsewhere_dialog(ctx);
         }
         if self.modals.pending_rename.is_some() {
             self.show_rename_dialog(ctx);
@@ -5268,6 +5288,15 @@ mod tests {
         (app, native, core, dir)
     }
 
+    /// Poll until the connect to the core is done, as frames would.
+    fn finish_core_connect(app: &mut AlacritreeApp, ctx: &Context) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while app.core_connect.is_some() && Instant::now() < deadline {
+            app.poll_core_terminals(ctx);
+            std::thread::yield_now();
+        }
+    }
+
     fn ids_in(app: &AlacritreeApp, workspace: &WorkspaceKey) -> Vec<SessionId> {
         app.sessions.iter().filter(|s| s.working_directory == *workspace).map(|s| s.id).collect()
     }
@@ -5393,18 +5422,50 @@ mod tests {
             if kept_at_home {
                 core.set_adoptable(vec![adoptable("t1", None, 0)]);
             }
-            let connect = jobs::pool().spawn(jobs::Priority::Interactive, |_| ());
+            let connect = jobs::pool().spawn(jobs::Priority::Interactive, |_| None);
             app.core_connect = Some(connect);
-            let deadline = Instant::now() + Duration::from_secs(10);
-            while app.core_connect.is_some() && Instant::now() < deadline {
-                app.poll_core_terminals(&Context::default());
-                std::thread::yield_now();
-            }
+            finish_core_connect(&mut app, &Context::default());
 
             let opened: Vec<_> = core.records().into_iter().map(|r| r.terminal).collect();
             let expected = if kept_at_home { vec![Some("t1".into())] } else { vec![None] };
             assert_eq!(opened, expected, "kept at home: {kept_at_home}");
             assert_eq!(ids_in(&app, &None).len(), 1);
+        }
+    }
+
+    /// A core that hc does not reach but that listens elsewhere is offered
+    /// first, and the startup shell waits for the answer. Using it connects
+    /// again and the shell opens in the core. Skipping it opens native.
+    #[test]
+    fn the_startup_shell_waits_for_the_answer_about_a_core_elsewhere() {
+        for used in [true, false] {
+            let (mut app, native, core) = app_preferring_a_scripted_core();
+            let ctx = Context::default();
+            let offered = CoreElsewhere {
+                socket: PathBuf::from("/run/user/1000/herdr-core/default.sock"),
+                remedy: Remedy::WriteConfig,
+            };
+            let found = offered.clone();
+            app.core_connect =
+                Some(jobs::pool().spawn(jobs::Priority::Interactive, move |_| Some(found)));
+            finish_core_connect(&mut app, &ctx);
+
+            assert_eq!(app.modals.core_elsewhere, Some(offered), "used: {used}");
+            assert!(ids_in(&app, &None).is_empty(), "used: {used}");
+
+            if used {
+                app.use_core_elsewhere(&ctx);
+                finish_core_connect(&mut app, &ctx);
+            } else {
+                core.set_unready(SessionError::Scripted("hc found no core".into()));
+                app.skip_core_elsewhere(&ctx);
+            }
+
+            assert_eq!(app.modals.core_elsewhere, None);
+            let opened = ids_in(&app, &None);
+            assert_eq!(opened.len(), 1, "used: {used}");
+            assert_eq!(core.session(opened[0]).is_some(), used);
+            assert_eq!(native.session(opened[0]).is_some(), !used);
         }
     }
 
@@ -5418,6 +5479,7 @@ mod tests {
         let (release, gate) = mpsc::channel::<()>();
         app.core_connect = Some(jobs::pool().spawn(jobs::Priority::Interactive, move |_| {
             let _ = gate.recv();
+            None
         }));
 
         app.activate_worktree(&ctx, dir.path());
@@ -5425,11 +5487,7 @@ mod tests {
         assert!(ids_in(&app, &checkout).is_empty());
         core.set_adoptable(vec![adoptable("t1", Some(dir.path()), 0)]);
         release.send(()).expect("the connect job waits");
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while app.core_connect.is_some() && Instant::now() < deadline {
-            app.poll_core_terminals(&ctx);
-            std::thread::yield_now();
-        }
+        finish_core_connect(&mut app, &ctx);
 
         let opened: Vec<_> = core.records().into_iter().map(|r| r.terminal).collect();
         assert_eq!(opened, vec![Some("t1".to_string())]);
