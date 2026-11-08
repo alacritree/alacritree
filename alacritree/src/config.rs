@@ -1430,7 +1430,8 @@ pub struct UiTheme {
     /// class above normal. That covers its shell and every process that shell
     /// starts, at any depth, so a build saturating the machine cannot starve
     /// what the user is typing into. Follows focus, and raises nothing while
-    /// the window is in the background. Windows only.
+    /// the window is in the background. Windows only. A session in the
+    /// herdr-core core gets no boost.
     pub focus_priority_boost: bool,
     /// `[ui] async_session_spawn`: open a session's PTY on a worker instead
     /// of inside the frame that asked for it.  Creating a console process
@@ -3338,7 +3339,8 @@ struct RawUi {
     /// Put the session on screen, its shell and every process that shell
     /// starts, one scheduling class above normal, so a busy machine cannot
     /// starve what the user is typing into. Follows focus. Windows only;
-    /// changing it requires a restart.
+    /// changing it requires a restart. A session in the herdr-core core
+    /// gets no boost.
     focus_priority_boost: bool,
     /// Open a session's PTY on a worker rather than in the frame that asked
     /// for it, so spawning does not stutter.

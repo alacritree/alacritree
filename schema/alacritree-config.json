@@ -1983,7 +1983,7 @@
         },
         "focus_priority_boost": {
           "default": false,
-          "description": "Put the session on screen, its shell and every process that shell\nstarts, one scheduling class above normal, so a busy machine cannot\nstarve what the user is typing into. Follows focus. Windows only;\nchanging it requires a restart.",
+          "description": "Put the session on screen, its shell and every process that shell\nstarts, one scheduling class above normal, so a busy machine cannot\nstarve what the user is typing into. Follows focus. Windows only;\nchanging it requires a restart. A session in the herdr-core core\ngets no boost.",
           "type": "boolean"
         },
         "font": {

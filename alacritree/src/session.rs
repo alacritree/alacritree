@@ -1141,11 +1141,11 @@ impl<R: Repaint> Session<R> {
         self.proxy.set_visible(visible);
     }
 
-    /// Put this session's whole process tree one scheduling class above the
-    /// load, or return it to normal, and answer whether it now holds the
-    /// boost.  A session with no job holds nothing and always answers false.
-    /// Only the session the user is typing into may be raised; see
-    /// `app::process_session_events`.
+    /// Tell the backend whether the user is typing into this session, and
+    /// answer whether its process tree now holds the scheduling boost. A
+    /// native session with a job takes the boost. A herdr-core session
+    /// reports focus to its program and holds no boost. Only the session the
+    /// user is typing into may be raised; see `app::process_session_events`.
     pub(crate) fn set_priority_boost(&self, boosted: bool) -> bool {
         self.handle.as_ref().is_some_and(|handle| handle.set_focused(boosted))
     }
