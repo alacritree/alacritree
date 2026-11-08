@@ -528,7 +528,9 @@ impl AlacritreeApp {
     }
 
     /// Take in the installer's result once it lands. A panicked job reads as
-    /// a failure, so the dialog never waits on it forever.
+    /// a failure, so the dialog never waits on it forever. An install the
+    /// user sent to the background ends quietly on success, as a minimized
+    /// worktree create does, and a failure goes to the error dialog.
     pub(super) fn poll_hc_install(&mut self) {
         let Some(HcInstall::Running { job, .. }) = &self.modals.hc_install else { return };
         let result = match job.poll() {
@@ -536,8 +538,17 @@ impl AlacritreeApp {
             None if job.failed() => Err(InstallError::Lost),
             None => return,
         };
-        if let Some(HcInstall::Running { installer, .. }) = self.modals.hc_install.take() {
-            self.modals.hc_install = Some(HcInstall::Done { installer, result });
+        let Some(HcInstall::Running { installer, hidden, .. }) = self.modals.hc_install.take()
+        else {
+            return;
+        };
+        match (hidden, result) {
+            (true, Ok(_)) => {},
+            (true, Err(error)) => push_error(
+                &mut self.modals.error_dialog,
+                format!("Could not install hc {}.\n\n{error}", hc_place(installer.side())),
+            ),
+            (false, result) => self.modals.hc_install = Some(HcInstall::Done { installer, result }),
         }
     }
 

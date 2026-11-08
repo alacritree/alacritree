@@ -5546,6 +5546,28 @@ mod tests {
         assert!(notice.contains("hc is not installed") && notice.contains("native"), "{notice}");
     }
 
+    /// An install sent to the background does not take the keyboard from a
+    /// shell when it lands, the way a minimized worktree create does not.
+    #[test]
+    fn a_hidden_install_that_succeeds_ends_without_a_dialog() {
+        let (mut app, _native, _core) = app_preferring_a_scripted_core();
+        assert!(app.offer_hc_install(&Side::Native));
+        app.install_hc();
+        if let Some(HcInstall::Running { hidden, .. }) = &mut app.modals.hc_install {
+            *hidden = true;
+        }
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while app.modals.hc_install.is_some() && Instant::now() < deadline {
+            app.poll_hc_install();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        assert!(app.modals.hc_install.is_none(), "the result took the screen");
+        assert_eq!(app.modals.error_dialog, None);
+        assert!(!app.is_modal_open());
+    }
+
     /// An install under way on one side speaks only for that side. A distro
     /// that falls back meanwhile still says why.
     #[test]
