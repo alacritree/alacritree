@@ -3055,6 +3055,18 @@ export XDG_RUNTIME_DIR
 d=$XDG_RUNTIME_DIR/alacritree
 work=$XDG_RUNTIME_DIR/work
 mkdir -p "$work"
+# The session starts before the helper, whose startup sweep removes a
+# pidfile it finds half written.
+cat > "$XDG_RUNTIME_DIR/session.sh" <<EOF_SESSION
+mkdir -p "$d" && printf %s \$\$ > "$d/session-k.pid"
+set -m
+cd "$work"
+sh -c 'printf %s \$\$ > "\$1"; exec sleep 30' sh "$XDG_RUNTIME_DIR/job.pid"
+EOF_SESSION
+setsid script -qc "sh $XDG_RUNTIME_DIR/session.sh" /dev/null < /dev/null > /dev/null 2>&1 &
+i=0
+while [ $i -lt 50 ] && ! [ -s "$XDG_RUNTIME_DIR/job.pid" ]; do sleep 0.1; i=$((i + 1)); done
+[ -s "$XDG_RUNTIME_DIR/job.pid" ] || { echo "skip: the session never started its job"; exit 0; }
 mkfifo "$XDG_RUNTIME_DIR/in"
 setsid sh -c "$helper_script" sh < "$XDG_RUNTIME_DIR/in" > "$XDG_RUNTIME_DIR/out" 2>/dev/null &
 exec 4> "$XDG_RUNTIME_DIR/in"
@@ -3068,17 +3080,6 @@ answered() {
   return 1
 }
 answered hello || { echo "skip: the helper never said hello"; exit 0; }
-cat > "$XDG_RUNTIME_DIR/session.sh" <<EOF_SESSION
-printf %s \$\$ > "$d/session-k.pid"
-set -m
-cd "$work"
-sh -c 'printf %s \$\$ > "\$1"; exec sleep 30' sh "$XDG_RUNTIME_DIR/job.pid"
-EOF_SESSION
-setsid script -qc "sh $XDG_RUNTIME_DIR/session.sh" /dev/null < /dev/null > /dev/null 2>&1 &
-i=0
-while [ $i -lt 50 ] && ! [ -s "$XDG_RUNTIME_DIR/job.pid" ]; do sleep 0.1; i=$((i + 1)); done
-[ -s "$XDG_RUNTIME_DIR/job.pid" ] || { echo "skip: the session never started its job"; exit 0; }
-sleep 0.2
 printf '1\tPROBE\tk\n' >&4
 answered 1 || { echo "probe never answered"; exit 0; }
 want=$(cat "$XDG_RUNTIME_DIR/job.pid")$(printf '\t')sleep$(printf '\t')$(cd -P "$work" && pwd -P)
