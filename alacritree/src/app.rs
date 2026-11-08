@@ -865,17 +865,15 @@ impl AlacritreeApp {
             app.refresh_project(&cc.egui_ctx, idx);
         }
 
-        if app.core_connect.is_none() {
-            app.spawn_home_shell(&cc.egui_ctx);
+        // With a core, `poll_core_terminals` opens the first shell once the
+        // kept terminals are back.
+        if app.core_connect.is_none()
+            && let Err(e) = app.spawn_session(&cc.egui_ctx, None)
+        {
+            app.modals.error_dialog = Some(format!("failed to spawn shell: {e}"));
         }
 
         app
-    }
-
-    fn spawn_home_shell(&mut self, ctx: &Context) {
-        if let Err(e) = self.spawn_session(ctx, None) {
-            self.modals.error_dialog = Some(format!("failed to spawn shell: {e}"));
-        }
     }
 
     fn persist_sidebars(&self) {
@@ -1187,8 +1185,8 @@ impl AlacritreeApp {
     }
 
     /// Once the startup connect to the core is done, take in the terminals
-    /// it kept and give the home tab a shell if none came back to it. After
-    /// that, take in every terminal the core reports as adoptable.
+    /// it kept and give the workspace on screen a shell if none came back to
+    /// it. After that, take in every terminal the core reports as adoptable.
     fn poll_core_terminals(&mut self, ctx: &Context) {
         let Some(connect) = &self.core_connect else {
             self.adopt_core_terminals(ctx);
@@ -1199,9 +1197,7 @@ impl AlacritreeApp {
         }
         self.core_connect = None;
         self.adopt_core_terminals(ctx);
-        if !self.sessions.iter().any(|s| s.working_directory.is_none()) {
-            self.spawn_home_shell(ctx);
-        }
+        self.ensure_active_session(ctx);
     }
 
     /// Put each terminal the core keeps that no session holds into the
@@ -1697,7 +1693,9 @@ impl AlacritreeApp {
             return;
         }
         self.adopt_active_session();
-        if self.active_session_index().is_some() {
+        // The core may still hold this workspace's kept terminals, and
+        // `poll_core_terminals` calls back here once they are in.
+        if self.active_session_index().is_some() || self.core_connect.is_some() {
             return;
         }
         let ws = self.current_workspace.clone();
@@ -5408,6 +5406,34 @@ mod tests {
             assert_eq!(opened, expected, "kept at home: {kept_at_home}");
             assert_eq!(ids_in(&app, &None).len(), 1);
         }
+    }
+
+    /// A workspace opened while the core still connects stays empty until
+    /// the kept terminals come back, so they are not joined by a new shell.
+    #[test]
+    fn a_workspace_opened_before_the_core_connects_waits_for_its_kept_terminals() {
+        let (mut app, _native, core, dir) = app_with_a_checkout_and_a_core();
+        let checkout = Some(dir.path().to_path_buf());
+        let ctx = Context::default();
+        let (release, gate) = mpsc::channel::<()>();
+        app.core_connect = Some(jobs::pool().spawn(jobs::Priority::Interactive, move |_| {
+            let _ = gate.recv();
+        }));
+
+        app.activate_worktree(&ctx, dir.path());
+
+        assert!(ids_in(&app, &checkout).is_empty());
+        core.set_adoptable(vec![adoptable("t1", Some(dir.path()), 0)]);
+        release.send(()).expect("the connect job waits");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while app.core_connect.is_some() && Instant::now() < deadline {
+            app.poll_core_terminals(&ctx);
+            std::thread::yield_now();
+        }
+
+        let opened: Vec<_> = core.records().into_iter().map(|r| r.terminal).collect();
+        assert_eq!(opened, vec![Some("t1".to_string())]);
+        assert_eq!(ids_in(&app, &checkout).len(), 1);
     }
 
     /// The core records each session's workspace and position, and both
