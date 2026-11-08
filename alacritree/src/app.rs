@@ -64,7 +64,9 @@ use crate::{
     clipboard_image, file_drop, ipc, mouse_hide, notify, paste, path_style, scratchpad,
     sidebar_focus, temporary, terminal_view, worktree_liveness,
 };
-use alacritree_session_backend::{SessionBackend, SessionError, SessionHandle};
+use alacritree_session_backend::{
+    Adoptable, Placement, SessionBackend, SessionError, SessionHandle,
+};
 use alacritree_vcs::{Checkout, Dirty, Liveness, UpstreamState, VersionControl};
 
 mod actions;
@@ -556,6 +558,10 @@ pub struct AlacritreeApp {
     /// What `[integrations.herdr_core] session_backend` prefers for shells on
     /// the native side, or `None` when it prefers native.
     core_backend: Option<Backend>,
+    /// The startup connect to `core_backend`. The home tab's first shell
+    /// waits for it, so a home tab whose terminals the core kept gets them
+    /// back rather than one more.
+    core_connect: Option<jobs::Job<()>>,
     /// Terminals opened on a worker, adopted in `poll_pending_spawns`. A
     /// client that creates a session to write to it is answered once the
     /// terminal is live, or it would race its own shell.
@@ -595,6 +601,17 @@ fn owning_vcs<'a>(
         .find(|p| p.checkouts.iter().any(|c| c.path == path))
         .and_then(|p| p.vcs.as_ref())
         .or_else(|| backends.first())
+}
+
+/// How other clients of a session's backend name its workspace, as
+/// `<project> / <checkout>`. The home tab and a path in no project have no
+/// name.
+fn workspace_title(projects: &[Project], workspace: &WorkspaceKey) -> Option<String> {
+    let path = workspace.as_deref()?;
+    projects.iter().find_map(|project| {
+        let checkout = project.checkouts.iter().find(|c| c.path == path)?;
+        Some(format!("{} / {}", project.display_name(), checkout.name))
+    })
 }
 
 impl AlacritreeApp {
@@ -677,6 +694,7 @@ impl AlacritreeApp {
             project_refreshes: Default::default(),
             session_backend: Backend::native(),
             core_backend,
+            core_connect: None,
             pending_spawns: Default::default(),
             multiplexers,
             liveness: Default::default(),
@@ -828,7 +846,8 @@ impl AlacritreeApp {
         // connecting here keeps that wait off the frame that opens the first
         // session.
         if let Some(core) = app.core_backend.clone() {
-            app.detached_jobs.push(jobs::pool().spawn(jobs::Priority::Background, move |_| {
+            core.wake_on_new_terminals(&cc.egui_ctx);
+            app.core_connect = Some(jobs::pool().spawn(jobs::Priority::Interactive, move |_| {
                 if let Err(error) = SessionBackend::<Handle>::ready(&core) {
                     log::warn!("herdr-core: {error}");
                 }
@@ -846,11 +865,17 @@ impl AlacritreeApp {
             app.refresh_project(&cc.egui_ctx, idx);
         }
 
-        if let Err(e) = app.spawn_session(&cc.egui_ctx, None) {
-            app.modals.error_dialog = Some(format!("failed to spawn shell: {e}"));
+        if app.core_connect.is_none() {
+            app.spawn_home_shell(&cc.egui_ctx);
         }
 
         app
+    }
+
+    fn spawn_home_shell(&mut self, ctx: &Context) {
+        if let Err(e) = self.spawn_session(ctx, None) {
+            self.modals.error_dialog = Some(format!("failed to spawn shell: {e}"));
+        }
     }
 
     fn persist_sidebars(&self) {
@@ -1114,17 +1139,26 @@ impl AlacritreeApp {
     ) -> Result<SessionId, SessionError> {
         let id = session.id;
         self.sessions.push(session);
+        let native = self.session_backend.clone();
+        self.start_open(id, move || {
+            session_backend::open_preferring(preferred.as_ref(), &native, request)
+        })?;
+        Ok(id)
+    }
 
+    /// Run `open` for the session record `id`: inline when the gate is off,
+    /// on the job pool when it is on.
+    fn start_open(
+        &mut self,
+        id: SessionId,
+        open: impl FnOnce() -> Result<Opened, SessionError> + Send + 'static,
+    ) -> Result<(), SessionError> {
         if !self.config.ui.async_session_spawn {
-            match session_backend::open_preferring(
-                preferred.as_ref(),
-                &self.session_backend,
-                request,
-            ) {
+            match open() {
                 Ok(opened) => {
                     let idx = self.sessions.iter().position(|s| s.id == id).expect("just pushed");
                     self.adopt_opened(idx, opened);
-                    return Ok(id);
+                    return Ok(());
                 },
                 Err(e) => {
                     // The record went in before the open, so it comes back out
@@ -1144,12 +1178,91 @@ impl AlacritreeApp {
         // repaints once the job returns, so nothing here has to. Without that
         // the result would wait for whatever wakes the loop next, which under
         // load is the shell's own first output seconds later.
-        let native = self.session_backend.clone();
-        let job = jobs::pool().spawn(jobs::Priority::Interactive, move |_blocking| {
-            session_backend::open_preferring(preferred.as_ref(), &native, request)
-        });
+        let job = jobs::pool().spawn(jobs::Priority::Interactive, move |_blocking| open());
         self.pending_spawns.start(id, || job);
-        Ok(id)
+        Ok(())
+    }
+
+    /// Once the startup connect to the core is done, take in the terminals
+    /// it kept and give the home tab a shell if none came back to it. After
+    /// that, take in every terminal the core reports as adoptable.
+    fn poll_core_terminals(&mut self, ctx: &Context) {
+        let Some(connect) = &self.core_connect else {
+            self.adopt_core_terminals(ctx);
+            return;
+        };
+        if connect.poll().is_none() && !connect.failed() {
+            return;
+        }
+        self.core_connect = None;
+        self.adopt_core_terminals(ctx);
+        if !self.sessions.iter().any(|s| s.working_directory.is_none()) {
+            self.spawn_home_shell(ctx);
+        }
+    }
+
+    /// Put each terminal the core keeps that no session holds into the
+    /// workspace and position its labels record. A workspace path inside no
+    /// known checkout means the home tab. Focus stays where it is. The
+    /// terminal becomes its workspace's active session only when that
+    /// workspace has none.
+    fn adopt_core_terminals(&mut self, ctx: &Context) {
+        let Some(core) = self.core_backend.clone() else { return };
+        let mut adoptable = core.adoptable();
+        // Each insert counts the ones before it, so the lowest goes first.
+        adoptable.sort_by_key(|adoptable| adoptable.placement.position);
+        for Adoptable { terminal, placement } in adoptable {
+            let workspace =
+                placement.workspace.as_deref().and_then(|path| self.workspace_for_path(path));
+            let (size, cell_size) = self.next_spawn_geometry();
+            let (session, request) = Session::pending_attach(
+                ctx.clone(),
+                &self.config,
+                workspace.clone(),
+                size,
+                cell_size,
+                terminal,
+            );
+            let id = session.id;
+            self.sessions.insert_at(session, placement.position);
+            if !self.sessions.has_active(&workspace) {
+                self.sessions.set_active(workspace, id);
+            }
+            let core = core.clone();
+            let attached = self.start_open(id, move || {
+                core.attach(request).map(|handle| Opened { handle, fell_back: None })
+            });
+            if let Err(error) = attached {
+                log::warn!("herdr-core: could not adopt a terminal: {error}");
+            }
+        }
+    }
+
+    /// Tell each session's backend where the session sits now, so a terminal
+    /// that outlives the app comes back to the same place.
+    fn place_sessions(&mut self) {
+        let mut counts: HashMap<&WorkspaceKey, usize> = HashMap::new();
+        let positions: Vec<usize> = self
+            .sessions
+            .iter()
+            .map(|session| {
+                let count = counts.entry(&session.working_directory).or_default();
+                *count += 1;
+                *count - 1
+            })
+            .collect();
+        let projects = &self.projects;
+        for (session, position) in self.sessions.iter_mut().zip(positions) {
+            session.place(position, |workspace| workspace_title(projects, workspace));
+        }
+    }
+
+    /// Let go of every terminal that can outlive the app, so quitting leaves
+    /// it running for the next launch. Every other session ends as it drops.
+    fn detach_for_quit(&mut self) {
+        for session in self.sessions.iter_mut() {
+            session.detach();
+        }
     }
 
     /// Give the session at `idx` its terminal, and say why it opened native
@@ -1295,7 +1408,7 @@ impl AlacritreeApp {
         let native_side = wsl_distro.is_none() && wsl_probe.is_none();
         let preferred = self.core_backend.clone().filter(|_| native_side);
         let (size, cell_size) = self.next_spawn_geometry();
-        let (mut session, request) = Session::pending_shell(
+        let (mut session, mut request) = Session::pending_shell(
             ctx.clone(),
             &self.config,
             directory,
@@ -1306,6 +1419,11 @@ impl AlacritreeApp {
             wsl_probe,
         );
         session.working_directory = workspace.clone();
+        request.placement = Placement {
+            position: self.sessions.iter().filter(|s| s.working_directory == workspace).count(),
+            title: workspace_title(&self.projects, &workspace),
+            workspace: workspace.clone(),
+        };
         let id = self.open_session(session, request, preferred)?;
         self.sessions.set_active(workspace, id);
         Ok(id)
@@ -3410,6 +3528,8 @@ impl AlacritreeApp {
     fn poll_update_jobs(&mut self, ctx: &Context) {
         self.poll_project_refreshes();
         self.poll_pending_spawns(ctx);
+        self.poll_core_terminals(ctx);
+        self.place_sessions();
         self.poll_pane_creates(ctx);
         self.poll_pane_attaches(ctx);
         // Unconditional: either sidebar can be hidden, and a drain hung off one
@@ -3718,6 +3838,10 @@ impl eframe::App for AlacritreeApp {
         self.paint_central(ctx, view, sidebar_rect);
         self.paint_dialogs(ctx, modal_open);
         self.finish_update(ctx, frame, frame_started);
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.detach_for_quit();
     }
 }
 
@@ -5120,6 +5244,149 @@ mod tests {
         assert_eq!(app.sessions[idx].cwd(), Some(PathBuf::from("/from/core")));
         app.sessions[idx].reported_cwd = Some(PathBuf::from("/from/osc7"));
         assert_eq!(app.sessions[idx].cwd(), Some(PathBuf::from("/from/osc7")));
+    }
+
+    /// `app_preferring_a_scripted_core` with a project whose one checkout
+    /// is a real directory, so a shell may open there.
+    fn app_with_a_checkout_and_a_core()
+    -> (AlacritreeApp, ScriptedSessions, ScriptedSessions, tempfile::TempDir) {
+        let (mut app, native, core) = app_preferring_a_scripted_core();
+        let dir = tempfile::tempdir().expect("temp dir");
+        app.projects.push(Project::placeholder(dir.path().to_path_buf()));
+        (app, native, core, dir)
+    }
+
+    fn ids_in(app: &AlacritreeApp, workspace: &WorkspaceKey) -> Vec<SessionId> {
+        app.sessions.iter().filter(|s| s.working_directory == *workspace).map(|s| s.id).collect()
+    }
+
+    fn adoptable(terminal: &str, workspace: Option<&Path>, position: usize) -> Adoptable {
+        let placement =
+            Placement { workspace: workspace.map(Path::to_path_buf), position, title: None };
+        Adoptable { terminal: terminal.into(), placement }
+    }
+
+    /// A core terminal outlives the app, so quitting lets go of it. A native
+    /// one cannot, so it ends with the app.
+    #[test]
+    fn quitting_leaves_core_terminals_running_and_ends_native_ones() {
+        let (mut app, native, core) = app_preferring_a_scripted_core();
+        core.keep_terminals();
+        let ctx = Context::default();
+        let in_core = app.spawn_session(&ctx, None).expect("a core open");
+        core.set_unready(SessionError::Scripted("core gone".into()));
+        let in_pty = app.spawn_session(&ctx, None).expect("a native open");
+
+        app.detach_for_quit();
+        drop(app);
+
+        let kept = core.session(in_core).expect("the core terminal");
+        assert!(kept.detached && !kept.killed);
+        assert!(native.session(in_pty).expect("the native terminal").killed);
+    }
+
+    /// A terminal the core keeps comes back at the workspace and position
+    /// its labels record. A path in no checkout lands in the home tab. No
+    /// workspace's active session changes, and neither does the one on
+    /// screen.
+    #[test]
+    fn a_kept_terminal_appears_in_its_workspace_without_moving_focus() {
+        let (mut app, _native, core, dir) = app_with_a_checkout_and_a_core();
+        let checkout = Some(dir.path().to_path_buf());
+        let ctx = Context::default();
+        let home_shell = app.spawn_session(&ctx, None).expect("a home shell");
+        let checkout_shell = app.spawn_session(&ctx, checkout.clone()).expect("a checkout shell");
+        let subdirectory = dir.path().join("src");
+        core.set_adoptable(vec![
+            adoptable("t7", Some(&subdirectory), 0),
+            adoptable("t8", Some(Path::new("/in/no/project")), usize::MAX),
+        ]);
+
+        app.poll_core_terminals(&ctx);
+
+        let in_checkout = ids_in(&app, &checkout);
+        assert_eq!(in_checkout.len(), 2);
+        assert_eq!(in_checkout[1], checkout_shell, "the kept terminal goes first");
+        let in_home = ids_in(&app, &None);
+        assert_eq!(in_home.len(), 2);
+        assert_eq!(in_home[0], home_shell, "the unknown path lands last at home");
+        assert!(app.sessions.iter().all(|s| !s.is_pending()), "both attached");
+        let attached: Vec<_> = core.records().into_iter().filter_map(|r| r.terminal).collect();
+        assert_eq!(attached, ["t7", "t8"]);
+        assert_eq!(app.current_workspace, None);
+        assert_eq!(app.sessions.active(&None), Some(home_shell));
+        assert_eq!(app.sessions.active(&checkout), Some(checkout_shell));
+    }
+
+    /// Kept terminals come back in their recorded order whatever order the
+    /// core lists them in. A workspace with no session yet takes the first
+    /// as its active one, so it does not open on an empty pane.
+    #[test]
+    fn kept_terminals_refill_an_empty_workspace_in_their_order() {
+        let (mut app, _native, core, dir) = app_with_a_checkout_and_a_core();
+        let checkout = Some(dir.path().to_path_buf());
+        core.set_adoptable(vec![
+            adoptable("t9", Some(dir.path()), 2),
+            adoptable("t7", Some(dir.path()), 0),
+            adoptable("t8", Some(dir.path()), 1),
+        ]);
+
+        app.poll_core_terminals(&Context::default());
+
+        let attached: Vec<_> = core.records().into_iter().filter_map(|r| r.terminal).collect();
+        assert_eq!(attached, ["t7", "t8", "t9"]);
+        let adopted = ids_in(&app, &checkout);
+        assert!(adopted.is_sorted(), "sessions follow the attach order: {adopted:?}");
+        assert_eq!(app.sessions.active(&checkout), Some(adopted[0]));
+        assert_eq!(app.current_workspace, None);
+    }
+
+    /// The startup shell waits for the core's listing, so a relaunch puts
+    /// the home tab's kept terminals back instead of adding one more.
+    #[test]
+    fn the_startup_shell_opens_only_in_a_home_tab_the_core_left_empty() {
+        for kept_at_home in [true, false] {
+            let (mut app, _native, core) = app_preferring_a_scripted_core();
+            if kept_at_home {
+                core.set_adoptable(vec![adoptable("t1", None, 0)]);
+            }
+            let connect = jobs::pool().spawn(jobs::Priority::Interactive, |_| ());
+            app.core_connect = Some(connect);
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while app.core_connect.is_some() && Instant::now() < deadline {
+                app.poll_core_terminals(&Context::default());
+                std::thread::yield_now();
+            }
+
+            let opened: Vec<_> = core.records().into_iter().map(|r| r.terminal).collect();
+            let expected = if kept_at_home { vec![Some("t1".into())] } else { vec![None] };
+            assert_eq!(opened, expected, "kept at home: {kept_at_home}");
+            assert_eq!(ids_in(&app, &None).len(), 1);
+        }
+    }
+
+    /// The core records each session's workspace and position, and both
+    /// follow the session when the sessions before it close.
+    #[test]
+    fn a_core_session_records_where_it_sits_as_that_changes() {
+        let (mut app, _native, core, dir) = app_with_a_checkout_and_a_core();
+        let checkout = Some(dir.path().to_path_buf());
+        let ctx = Context::default();
+        let first = app.spawn_session(&ctx, checkout.clone()).expect("a core open");
+        let second = app.spawn_session(&ctx, checkout.clone()).expect("a core open");
+        let placement = |id| core.session(id).and_then(|record| record.placement);
+        let name = dir.path().file_name().unwrap().to_string_lossy().into_owned();
+        let title = Some(format!("{name} / {name}"));
+
+        assert_eq!(
+            placement(second),
+            Some(Placement { workspace: checkout.clone(), position: 1, title: title.clone() })
+        );
+
+        app.close_session(&ctx, first);
+        app.place_sessions();
+
+        assert_eq!(placement(second), Some(Placement { workspace: checkout, position: 0, title }));
     }
 
     /// With the open inline, a caller that gets the error sees no trace of

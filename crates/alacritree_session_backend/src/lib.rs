@@ -18,11 +18,11 @@ use std::path::PathBuf;
 
 pub use alacritree_common::side::Side;
 pub use alacritree_common::wsl_helper::WslProbe;
-pub use alacritree_multiplexer::PaneKey;
 use strum::Display;
 
 pub use self::model::{
-    ForegroundProgram, OpenRequest, ProcessTree, Screen, ShellCommand, Signals, TerminalColors,
+    Adoptable, AttachRequest, ForegroundProgram, OpenRequest, Placement, ProcessTree, Screen,
+    ShellCommand, Signals, TerminalColors,
 };
 #[cfg(any(test, feature = "test-support"))]
 pub use self::scripted::{Call, Record, Scripted, ScriptedHandle};
@@ -90,24 +90,25 @@ pub trait SessionBackend<H> {
     where
         L: ::alacritty_terminal::event::EventListener + ::std::marker::Send + 'static;
 
-    /// The panes this backend runs that no session holds and that a session
-    /// may take over.
-    fn adoptable(&self) -> ::std::vec::Vec<::alacritree_session_backend::PaneKey>;
+    /// The terminals this backend keeps that no session holds, each handed
+    /// out once, even when its attach fails. Never blocks on the backend,
+    /// since it answers from what the backend last heard. A caller takes
+    /// each one over with [`Self::attach`].
+    fn adoptable(&self) -> ::std::vec::Vec<::alacritree_session_backend::Adoptable>;
 
-    /// Show `pane` in a session that types into it and sizes it.
+    /// Show a running terminal in a session that types into it and sizes it.
     fn attach<L>(
         &self,
-        pane: &::alacritree_session_backend::PaneKey,
-        screen: ::alacritree_session_backend::Screen<L>,
+        request: ::alacritree_session_backend::AttachRequest<L>,
     ) -> ::std::result::Result<H, ::alacritree_session_backend::SessionError>
     where
         L: ::alacritty_terminal::event::EventListener + ::std::marker::Send + 'static;
 
-    /// Show `pane` in a session that neither types into it nor resizes it.
+    /// Show a running terminal in a session that neither types into it nor
+    /// resizes it.
     fn watch<L>(
         &self,
-        pane: &::alacritree_session_backend::PaneKey,
-        screen: ::alacritree_session_backend::Screen<L>,
+        request: ::alacritree_session_backend::AttachRequest<L>,
     ) -> ::std::result::Result<H, ::alacritree_session_backend::SessionError>
     where
         L: ::alacritty_terminal::event::EventListener + ::std::marker::Send + 'static;
@@ -140,6 +141,10 @@ pub trait SessionHandle {
     /// Let go of the terminal and leave its program running. A detach never
     /// kills a terminal, so a backend that cannot keep one alive refuses.
     fn detach(&mut self) -> ::std::result::Result<(), ::alacritree_session_backend::SessionError>;
+
+    /// Record where the session now sits in the app. A backend whose
+    /// terminals die with the app records nothing.
+    fn place(&mut self, placement: &::alacritree_session_backend::Placement);
 
     /// The program's working directory as the backend tracks it on its own,
     /// cheap enough to read every frame. `None` for a backend that tracks

@@ -15,8 +15,8 @@ use std::time::{Duration, Instant};
 
 use alacritree_common::wsl_helper::{self, WslProbe};
 use alacritree_session_backend::{
-    ForegroundProgram, OpenRequest, Operation, PaneKey, ProcessTree, Screen, SessionBackend,
-    SessionBackendKind, SessionError, SessionHandle, Signals,
+    Adoptable, AttachRequest, ForegroundProgram, OpenRequest, Operation, Placement, ProcessTree,
+    Screen, SessionBackend, SessionBackendKind, SessionError, SessionHandle, Signals,
 };
 use alacritty_terminal::event::{EventListener, Notify, OnResize, WindowSize};
 use alacritty_terminal::event_loop::{EventLoop, Msg, Notifier};
@@ -83,18 +83,18 @@ impl<H: From<NativeHandle>> SessionBackend<H> for Native {
         open(request, spare, self.phase_log).map(H::from)
     }
 
-    fn adoptable(&self) -> Vec<PaneKey> {
+    fn adoptable(&self) -> Vec<Adoptable> {
         Vec::new()
     }
 
-    fn attach<L>(&self, _pane: &PaneKey, _screen: Screen<L>) -> Result<H, SessionError>
+    fn attach<L>(&self, _request: AttachRequest<L>) -> Result<H, SessionError>
     where
         L: EventListener + Send + 'static,
     {
         Err(unsupported(Operation::Attach))
     }
 
-    fn watch<L>(&self, _pane: &PaneKey, _screen: Screen<L>) -> Result<H, SessionError>
+    fn watch<L>(&self, _request: AttachRequest<L>) -> Result<H, SessionError>
     where
         L: EventListener + Send + 'static,
     {
@@ -141,6 +141,9 @@ impl SessionHandle for NativeHandle {
     fn detach(&mut self) -> Result<(), SessionError> {
         Err(unsupported(Operation::Detach))
     }
+
+    /// A PTY dies with the app, so nothing outlives it to read a placement.
+    fn place(&mut self, _placement: &Placement) {}
 
     fn cwd(&self) -> Option<std::path::PathBuf> {
         None
@@ -205,6 +208,7 @@ where
         wsl_probe,
         process_tree: ProcessTree { boost_on_focus: boost, reap_on_close: reap },
         colors: _,
+        placement: _,
         screen: Screen { term, listener, window_size },
     } = request;
 
@@ -356,6 +360,7 @@ pub(crate) mod tests {
             wsl_probe: None,
             process_tree: ProcessTree::default(),
             colors: Default::default(),
+            placement: Default::default(),
             screen: Screen {
                 term: term.clone(),
                 listener: VoidListener,
@@ -408,13 +413,10 @@ pub(crate) mod tests {
         request.shell = None;
         let screen =
             Screen { term, listener: VoidListener, window_size: request.screen.window_size };
-        let pane = PaneKey {
-            multiplexer: alacritree_multiplexer::MultiplexerKind::Herdr,
-            side: alacritree_session_backend::Side::Native,
-            terminal_id: "t".into(),
-        };
+        let running =
+            AttachRequest { terminal: "t".into(), history: 0, colors: request.colors, screen };
 
-        let attached: Result<NativeHandle, _> = Native::default().attach(&pane, screen);
+        let attached: Result<NativeHandle, _> = Native::default().attach(running);
 
         assert!(matches!(
             attached.err(),

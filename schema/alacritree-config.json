@@ -887,7 +887,7 @@
         },
         "session_backend": {
           "default": "native",
-          "description": "Which backend runs the terminal of a new session on the native side.\n\n\"native\" opens a PTY that alacritree owns. \"herdr_core\" runs the\nsession as a terminal in the native side's herdr-core core, through\n`hc connect`. When that core cannot be used, the session opens native\nand a notice names the cause. WSL sessions and diff panes stay native.",
+          "description": "Which backend runs the terminal of a new session on the native side.\n\n\"native\" opens a PTY that alacritree owns. \"herdr_core\" runs the\nsession as a terminal in the native side's herdr-core core, through\n`hc connect`. Such a terminal outlives alacritree: quitting leaves it\nrunning, and the next launch puts it back in its workspace. When that\ncore cannot be used, the session opens native and a notice names the\ncause. WSL sessions and diff panes stay native.",
           "enum": [
             "native",
             "herdr_core"

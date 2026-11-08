@@ -1,11 +1,12 @@
 //! The session backends this build runs terminals on, dispatched by `match`
 //! rather than a vtable. What a backend is asked lives in
-//! `alacritree_session_backend`; this module only decides which ones exist.
+//! `alacritree_session_backend`; this module decides which ones exist and
+//! wires them to the window.
 
 use alacritree_herdr_core::{HerdrCore, HerdrCoreConfig, HerdrCoreHandle, SessionBackendChoice};
 use alacritree_native::{Native, NativeHandle};
 use alacritree_session_backend::{
-    OpenRequest, PaneKey, Screen, SessionBackend, SessionError, SessionHandle,
+    Adoptable, AttachRequest, OpenRequest, SessionBackend, SessionError, SessionHandle,
     ambassador_impl_SessionHandle,
 };
 #[cfg(test)]
@@ -36,6 +37,15 @@ impl Backend {
         match config.session_backend {
             SessionBackendChoice::Native => None,
             SessionBackendChoice::HerdrCore => Some(Self::HerdrCore(HerdrCore::new(&config.path))),
+        }
+    }
+
+    /// Repaint whenever this backend reports a terminal that may be
+    /// adoptable, so an idle window still picks it up.
+    pub(crate) fn wake_on_new_terminals(&self, ctx: &egui::Context) {
+        if let Self::HerdrCore(core) = self {
+            let ctx = ctx.clone();
+            core.set_waker(move || ctx.request_repaint());
         }
     }
 }
@@ -92,7 +102,7 @@ impl SessionBackend<Handle> for Backend {
         }
     }
 
-    fn adoptable(&self) -> Vec<PaneKey> {
+    fn adoptable(&self) -> Vec<Adoptable> {
         match self {
             Self::Native(backend) => SessionBackend::<Handle>::adoptable(backend),
             Self::HerdrCore(backend) => SessionBackend::<Handle>::adoptable(backend),
@@ -101,27 +111,27 @@ impl SessionBackend<Handle> for Backend {
         }
     }
 
-    fn attach<L>(&self, pane: &PaneKey, screen: Screen<L>) -> Result<Handle, SessionError>
+    fn attach<L>(&self, request: AttachRequest<L>) -> Result<Handle, SessionError>
     where
         L: EventListener + Send + 'static,
     {
         match self {
-            Self::Native(backend) => backend.attach(pane, screen),
-            Self::HerdrCore(backend) => backend.attach(pane, screen),
+            Self::Native(backend) => backend.attach(request),
+            Self::HerdrCore(backend) => backend.attach(request),
             #[cfg(test)]
-            Self::Scripted(backend) => backend.attach(pane, screen),
+            Self::Scripted(backend) => backend.attach(request),
         }
     }
 
-    fn watch<L>(&self, pane: &PaneKey, screen: Screen<L>) -> Result<Handle, SessionError>
+    fn watch<L>(&self, request: AttachRequest<L>) -> Result<Handle, SessionError>
     where
         L: EventListener + Send + 'static,
     {
         match self {
-            Self::Native(backend) => backend.watch(pane, screen),
-            Self::HerdrCore(backend) => backend.watch(pane, screen),
+            Self::Native(backend) => backend.watch(request),
+            Self::HerdrCore(backend) => backend.watch(request),
             #[cfg(test)]
-            Self::Scripted(backend) => backend.watch(pane, screen),
+            Self::Scripted(backend) => backend.watch(request),
         }
     }
 }

@@ -286,7 +286,6 @@ name = "alacritree_native"
 version = "0.0.0"
 dependencies = [
  "alacritree_common",
- "alacritree_multiplexer",
  "alacritree_process_probe",
  "alacritree_session_backend",
  "alacritty_terminal",
@@ -313,7 +312,6 @@ name = "alacritree_session_backend"
 version = "0.0.0"
 dependencies = [
  "alacritree_common",
- "alacritree_multiplexer",
  "alacritty_terminal",
  "ambassador",
  "strum 0.28.0",

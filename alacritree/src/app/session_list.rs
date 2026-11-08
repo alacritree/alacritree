@@ -49,6 +49,23 @@ impl SessionList {
         self.sessions.push(session);
     }
 
+    /// Put `session` at index `position` among its workspace's sessions, or
+    /// after them when the workspace has fewer.
+    pub(super) fn insert_at(&mut self, session: AppSession, position: usize) {
+        let workspace = &session.working_directory;
+        let at = self
+            .sessions
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.working_directory == *workspace)
+            .nth(position)
+            .map(|(idx, _)| idx);
+        match at {
+            Some(idx) => self.sessions.insert(idx, session),
+            None => self.sessions.push(session),
+        }
+    }
+
     pub(super) fn active(&self, workspace: &WorkspaceKey) -> Option<SessionId> {
         self.active.get(workspace).copied()
     }
@@ -224,6 +241,25 @@ mod tests {
         assert_eq!(removed.iter().map(|s| s.id).collect::<Vec<_>>(), ids);
         assert!(list.is_empty());
         assert!(!list.has_active(&ws));
+    }
+
+    /// Sessions of other workspaces between them do not count toward a
+    /// position, and a position past the end lands last.
+    #[test]
+    fn a_session_inserted_at_a_position_counts_only_its_workspace() {
+        let ws = Some(PathBuf::from("wt"));
+        let (mut list, ids) = list_of(&ws, 2);
+        list.insert_at(shell(None), 0);
+        let between = shell(ws.clone());
+        let last = shell(ws.clone());
+        let (between_id, last_id) = (between.id, last.id);
+
+        list.insert_at(between, 1);
+        list.insert_at(last, usize::MAX);
+
+        let order: Vec<SessionId> =
+            list.iter().filter(|s| s.working_directory == ws).map(|s| s.id).collect();
+        assert_eq!(order, vec![ids[0], between_id, ids[1], last_id]);
     }
 
     #[test]

@@ -15,7 +15,6 @@ alacritty_terminal = { path = "../../alacritty_terminal" }
 log = "0.4"
 
 [dev-dependencies]
-alacritree_multiplexer.workspace = true
 tempfile = "3"
 
 # The focus tests check which processes the session's job holds.

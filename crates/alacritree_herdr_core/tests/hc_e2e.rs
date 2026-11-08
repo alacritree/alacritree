@@ -16,7 +16,8 @@ use std::time::{Duration, Instant};
 
 use alacritree_herdr_core::{HerdrCore, HerdrCoreHandle};
 use alacritree_session_backend::{
-    OpenRequest, ProcessTree, Screen, SessionBackend, SessionHandle, ShellCommand,
+    Adoptable, AttachRequest, OpenRequest, Placement, ProcessTree, Screen, SessionBackend,
+    SessionHandle, ShellCommand,
 };
 use alacritty_terminal::event::{Event, EventListener, WindowSize};
 use alacritty_terminal::grid::Dimensions;
@@ -138,10 +139,20 @@ fn shell() -> ShellCommand {
 }
 
 fn open(backend: &HerdrCore, shell: ShellCommand, dir: &Path) -> Opened {
+    open_at(backend, shell, dir, Placement::default())
+}
+
+/// A grid for a session to paint into, and the exits it reports.
+fn screen_for() -> (Screen<Exits>, Arc<FairMutex<Term<Exits>>>, Receiver<ExitStatus>) {
     let (sender, exits) = mpsc::channel();
     let listener = Exits(sender);
     let term =
         Arc::new(FairMutex::new(Term::new(Config::default(), &Size(80, 24), listener.clone())));
+    (Screen { term: term.clone(), listener, window_size: window(80, 24) }, term, exits)
+}
+
+fn open_at(backend: &HerdrCore, shell: ShellCommand, dir: &Path, placement: Placement) -> Opened {
+    let (screen, term, exits) = screen_for();
     let request = OpenRequest {
         session_id: 1,
         shell: Some(shell),
@@ -151,10 +162,39 @@ fn open(backend: &HerdrCore, shell: ShellCommand, dir: &Path) -> Opened {
         wsl_probe: None,
         process_tree: ProcessTree::default(),
         colors: Default::default(),
-        screen: Screen { term: term.clone(), listener, window_size: window(80, 24) },
+        placement,
+        screen,
     };
     let handle = backend.open(request).expect("the core opens a terminal");
     Opened { handle, term, exits }
+}
+
+/// Take over a running terminal, as the app adopts one.
+fn attach(backend: &HerdrCore, terminal: &str) -> Opened {
+    let (screen, term, exits) = screen_for();
+    let request = AttachRequest {
+        terminal: terminal.into(),
+        history: 1000,
+        colors: Default::default(),
+        screen,
+    };
+    let handle = backend.attach(request).expect("the core attaches the terminal");
+    Opened { handle, term, exits }
+}
+
+/// What `backend` hands out to adopt, once a terminal shows up there.
+fn adopted(backend: &HerdrCore, count: usize) -> Vec<Adoptable> {
+    let mut found = Vec::new();
+    wait_until("the terminals to adopt", PATIENCE, || {
+        found.extend(SessionBackend::<HerdrCoreHandle>::adoptable(backend));
+        found.len() >= count
+    });
+    found.sort_by_key(|adoptable| adoptable.placement.position);
+    found
+}
+
+fn placed(workspace: &Path, position: usize, title: &str) -> Placement {
+    Placement { workspace: Some(workspace.to_path_buf()), position, title: Some(title.into()) }
 }
 
 fn screen(term: &FairMutex<Term<Exits>>) -> String {
@@ -305,4 +345,96 @@ fn a_flooding_session_does_not_delay_echo_in_another() {
 
     let slowest = echoed.into_iter().max().unwrap_or_default();
     assert!(slowest < Duration::from_secs(2), "an echo took {slowest:?} beside the flood");
+}
+
+/// Quitting detaches every session and leaves its terminal running. The
+/// next launch finds each one with the workspace and position it had, and
+/// its screen comes back with it.
+#[test]
+#[ignore = "needs hc on PATH"]
+fn after_a_quit_the_next_launch_finds_each_terminal_where_it_was() {
+    let core = Core::start();
+    let workspace = core.dir().join("feature");
+    std::fs::create_dir_all(&workspace).expect("the workspace dir");
+    let (first, second) = {
+        let before = HerdrCore::new("hc");
+        let mut first = open_at(&before, shell(), &workspace, placed(&workspace, 0, "app / one"));
+        let mut second = open_at(&before, shell(), core.dir(), Placement::default());
+        first.handle.write(b"echo left-running\r".to_vec());
+        shows(&first, "left-running");
+        // The session moved after it opened, so the labels follow it.
+        first.handle.place(&placed(&workspace, 1, "app / one"));
+        let terminals = (first.handle.terminal().to_string(), second.handle.terminal().to_string());
+        first.handle.detach().expect("a core terminal detaches");
+        second.handle.detach().expect("a core terminal detaches");
+        terminals
+    };
+    wait_until("the moved session's labels", PATIENCE, || {
+        core.get(&first)["labels"]["alacritree.position"] == "1"
+    });
+
+    let after = HerdrCore::new("hc");
+    SessionBackend::<HerdrCoreHandle>::ready(&after).expect("the next launch connects");
+    let found = adopted(&after, 2);
+
+    assert_eq!(found, vec![
+        Adoptable { terminal: second.clone(), placement: Placement::default() },
+        Adoptable { terminal: first.clone(), placement: placed(&workspace, 1, "app / one") },
+    ]);
+    assert!(core.get(&first)["state"] == "live" && core.get(&second)["state"] == "live");
+    let reattached = attach(&after, &first);
+    shows(&reattached, "left-running");
+}
+
+/// An agent puts a terminal into a workspace with a label alone. It is
+/// handed out once, and a terminal without the label never is.
+#[test]
+#[ignore = "needs hc on PATH"]
+fn a_terminal_an_agent_labels_with_a_workspace_is_adoptable_once() {
+    let core = Core::start();
+    let backend = HerdrCore::new("hc");
+    SessionBackend::<HerdrCoreHandle>::ready(&backend).expect("the backend connects");
+    let workspace = core.dir().display().to_string();
+    let label = format!("alacritree.workspace={workspace}");
+    let program = if cfg!(windows) { "cmd.exe" } else { "sh" };
+    let unlabelled = hc(&["run", "--bg", "--keep", "--no-parent", "--json", program]);
+    assert!(unlabelled.status.success(), "{unlabelled:?}");
+    let labelled =
+        hc(&["run", "--bg", "--keep", "--no-parent", "--label", &label, "--json", program]);
+    assert!(labelled.status.success(), "{labelled:?}");
+    let address = serde_json::from_slice::<Value>(&labelled.stdout).expect("run answers JSON")
+        ["address"]
+        .as_str()
+        .expect("an address")
+        .to_string();
+
+    let found = adopted(&backend, 1);
+
+    assert_eq!(found.len(), 1, "only the labelled terminal: {found:?}");
+    assert_eq!(found[0].terminal, address);
+    assert_eq!(found[0].placement.workspace.as_deref(), Some(core.dir()));
+    assert!(SessionBackend::<HerdrCoreHandle>::adoptable(&backend).is_empty());
+}
+
+/// alacritree's terminals carry no `herdr.*` label, so herdr-app neither
+/// adopts nor kills them, and they keep a lost program's place as a shell.
+#[test]
+#[ignore = "needs hc on PATH"]
+fn own_terminals_carry_alacritree_labels_and_where_and_keep() {
+    let core = Core::start();
+    let backend = HerdrCore::new("hc");
+    let mut opened = open_at(&backend, shell(), core.dir(), placed(core.dir(), 0, "app / main"));
+    let address = opened.handle.terminal().to_string();
+
+    let record = core.get(&address);
+    let labels = record["labels"].as_object().expect("labels").clone();
+    assert!(
+        labels.keys().all(|key| key.starts_with("alacritree.") || key == "where"),
+        "{labels:?}"
+    );
+    assert_eq!(labels["where"], "app / main");
+    assert_eq!(record["keep"], true);
+    let listed = core.records().into_iter().find(|r| r["address"] == address.as_str());
+    assert_eq!(listed.map(|r| r["where"].clone()), Some(Value::from("app / main")));
+    opened.handle.kill();
 }

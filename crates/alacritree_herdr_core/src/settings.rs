@@ -54,8 +54,10 @@ pub struct RawHerdrCore {
     ///
     /// "native" opens a PTY that alacritree owns. "herdr_core" runs the
     /// session as a terminal in the native side's herdr-core core, through
-    /// `hc connect`. When that core cannot be used, the session opens native
-    /// and a notice names the cause. WSL sessions and diff panes stay native.
+    /// `hc connect`. Such a terminal outlives alacritree: quitting leaves it
+    /// running, and the next launch puts it back in its workspace. When that
+    /// core cannot be used, the session opens native and a notice names the
+    /// cause. WSL sessions and diff panes stay native.
     session_backend: ClosedSet<SessionBackendChoice>,
 }
 
