@@ -147,7 +147,7 @@ pub enum Ran {
 }
 
 /// The status a POSIX shell exits with for a command it could not find.
-const NOT_FOUND: i32 = 127;
+pub const NOT_FOUND: i32 = 127;
 
 /// Shell code that sets `$s` to the distro user's own login shell, since
 /// `wsl.exe --exec` sees only the system PATH.

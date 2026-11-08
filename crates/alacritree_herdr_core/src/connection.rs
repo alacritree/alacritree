@@ -33,10 +33,6 @@ const HELLO_TIMEOUT: Duration = Duration::from_secs(15);
 /// the slowest call this client makes.
 const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// The status a POSIX shell exits with when it finds no such command, as a
-/// distro's `hc connect` does without `hc`.
-const SHELL_NOT_FOUND: i32 = 127;
-
 /// What the core says about a terminal, kept current from events.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Facts {
@@ -222,7 +218,7 @@ impl Connection {
                 let code = exit_code(&mut child);
                 let _ = child.kill();
                 return Err(match code {
-                    Some(SHELL_NOT_FOUND) => CoreError::Spawn {
+                    Some(alacritree_common::side::NOT_FOUND) => CoreError::Spawn {
                         program: program.to_string(),
                         source: std::io::Error::new(std::io::ErrorKind::NotFound, text),
                     },
