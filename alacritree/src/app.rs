@@ -5088,6 +5088,20 @@ mod tests {
         assert!(notice.contains("no hc on PATH") && notice.contains("native"), "{notice}");
     }
 
+    /// A core that answers but cannot start this terminal is as unusable as
+    /// one that does not answer.
+    #[test]
+    fn a_core_that_fails_to_open_the_terminal_leaves_a_native_shell_with_a_notice() {
+        let (mut app, native, core) = app_preferring_a_scripted_core();
+        core.fail_next(SessionError::Scripted("terminal.run refused".into()));
+
+        let id = app.spawn_session(&Context::default(), None).expect("the native backend opens it");
+
+        assert!(native.session(id).is_some());
+        let notice = app.modals.error_dialog.clone().unwrap_or_default();
+        assert!(notice.contains("terminal.run refused") && notice.contains("native"), "{notice}");
+    }
+
     /// A backend that tracks the program's cwd fills the sidebar's until the
     /// shell reports its own through OSC 7.
     #[test]

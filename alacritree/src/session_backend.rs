@@ -47,21 +47,21 @@ pub(crate) struct Opened {
     pub(crate) fell_back: Option<SessionError>,
 }
 
-/// Open on `preferred` when it is ready, and on `native` when it is not, so
-/// a new session always gets a terminal.
+/// Open on `preferred`, and on `native` when `preferred` is not ready or
+/// cannot start the terminal, so a new session always gets one.
 pub(crate) fn open_preferring<L>(
     preferred: Option<&Backend>,
     native: &Backend,
     request: OpenRequest<L>,
 ) -> Result<Opened, SessionError>
 where
-    L: EventListener + Send + 'static,
+    L: EventListener + Clone + Send + 'static,
 {
-    let fell_back = match preferred.map(|backend| (backend, backend.ready())) {
-        Some((backend, Ok(()))) => {
-            return backend.open(request).map(|handle| Opened { handle, fell_back: None });
+    let fell_back = match preferred {
+        Some(backend) => match backend.ready().and_then(|()| backend.open(request.clone())) {
+            Ok(handle) => return Ok(Opened { handle, fell_back: None }),
+            Err(error) => Some(error),
         },
-        Some((_, Err(error))) => Some(error),
         None => None,
     };
     native.open(request).map(|handle| Opened { handle, fell_back })

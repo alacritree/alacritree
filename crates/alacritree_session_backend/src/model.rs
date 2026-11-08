@@ -27,6 +27,7 @@ impl ShellCommand {
 /// The grid a session's program draws into, and the listener its events
 /// reach the app through. The app owns both, so every backend feeds the same
 /// `Term` and wakes the UI the same way.
+#[derive(Clone)]
 pub struct Screen<L> {
     pub term: Arc<FairMutex<Term<L>>>,
     pub listener: L,
@@ -55,6 +56,7 @@ pub struct ProcessTree {
 }
 
 /// Everything a backend needs to start a new terminal for a session.
+#[derive(Clone)]
 pub struct OpenRequest<L> {
     /// The app's id for the session, which the program reads from
     /// [`crate::SESSION_ID_ENV`].
