@@ -34,6 +34,9 @@ pub struct Screen<L> {
     /// The pane's size when the terminal starts, so the program draws its
     /// first output at the size it keeps.
     pub window_size: WindowSize,
+    /// How many scrollback lines the grid keeps. A backend that paints the
+    /// grid from a terminal it runs elsewhere restores this many.
+    pub history: usize,
 }
 
 /// The colors a session's grid draws with when the program sets none, for a
@@ -106,8 +109,6 @@ pub struct Adoptable {
 pub struct AttachRequest<L> {
     /// The terminal's id in its backend, such as `t7`.
     pub terminal: String,
-    /// How many scrollback lines the first paint restores.
-    pub history: usize,
     pub colors: TerminalColors,
     pub screen: Screen<L>,
 }

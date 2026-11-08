@@ -333,7 +333,7 @@ mod tests {
         let term = Arc::new(FairMutex::new(Term::new(Config::default(), &Size, VoidListener)));
         let window_size =
             WindowSize { num_lines: 24, num_cols: 80, cell_width: 8, cell_height: 16 };
-        Screen { term, listener: VoidListener, window_size }
+        Screen { term, listener: VoidListener, window_size, history: 0 }
     }
 
     fn request(session_id: u64) -> OpenRequest<VoidListener> {
@@ -352,12 +352,7 @@ mod tests {
     }
 
     fn running(terminal: &str) -> AttachRequest<VoidListener> {
-        AttachRequest {
-            terminal: terminal.into(),
-            history: 0,
-            colors: Default::default(),
-            screen: screen(),
-        }
+        AttachRequest { terminal: terminal.into(), colors: Default::default(), screen: screen() }
     }
 
     /// A watching session follows a terminal without disturbing it, so the

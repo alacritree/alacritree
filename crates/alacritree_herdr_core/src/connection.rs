@@ -126,6 +126,18 @@ impl Shared {
     fn routes(&self) -> MutexGuard<'_, Routes> {
         self.routes.lock().unwrap_or_else(PoisonError::into_inner)
     }
+
+    /// End the connection when either pipe breaks. Dropping the senders
+    /// ends every parser's stream and fails every call still waiting, so
+    /// nothing the child still writes reaches a session.
+    fn close(&self) {
+        self.alive.store(false, Ordering::Relaxed);
+        let mut routes = self.routes();
+        routes.streams.clear();
+        for (_, pending) in routes.calls.drain() {
+            let _ = pending.reply.send(Err(CoreError::Closed));
+        }
+    }
 }
 
 pub(crate) struct Connection {
@@ -178,6 +190,11 @@ impl Connection {
         Ok(connection)
     }
 
+    #[cfg(feature = "test-support")]
+    pub(crate) fn kill(&self) {
+        let _ = lock(&self.child).kill();
+    }
+
     pub(crate) fn alive(&self) -> bool {
         self.shared.alive.load(Ordering::Relaxed)
     }
@@ -226,7 +243,11 @@ impl Connection {
         match answer.recv_timeout(CALL_TIMEOUT) {
             Ok(answer) => answer,
             Err(RecvTimeoutError::Timeout) => {
-                self.shared.routes().calls.remove(&id);
+                // A late reply that opens a stream must still find its call,
+                // so the demux thread can close the stream nobody reads.
+                if opens != Opens::Stream {
+                    self.shared.routes().calls.remove(&id);
+                }
                 Err(CoreError::Timeout(method.to_string()))
             },
             Err(RecvTimeoutError::Disconnected) => Err(CoreError::Closed),
@@ -315,7 +336,7 @@ fn drain(mut stderr: impl Read + Send + 'static) -> Receiver<String> {
 }
 
 fn spawn_writer(
-    mut stdin: ChildStdin,
+    mut stdin: impl Write + Send + 'static,
     outgoing: Receiver<Vec<u8>>,
     shared: Arc<Shared>,
 ) -> Result<(), CoreError> {
@@ -324,8 +345,7 @@ fn spawn_writer(
         .spawn(move || {
             while let Ok(frame) = outgoing.recv() {
                 if stdin.write_all(&frame).and_then(|()| stdin.flush()).is_err() {
-                    shared.alive.store(false, Ordering::Relaxed);
-                    return;
+                    return shared.close();
                 }
             }
         })
@@ -344,14 +364,7 @@ fn spawn_demux(
             while let Ok(Some(frame)) = wire::read_frame(&mut stdout) {
                 route(&shared, &frames, frame);
             }
-            shared.alive.store(false, Ordering::Relaxed);
-            // Dropping the senders ends every parser thread and fails every
-            // call still waiting.
-            let mut routes = shared.routes();
-            routes.streams.clear();
-            for (_, pending) in routes.calls.drain() {
-                let _ = pending.reply.send(Err(CoreError::Closed));
-            }
+            shared.close();
         })
         .map(drop)
         .map_err(CoreError::Io)
@@ -438,7 +451,11 @@ fn answer(routes: &mut Routes, frames: &Sender<Vec<u8>>, waker: &Waker, payload:
         },
         _ => None,
     };
-    let _ = pending.reply.send(Ok(Answer { result, stream }));
+    let delivered = pending.reply.send(Ok(Answer { result, stream }));
+    if let Err(mpsc::SendError(Ok(Answer { stream: Some((channel, _)), .. }))) = delivered {
+        routes.streams.remove(&channel);
+        let _ = frames.send(wire::encode(channel, wire::CLOSE, &[]));
+    }
 }
 
 fn snapshot(terminals: &Value) -> HashMap<String, Facts> {
@@ -506,6 +523,8 @@ fn apply_event(terminals: &mut HashMap<String, Facts>, message: &Value) -> bool 
 
 #[cfg(test)]
 mod tests {
+    use std::time::Instant;
+
     use super::*;
 
     fn event(kind: &str, terminal: &str, data: Value) -> Value {
@@ -554,6 +573,59 @@ mod tests {
         let facts = &terminals["t1"];
         assert!(facts.live);
         assert_eq!(facts.labels, HashMap::from([("alacritree.workspace".into(), "/src".into())]));
+    }
+
+    /// A broken pipe to `hc connect` ends the connection even while its
+    /// output still arrives, so what it says afterwards reaches no session,
+    /// whose parser has moved on to a new connection.
+    #[test]
+    fn once_the_writer_breaks_late_output_reaches_no_session() {
+        struct Broken;
+        impl Write for Broken {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::ErrorKind::BrokenPipe.into())
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let shared = Arc::new(Shared {
+            alive: AtomicBool::new(true),
+            routes: Default::default(),
+            waker: Default::default(),
+        });
+        let (session, stream) = mpsc::channel();
+        shared.routes().streams.insert(3, session);
+        let (frames, outgoing) = mpsc::channel();
+        spawn_writer(Broken, outgoing, shared.clone()).expect("the writer thread");
+
+        frames.send(wire::encode(3, wire::DATA, b"typed")).expect("the writer reads frames");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while shared.alive.load(Ordering::Relaxed) {
+            assert!(Instant::now() < deadline, "the broken pipe ends the connection");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        route(&shared, &frames, Frame { channel: 3, kind: wire::DATA, payload: b"late".to_vec() });
+
+        assert!(matches!(stream.try_recv(), Err(mpsc::TryRecvError::Disconnected)));
+    }
+
+    /// A stream whose attach gave up waiting is closed when its reply comes
+    /// in after all, so the core does not hold it open with nobody reading.
+    #[test]
+    fn a_stream_opened_after_its_call_gave_up_is_closed() {
+        let mut routes = Routes::default();
+        let (reply, gave_up) = mpsc::channel();
+        drop(gave_up);
+        routes.calls.insert(7, Pending { opens: Opens::Stream, reply });
+        let (frames, sent) = mpsc::channel();
+        let late = json!({ "jsonrpc": "2.0", "id": 7, "result": { "channel": 9 } });
+
+        answer(&mut routes, &frames, &Waker::default(), late.to_string().as_bytes());
+
+        assert_eq!(sent.try_recv().ok(), Some(wire::encode(9, wire::CLOSE, &[])));
+        assert!(!routes.streams.contains_key(&9));
     }
 
     /// The core may cut an event line across frames.

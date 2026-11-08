@@ -258,6 +258,7 @@ name = "alacritree_herdr_core"
 version = "0.0.0"
 dependencies = [
  "alacritree_common",
+ "alacritree_herdr_core",
  "alacritree_process_probe",
  "alacritree_session_backend",
  "alacritty_terminal",

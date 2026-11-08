@@ -5,6 +5,8 @@
 //! wakeups and child exit through the app's listener. A change to those in
 //! the native loop must also go here. It sends CREDIT for the bytes it has
 //! parsed, so the core's flow control follows the parser and not the socket.
+//! After a dropped connection it alone takes up the new stream, so nothing
+//! from the earlier one reaches the grid after the reset.
 
 use std::process::ExitStatus;
 use std::sync::Arc;
@@ -15,8 +17,10 @@ use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::event_loop::{MAX_LOCKED_READ, READ_BUFFER_SIZE};
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::Term;
-use alacritty_terminal::vte::ansi::{Processor, StdSyncHandler};
+use alacritty_terminal::vte::ansi::{Handler, Processor, StdSyncHandler};
 use serde::Deserialize;
+
+use crate::{Attached, Resumed};
 
 /// What the demux thread hands a session's parser.
 pub(crate) enum Chunk {
@@ -25,8 +29,9 @@ pub(crate) enum Chunk {
     Closed(Option<CloseReason>),
 }
 
-/// Why the core ended a stream.
-#[derive(Debug, Deserialize)]
+/// Why the core ended a stream. The default is a terminal that is gone with
+/// no exit to report.
+#[derive(Debug, Default, Deserialize)]
 pub(crate) struct CloseReason {
     #[serde(default)]
     exit_code: Option<i32>,
@@ -56,33 +61,61 @@ impl CloseReason {
     }
 }
 
-/// The line a session ends on when its connection to the core drops.
-const LOST: &[u8] = b"\x1b[0m\r\n[alacritree] lost the connection to herdr-core\r\n";
+/// The line a session shows while its connection to the core is down. The
+/// reset that follows a reattach clears it.
+const RECONNECTING: &[u8] =
+    b"\x1b[0m\r\n[alacritree] lost the connection to herdr-core, reconnecting\r\n";
 
 pub(crate) fn spawn<L>(
     term: Arc<FairMutex<Term<L>>>,
     listener: L,
     stream: Receiver<Chunk>,
-    credit: impl Fn(usize) + Send + 'static,
+    attached: Arc<Attached>,
 ) -> std::io::Result<()>
 where
     L: EventListener + Send + 'static,
 {
     std::thread::Builder::new()
         .name("hc-parser".into())
-        .spawn(move || Parser { term, listener, stream, credit }.run())
+        .spawn(move || Parser { term, listener, attached }.run(stream))
         .map(drop)
 }
 
-struct Parser<L: EventListener, C> {
+struct Parser<L: EventListener> {
     term: Arc<FairMutex<Term<L>>>,
     listener: L,
-    stream: Receiver<Chunk>,
-    credit: C,
+    attached: Arc<Attached>,
 }
 
-impl<L: EventListener, C: Fn(usize)> Parser<L, C> {
-    fn run(self) {
+/// How a stream ended.
+enum End {
+    /// The core closed it, or answered this client's own CLOSE with `None`.
+    Closed(Option<CloseReason>),
+    /// The connection it rode on dropped.
+    Dropped,
+}
+
+impl<L: EventListener> Parser<L> {
+    /// Follow the session's stream, and each one that replaces it after a
+    /// dropped connection. A reattach repaints the whole screen and its
+    /// scrollback, so the grid starts over from a reset.
+    fn run(self, mut stream: Receiver<Chunk>) {
+        loop {
+            if let End::Closed(reason) = self.follow(&stream) {
+                return self.close(reason);
+            }
+            Processor::<StdSyncHandler>::new().advance(&mut *self.term.lock(), RECONNECTING);
+            self.listener.send_event(Event::Wakeup);
+            stream = match self.attached.resume() {
+                Resumed::Stream(next) => next,
+                Resumed::Gone => return self.close(Some(CloseReason::default())),
+                Resumed::Released => return,
+            };
+            self.term.lock().reset_state();
+        }
+    }
+
+    fn follow(&self, stream: &Receiver<Chunk>) -> End {
         let mut parser = Processor::<StdSyncHandler>::new();
         loop {
             let timeout = parser
@@ -90,25 +123,21 @@ impl<L: EventListener, C: Fn(usize)> Parser<L, C> {
                 .sync_timeout()
                 .map(|at| at.saturating_duration_since(Instant::now()));
             let next = match timeout {
-                Some(timeout) => self.stream.recv_timeout(timeout),
-                None => self.stream.recv().map_err(|_| RecvTimeoutError::Disconnected),
+                Some(timeout) => stream.recv_timeout(timeout),
+                None => stream.recv().map_err(|_| RecvTimeoutError::Disconnected),
             };
             let closed = match next {
-                Ok(Chunk::Output(bytes)) => self.parse(&mut parser, bytes),
+                Ok(Chunk::Output(bytes)) => self.parse(&mut parser, stream, bytes),
                 Ok(Chunk::Closed(reason)) => Some(reason),
                 Err(RecvTimeoutError::Timeout) => {
                     parser.stop_sync(&mut *self.term.lock());
                     self.listener.send_event(Event::Wakeup);
                     continue;
                 },
-                Err(RecvTimeoutError::Disconnected) => {
-                    parser.advance(&mut *self.term.lock(), LOST);
-                    self.listener.send_event(Event::Wakeup);
-                    return;
-                },
+                Err(RecvTimeoutError::Disconnected) => return End::Dropped,
             };
             if let Some(reason) = closed {
-                return self.close(reason);
+                return End::Closed(reason);
             }
         }
     }
@@ -118,6 +147,7 @@ impl<L: EventListener, C: Fn(usize)> Parser<L, C> {
     fn parse(
         &self,
         parser: &mut Processor<StdSyncHandler>,
+        stream: &Receiver<Chunk>,
         first: Vec<u8>,
     ) -> Option<Option<CloseReason>> {
         let _lease = self.term.lease();
@@ -133,7 +163,7 @@ impl<L: EventListener, C: Fn(usize)> Parser<L, C> {
             if pending.len() >= READ_BUFFER_SIZE {
                 break self.term.lock_unfair();
             }
-            match self.stream.try_recv() {
+            match stream.try_recv() {
                 Ok(Chunk::Output(bytes)) => pending.extend(bytes),
                 Ok(Chunk::Closed(reason)) => {
                     closed = Some(reason);
@@ -152,7 +182,7 @@ impl<L: EventListener, C: Fn(usize)> Parser<L, C> {
             if processed >= MAX_LOCKED_READ || closed.is_some() {
                 break;
             }
-            match self.stream.try_recv() {
+            match stream.try_recv() {
                 Ok(Chunk::Output(bytes)) => pending = bytes,
                 Ok(Chunk::Closed(reason)) => {
                     closed = Some(reason);
@@ -163,7 +193,7 @@ impl<L: EventListener, C: Fn(usize)> Parser<L, C> {
         }
         drop(terminal);
 
-        (self.credit)(processed);
+        self.attached.credit(processed);
         if parser.sync_bytes_count() < processed && processed > 0 {
             self.listener.send_event(Event::Wakeup);
         }
