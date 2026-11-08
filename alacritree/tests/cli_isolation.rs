@@ -32,7 +32,7 @@ fn log_dir(home: &Path) -> PathBuf {
 
 /// An earlier design installed the hook before `cli::run`, so every `--help`
 /// created a log directory and `alacritree mcp` wrote records no config could
-/// disable.  This is the regression guard for that.
+/// disable. This is the regression guard for that.
 #[test]
 fn help_creates_no_log_directory() {
     let home = tempfile::tempdir().expect("a temp dir");
@@ -100,7 +100,7 @@ fn crashes_emits_json_in_either_flag_position() {
 }
 
 /// `crashes` copies bytes rather than decoding, because refusing to print a
-/// damaged crash record is the one unacceptable outcome for this tool.  A
+/// damaged crash record is the one unacceptable outcome for this tool. A
 /// lossy re-encode of `0xff` into a 3-byte U+FFFD would pass a check that only
 /// looks at decoded text, so this compares the raw stdout bytes instead.
 #[test]
@@ -119,12 +119,12 @@ fn crashes_preserves_invalid_utf8_bytes_verbatim() {
 }
 
 /// A blocking `lock()` in the hook waits on a mutex the panicking thread already
-/// holds and never becomes poisoned.  A timeout here is the failure.
+/// holds and never becomes poisoned. A timeout here is the failure.
 ///
 /// A process that merely exits promptly is not enough: a clap rejection of an
 /// unknown subcommand exits just as fast as a correct run, so the deadline
 /// alone cannot tell "the stimulus ran and hit the skip path" apart from "the
-/// stimulus never existed".  The stderr checks below are what actually pin
+/// stimulus never existed". The stderr checks below are what actually pin
 /// that down.
 #[test]
 fn a_panic_holding_the_recorder_lock_does_not_hang() {

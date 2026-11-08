@@ -1,6 +1,6 @@
 // Embeds the application icon into the Windows .exe so File Explorer, the
 // taskbar, and Scoop-generated shortcuts all show the proper icon instead of
-// the default executable glyph.  Also frees target exes that running
+// the default executable glyph. Also frees target exes that running
 // alacritree processes pin: a mapped image cannot be overwritten, so linking
 // over it fails with "Access is denied" until the file is renamed aside.
 // Finally, stages the vendored console host beside the freshly linked exe.
@@ -11,8 +11,8 @@ include!("src/stale_exe.rs");
 fn main() {
     // embed_resource emits its own narrow rerun-if-changed directives, which
     // would otherwise stop this script from running ahead of source-change
-    // relinks.  Directory-scoped directives keep the rename-aside in step
-    // with every build that writes a new exe.  (A dependency-only change
+    // relinks. Directory-scoped directives keep the rename-aside in step
+    // with every build that writes a new exe. (A dependency-only change
     // relinks without a rerun — accepted: the vendored crates are effectively
     // frozen in this fork.)
     println!("cargo:rerun-if-changed=build.rs");
@@ -79,11 +79,11 @@ const VENDORED_CONPTY: [&str; 2] = ["conpty.dll", "OpenConsole.exe"];
 /// `LoadLibraryW("conpty.dll")` resolves against the executable's directory,
 /// and `harden_dll_search_path` leaves that the only non-system entry in the
 /// search order, so a `cargo run` build only gets the faster host if the files
-/// are staged beside it.  Release archives are populated by dist's `include`
+/// are staged beside it. Release archives are populated by dist's `include`
 /// instead, which reads the same directory.
 ///
 /// Best-effort: a pane running out of this profile has the DLL mapped and
-/// denies the overwrite.  The stale copy is the same file on every build that
+/// denies the overwrite. The stale copy is the same file on every build that
 /// does not bump the vendored version, so warning and carrying on beats
 /// failing the build.
 #[cfg(windows)]

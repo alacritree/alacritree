@@ -64,7 +64,7 @@ pub(super) struct Check {
 /// An external program alacritree shells out to.
 struct Tool {
     program: &'static str,
-    /// What stops working when it is missing.  The app never says this, so the
+    /// What stops working when it is missing. The app never says this, so the
     /// report has to.
     consequence: &'static str,
     need: Need,
@@ -75,9 +75,9 @@ struct Tool {
 enum Need {
     /// Nothing alacritree exists for works without it.
     Required,
-    /// A feature everyone uses degrades quietly.  Worth a warning anywhere.
+    /// A feature everyone uses degrades quietly. Worth a warning anywhere.
     Optional,
-    /// Only drives a feature this machine has not opted into.  Warning about it
+    /// Only drives a feature this machine has not opted into. Warning about it
     /// would fire on every machine that has simply never wanted it, and a report
     /// that always has a warning in it stops being read.
     Unused,
@@ -255,10 +255,10 @@ enum ProbeError {
     NoAnswer,
 }
 
-/// What each installed distro can actually do for alacritree.  Nothing else
+/// What each installed distro can actually do for alacritree. Nothing else
 /// reports on the inside of a distro: git, gh and delta are resolved there
 /// silently, and their absence looks exactly like a repository with nothing
-/// to say.  Empty when WSL is not installed, which is also every non-Windows
+/// to say. Empty when WSL is not installed, which is also every non-Windows
 /// machine.
 fn wsl_checks(distros: &[wsl::WslDistro]) -> Vec<Check> {
     if distros.is_empty() {
@@ -427,11 +427,11 @@ fn state_checks(path: &Path, distros: &[String], profiles: &[Profile]) -> Vec<Ch
 ///
 /// A stale override never fails a spawn: `shell_decision` logs it and carries on
 /// down the precedence chain, so the project quietly opens the automatic shell
-/// instead of the one it was pinned to.  A value that does not even parse is
+/// instead of the one it was pinned to. A value that does not even parse is
 /// dropped earlier still, when the sidebar loads.
 ///
 /// The verdict comes from `shell_decision` itself rather than from a second copy
-/// of its rules, so this cannot drift from the behaviour it reports on.  Neither
+/// of its rules, so this cannot drift from the behaviour it reports on. Neither
 /// a location distro nor a default profile is offered to it: both are fallbacks
 /// the chain reaches *after* the override, and passing them would mask an
 /// override that had already been passed over.
@@ -678,7 +678,7 @@ fn print_human(checks: &[Check]) {
         }
 
         // A TOML error carries its own multi-line snippet pointing at the
-        // offending column.  It is worth more than the alignment is, so it goes
+        // offending column. It is worth more than the alignment is, so it goes
         // under the row rather than into it.
         let mut lines = c.detail.lines();
         let summary = lines.next().unwrap_or_default();
@@ -747,7 +747,7 @@ mod tests {
         assert_eq!(tool_check(&GIT, None).status, Status::Fail);
     }
 
-    /// Everything else degrades quietly and on purpose.  Reporting a missing
+    /// Everything else degrades quietly and on purpose. Reporting a missing
     /// `gh` as a failure would train people to ignore the report.
     #[test]
     fn a_missing_optional_tool_only_warns() {
@@ -886,7 +886,7 @@ mod tests {
 
     /// The trap this whole command exists for: `config::load` logs the parse
     /// error and returns defaults, so a typo'd config behaves like no config at
-    /// all.  Silence here would be a lie.
+    /// all. Silence here would be a lie.
     #[test]
     fn a_config_that_does_not_parse_fails() {
         let d = diagnosis(
@@ -1029,7 +1029,7 @@ mod tests {
         assert!(!checks.iter().any(|c| c.name == "shell override"), "{:?}", names(&checks));
     }
 
-    /// A hand-edited `state.toml` can hold anything.  The sidebar drops a value
+    /// A hand-edited `state.toml` can hold anything. The sidebar drops a value
     /// it cannot parse the moment it loads, so the override is gone before any
     /// distro or profile is ever consulted.
     #[test]
@@ -1098,7 +1098,7 @@ mod tests {
     }
 
     /// A project whose directory was deleted or moved stays in the sidebar and
-    /// renders as an empty, inert row.  Naming the path is the whole fix.
+    /// renders as an empty, inert row. Naming the path is the whole fix.
     #[test]
     fn a_project_root_that_no_longer_exists_warns() {
         let dir = TempDir::new().unwrap();
@@ -1118,7 +1118,7 @@ mod tests {
         );
     }
 
-    /// The exit code is what a script reads.  Warnings are the normal state of a
+    /// The exit code is what a script reads. Warnings are the normal state of a
     /// working machine (no `doppler`, no `gh`), so only a real failure is
     /// allowed to make `doctor` non-zero.
     #[test]

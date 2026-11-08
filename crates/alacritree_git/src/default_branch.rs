@@ -48,7 +48,7 @@ impl WellKnown {
 ///
 /// Each field is already verified: `origin_head` is what the symref resolved
 /// to, `present` holds only branches this repository has, and `init_default`
-/// is set only when `init.defaultBranch` names one of them.  An unverified
+/// is set only when `init.defaultBranch` names one of them. An unverified
 /// value here becomes an answer naming a branch that does not exist.
 #[derive(Default)]
 pub struct Evidence<'a> {

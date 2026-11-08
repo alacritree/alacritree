@@ -83,7 +83,7 @@ pub(crate) fn map_from_repo(repo: &Repository) -> HashMap<String, UpstreamState>
         let refname = format!("refs/heads/{name}");
         let state = match branch.upstream() {
             Ok(upstream) => tracked_state(repo, &branch, &upstream),
-            // The tracking ref is absent.  Config still decides whether an
+            // The tracking ref is absent. Config still decides whether an
             // upstream was ever configured.
             Err(e) if e.code() == ErrorCode::NotFound => {
                 let configured = repo.branch_upstream_name(&refname);
@@ -123,9 +123,9 @@ fn tracked_state(
     }
 }
 
-/// Classify a branch whose tracking ref did not resolve.  A name in config
+/// Classify a branch whose tracking ref did not resolve. A name in config
 /// means an upstream was configured and its ref is gone; `NotFound` means
-/// none was ever configured.  Every other failure leaves the question
+/// none was ever configured. Every other failure leaves the question
 /// unanswered, and an unanswered branch gets no entry — the same rule
 /// `tracked_state` applies to a graph walk it could not complete.
 fn configured_upstream(name: Result<&str, ErrorCode>) -> Option<UpstreamState> {
@@ -197,7 +197,7 @@ mod tests {
     }
 
     /// A branch tracking another local branch through remote `"."` has a
-    /// `refs/heads/…` upstream.  The badge shows this name to the user, so it
+    /// `refs/heads/…` upstream. The badge shows this name to the user, so it
     /// must read the way the WSL and live paths render it.
     #[test]
     fn a_local_tracking_upstream_shortens_like_a_remote_one() {
@@ -220,7 +220,7 @@ mod tests {
         assert!(parse_for_each_ref(b"no-tabs-at-all\n").is_empty());
     }
 
-    /// A track string we cannot read must produce no entry at all.  Falling
+    /// A track string we cannot read must produce no entry at all. Falling
     /// through to `Diverged { ahead: 0, behind: 0 }` would paint the divergence
     /// glyph and a "0 ahead, 0 behind" tooltip on a branch that is neither.
     #[test]
@@ -236,7 +236,7 @@ mod git2_tests {
     use git2::Repository;
 
     /// A branch with no `branch.<name>.remote` is untracked; one whose
-    /// configured tracking ref was deleted is gone.  The two are separated by
+    /// configured tracking ref was deleted is gone. The two are separated by
     /// `branch_upstream_name`, which libgit2 builds from config and the fetch
     /// refspec *before* resolving any reference.
     #[test]

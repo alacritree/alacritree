@@ -4,7 +4,7 @@
 //! A log that does not record its configuration cannot explain a run, and the
 //! keys that change behaviour most leave no other trace — a session that
 //! opened its PTY on a worker and one that blocked the frame print the same
-//! lines apart from a single phase name.  Mirrors alacritty's startup banner,
+//! lines apart from a single phase name. Mirrors alacritty's startup banner,
 //! which logs the version and the config paths it loaded, and ghostty's
 //! `global.zig`, which adds the build's own facts.
 //!
@@ -16,13 +16,13 @@ use std::path::Path;
 
 use crate::config::{Config, ConfigFile};
 
-/// Record the build and its configuration.  `settings` asks for the full
+/// Record the build and its configuration. `settings` asks for the full
 /// config, which belongs in a file rather than on a terminal — the caller
 /// passes whether a session log is open.
 ///
 /// Called after the log sink is filled, not before: anything logged while the
 /// sink is empty reaches stderr only, and the banner's whole job is to sit at
-/// the top of the file.  Config parse failures are reported here as well as by
+/// the top of the file. Config parse failures are reported here as well as by
 /// `config::load`, which runs too early to reach the file.
 pub fn emit(config: &Config, files: &[ConfigFile], config_dir: Option<&Path>, settings: bool) {
     log::info!("alacritree {} on {}", env!("CARGO_PKG_VERSION"), std::env::consts::OS);

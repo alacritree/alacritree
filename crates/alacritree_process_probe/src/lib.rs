@@ -149,8 +149,8 @@ struct AgentCache {
 const AGENT_CACHE_TTL: Duration = Duration::from_millis(1000);
 
 /// Pids in the tree rooted at `root` (inclusive), from a `(pid, parent)`
-/// snapshot.  Root-inclusive so a session whose spawned program *is* the
-/// agent still matches.  Parent links in a snapshot can be stale or cyclic
+/// snapshot. Root-inclusive so a session whose spawned program *is* the
+/// agent still matches. Parent links in a snapshot can be stale or cyclic
 /// (pid reuse), so the walk tracks visited pids.
 #[cfg(any(test, windows))]
 fn process_tree_pids(procs: &[(u32, Option<u32>)], root: u32) -> Vec<u32> {
@@ -183,7 +183,7 @@ fn agent_name_by_name(names: impl IntoIterator<Item = impl AsRef<str>>) -> Optio
 
 /// FocusLeft/FocusRight passthrough decision for a shimmed WSL session: the
 /// helper's cached foreground `comm`, matched like the native Linux probe.
-/// Unknown means no TUI — the keys move panel focus.  Gated the same as
+/// Unknown means no TUI — the keys move panel focus. Gated the same as
 /// `is_nav_tui_name` (plus its `not(...)` fallback below) since `Session`
 /// always carries a `wsl_probe` field, so `process_probe`'s match on it must
 /// compile everywhere, even though a shimmed session only exists on Windows.
@@ -199,8 +199,8 @@ fn wsl_nav_tui(_comm: Option<&str>) -> bool {
 }
 
 /// `(foreground_job, nav_tui)` for a shimmed WSL session, from the helper's
-/// cached foreground `comm`.  Any comm at all means a job owns the tty — the
-/// helper reports nothing for an idle shell.  The Windows descendant probe
+/// cached foreground `comm`. Any comm at all means a job owns the tty — the
+/// helper reports nothing for an idle shell. The Windows descendant probe
 /// can't stand in here: wsl.exe keeps plumbing children alive for the life
 /// of the session, so it reads every idle WSL shell as busy.
 fn wsl_probe_signals(comm: Option<&str>) -> (bool, bool) {
@@ -298,7 +298,7 @@ fn stat_pgrp_tpgid(stat: &str) -> Option<(i32, i32)> {
 
 /// `comm` (between the first `(` and last `)`) and `pgrp` from a
 /// `/proc/<pid>/stat` line — the two fields the foreground-group scan matches
-/// on.  `comm` is kernel-truncated to 15 bytes, so nav-TUI names match with
+/// on. `comm` is kernel-truncated to 15 bytes, so nav-TUI names match with
 /// `starts_with`, and it may itself contain spaces and parens, so the split is
 /// on the *last* `)`.
 #[cfg(any(target_os = "linux", test))]
@@ -457,7 +457,7 @@ fn procargs2(pid: u32) -> Option<Vec<u8>> {
 }
 
 /// `KERN_PROCARGS2` layout: native-endian `argc`, the executable path, NUL
-/// padding, then argv and environment strings, all NUL-terminated.  Taking
+/// padding, then argv and environment strings, all NUL-terminated. Taking
 /// exactly `argc` strings keeps the environment out; spaces join the args
 /// the same way the Linux `/proc/<pid>/cmdline` read renders them.
 #[cfg(target_os = "macos")]
@@ -526,7 +526,7 @@ fn foreground_nav_tui(shell_pid: u32) -> bool {
 /// A nav TUI anywhere in foreground process group `pgid`.
 ///
 /// `proc_listpgrppids` gives us just the stable, public PID list instead of
-/// relying on Darwin's private `kinfo_proc` layout.  Command names then come
+/// relying on Darwin's private `kinfo_proc` layout. Command names then come
 /// from the same `proc_bsdinfo` query used by the group-leader fast path.
 #[cfg(target_os = "macos")]
 fn foreground_group_has_nav_tui(pgid: u32) -> bool {
@@ -613,7 +613,7 @@ fn foreground_agent_name(_shell_pid: u32) -> Option<&'static str> {
     None
 }
 
-/// Whether a split-managing TUI owns the terminal.  Checks the foreground
+/// Whether a split-managing TUI owns the terminal. Checks the foreground
 /// group leader first (the common case: nvim/tmux run directly), then scans
 /// the rest of the foreground process group, so an editor launched by another
 /// foreground program — `chezmoi edit`, `git commit`, `sudoedit` — is still
@@ -686,7 +686,7 @@ mod windows_process_probe {
     //! another ~15 ms, both far too much for the UI thread that asks for them.
     //! A single refresher thread does the work for every shell the UI has
     //! asked about and publishes the results; `probe` only reads what was last
-    //! published.  Sessions already tolerate an answer up to `AGENT_CACHE_TTL`
+    //! published. Sessions already tolerate an answer up to `AGENT_CACHE_TTL`
     //! old, so nothing about the displayed result changes.
     //!
     //! The scan is two-phase: names and parent pids for the whole table (one
@@ -737,7 +737,7 @@ mod windows_process_probe {
 
     #[derive(Default)]
     struct Shared {
-        /// Shells asked about since the last pass.  Taken rather than kept, so
+        /// Shells asked about since the last pass. Taken rather than kept, so
         /// a window nobody is drawing costs nothing: with no frames there are
         /// no probes, and the refresher blocks instead of enumerating.
         wanted: BTreeSet<u32>,
@@ -761,7 +761,7 @@ mod windows_process_probe {
     static WANTED: Condvar = Condvar::new();
 
     /// The last published signals for `shell_pid`, defaulting to "nothing
-    /// running" until the refresher has seen it.  Registers the shell so the
+    /// running" until the refresher has seen it. Registers the shell so the
     /// next pass covers it.
     pub(super) fn probe(shell_pid: u32) -> Signals {
         let mut shared = shared_with_refresher();
@@ -931,7 +931,7 @@ mod windows_process_probe {
     }
 
     /// The agent remembered for `shell_pid`, or `None` when the tree has
-    /// changed since it was taken and the scan has to run again.  Fetching
+    /// changed since it was taken and the scan has to run again. Fetching
     /// command lines is the expensive half of a pass, and its answer can only
     /// change when the descendant set does.
     pub(super) fn remembered_agent(

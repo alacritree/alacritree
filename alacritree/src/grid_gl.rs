@@ -2,17 +2,17 @@
 //!
 //! epaint takes a mesh, but it takes it by copying every vertex into its own
 //! buffer, and a full screen is a hundred thousand vertices the CPU wrote only
-//! so the GPU could read them back.  A paint callback hands the frame straight
+//! so the GPU could read them back. A paint callback hands the frame straight
 //! to OpenGL instead: epaint sees one shape with no geometry, and the vertex
 //! shader derives each quad from a twelve-byte cell record.
 //!
-//! Nothing here owns a glyph atlas.  `egui_glow::Painter::texture` hands over
+//! Nothing here owns a glyph atlas. `egui_glow::Painter::texture` hands over
 //! the raw texture epaint already packed its glyphs into, so the shader samples
 //! the same artwork egui's own text shapes do.
 //!
 //! Three draws over one buffer, none of them carrying any geometry: a quad
 //! instanced once per cell for the backgrounds, the same again for the glyphs,
-//! then a band per cell for underlines and strikeouts.  Decorations go last
+//! then a band per cell for underlines and strikeouts. Decorations go last
 //! because alacritty draws its rects over the text (`display::draw`), so a
 //! descender crossing an underline has to come out the same way here.
 //! Emoji, box-drawing glyphs and over-wide icons are rare, and each needs its
@@ -41,7 +41,7 @@ const ATTRIBUTES: [(u32, &str); 4] = [(0, "a_slot"), (1, "a_fg"), (2, "a_bg"), (
 /// The image program's attributes, read from an [`ImageQuad`].
 const IMAGE_ATTRIBUTES: [(u32, &str); 2] = [(0, "a_dest"), (1, "a_src")];
 
-/// Slots packed across a texture row, two RGBA32F texels each.  A row per
+/// Slots packed across a texture row, two RGBA32F texels each. A row per
 /// slot would cap the table at the 2048 rows a driver is obliged to offer,
 /// which a screen of CJK or Nerd Font icons reaches; packing sideways puts the
 /// ceiling back on the u16 slot index, where the table already enforces it.
@@ -56,11 +56,11 @@ pub(crate) struct Frame {
     /// `font.glyph_offset`, in points.
     pub glyph_offset: [f32; 2],
     pub grid: [u32; 2],
-    /// The decoration strip, and how many tiles wide it is.  `None` leaves
+    /// The decoration strip, and how many tiles wide it is. `None` leaves
     /// the decoration pass unrun, which is what a grid with no font yet has.
     pub decorations: Option<egui::TextureId>,
     pub decoration_tiles: u32,
-    /// The terminal's own background, as the clear colour.  A grid rect is
+    /// The terminal's own background, as the clear colour. A grid rect is
     /// rarely an exact multiple of a cell, and the cell quads stop at the last
     /// whole one, so the strip past it is filled by clearing rather than by a
     /// shape epaint would have to tessellate every frame.
@@ -78,7 +78,7 @@ pub(crate) struct GridState {
     /// The rasterized decoration styles, rebuilt when the cell changes size.
     pub decorations: DecorationAtlas,
     pub frame: Frame,
-    /// Rows rewritten since the last upload, as a half-open range.  Empty
+    /// Rows rewritten since the last upload, as a half-open range. Empty
     /// means the GPU copy is already current and only uniforms need sending.
     pub dirty_rows: std::ops::Range<usize>,
     /// The kitty graphics placements on screen. Rebuild it in place with
@@ -117,7 +117,7 @@ impl GridState {
 pub(crate) struct GpuGrid {
     pub state: Arc<Mutex<GridState>>,
     gl: Arc<Mutex<GlSlot>>,
-    /// Left by the paint callback for the next frame to report.  Only the
+    /// Left by the paint callback for the next frame to report. Only the
     /// callback holds a `glow::Context`, so the frame that asked for the grid
     /// has already been built by the time the build fails.
     build_error: Arc<Mutex<Option<BuildError>>>,
@@ -137,7 +137,7 @@ pub(crate) enum BuildError {
     Link(String),
 }
 
-/// Building the GL side is attempted exactly once.  A driver that rejects the
+/// Building the GL side is attempted exactly once. A driver that rejects the
 /// shaders rejects them every frame, and each attempt allocates before it
 /// discovers that, so a retrying build is a leak with no visible cause.
 enum GlSlot {
@@ -160,14 +160,14 @@ impl GpuGrid {
         self.build_error.lock().expect("grid build error").take()
     }
 
-    /// Stand in for a driver that rejects the grid.  Nothing headless has a
+    /// Stand in for a driver that rejects the grid. Nothing headless has a
     /// `glow::Context` for the callback to fail against.
     #[cfg(test)]
     pub(crate) fn fail_build(&self, err: BuildError) {
         *self.build_error.lock().expect("grid build error") = Some(err);
     }
 
-    /// The shape to hand egui.  Everything it draws comes from `state`, which
+    /// The shape to hand egui. Everything it draws comes from `state`, which
     /// the caller has already written this frame — except the atlas size,
     /// which only the atlas live at paint time can give.
     pub(crate) fn callback(&self, rect: Rect, ctx: &egui::Context, time_gpu: bool) -> egui::Shape {
@@ -196,7 +196,7 @@ impl GpuGrid {
                 let mut state = state.lock().expect("grid state");
                 let atlas = painter.texture(egui::TextureId::default());
                 // A slot holds texels, and egui normalizes every uv against
-                // the size the atlas ended the frame at.  Laying a glyph out
+                // the size the atlas ended the frame at. Laying a glyph out
                 // doubles that atlas when it runs out of room, so a size read
                 // while the frame was still being built leaves the shader
                 // dividing texels by half an atlas.
@@ -360,7 +360,7 @@ impl GlResources {
             timers.begin_whole(gl);
         }
         unsafe {
-            // Nothing clears the grid's rect here.  eframe clears the whole
+            // Nothing clears the grid's rect here. eframe clears the whole
             // framebuffer to the terminal's background before the callback
             // runs, which is the colour a collapsed cell is supposed to show,
             // and a second `glClear` under egui's scissor cost 100us and
@@ -440,7 +440,7 @@ impl GlResources {
             let generation = state.table.generation();
             if generation != state.uploaded_generation {
                 // Two RGBA32F texels per slot: the atlas rectangle, then where
-                // it sits in the cell and how big it is drawn.  The tail of the
+                // it sits in the cell and how big it is drawn. The tail of the
                 // last row is padded out because a texture upload wants every
                 // texel it declared; the shader never reads it.
                 let rows = pad_slots(state.table.slots(), &mut self.slot_scratch);
@@ -547,7 +547,7 @@ impl GlResources {
     }
 
     /// Point every attribute at the one record buffer, advancing once per
-    /// cell.  Both programs read from here; each ignores the fields it has no
+    /// cell. Both programs read from here; each ignores the fields it has no
     /// input for.
     unsafe fn bind_records(&self, gl: &glow::Context) {
         unsafe {
@@ -567,7 +567,7 @@ impl GlResources {
         }
     }
 
-    /// The cell backgrounds, one instance per cell.  A cell still carrying
+    /// The cell backgrounds, one instance per cell. A cell still carrying
     /// `default_bg` collapses in the vertex shader, because eframe's clear
     /// already painted the whole framebuffer that colour; alacritty reaches the
     /// same end by giving such a cell zero alpha and discarding it in the
@@ -590,7 +590,7 @@ impl GlResources {
         }
     }
 
-    /// Underlines and strikeouts, one instance per cell.  An undecorated cell
+    /// Underlines and strikeouts, one instance per cell. An undecorated cell
     /// collapses in the vertex shader, so the pass costs the instance count
     /// however few cells carry a line — which is why the caller skips it
     /// outright on a screen that carries none.
@@ -688,7 +688,7 @@ fn bytemuck_cast<T>(slice: &[T]) -> &[u8] {
     unsafe { std::slice::from_raw_parts(slice.as_ptr().cast::<u8>(), std::mem::size_of_val(slice)) }
 }
 
-/// Give back everything a failed `link` created.  Deleting the program
+/// Give back everything a failed `link` created. Deleting the program
 /// detaches whatever is still attached to it, so the shaders flagged here are
 /// released either way.
 unsafe fn discard(gl: &glow::Context, program: glow::Program, shaders: &[glow::Shader]) {
@@ -769,7 +769,7 @@ in vec4 a_fg;
 
 out vec2 v_uv;
 // Per-instance, so every vertex of the quad carries the same colour and
-// interpolating it would compute a constant.  Alacritty qualifies the same
+// interpolating it would compute a constant. Alacritty qualifies the same
 // values the same way (`res/glsl3/text.v.glsl`).
 flat out vec4 v_fg;
 
@@ -802,11 +802,11 @@ flat in vec4 v_fg;
 out vec4 f_color;
 
 void main() {
-    // Only alpha carries coverage, the same as the decoration strip.  epaint
+    // Only alpha carries coverage, the same as the decoration strip. epaint
     // writes every font texel as `from_rgba_premultiplied(a, a, a, a)` and
     // colour glyphs never reach this pass, so the colour channels hold nothing
     // alpha does not, and alpha is stored linearly whatever the driver did to
-    // them.  egui converts all three back to gamma because its shader also
+    // them. egui converts all three back to gamma because its shader also
     // draws images, where they differ.
     //
     // Multiplied in gamma space, the same as egui's own text shader: it is the
@@ -828,7 +828,7 @@ flat out vec4 v_bg;
 
 void main() {
     // The whole grid rect was cleared to the default background, so a cell
-    // still carrying it would repaint what is already there.  Collapsing to a
+    // still carrying it would repaint what is already there. Collapsing to a
     // point costs one compare instead of a cell of fragments.
     vec2 size = a_bg == u_default_bg ? vec2(0.0) : u_cell;
 
@@ -957,7 +957,7 @@ mod tests {
     /// Why the atlas size is read in the paint callback and not while the
     /// frame is built: laying glyphs out doubles the atlas when it runs out of
     /// room, and egui normalizes every uv against the size the atlas ended the
-    /// frame at.  A size read before the grid's own layout would be half the
+    /// frame at. A size read before the grid's own layout would be half the
     /// truth, and every glyph would sample from the wrong place.
     #[test]
     fn laying_glyphs_out_can_grow_the_atlas_mid_frame() {

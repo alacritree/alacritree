@@ -30,7 +30,7 @@ use crate::{colors, osc, scratchpad};
 pub(crate) struct EventProxy<R> {
     repaint: R,
     sender: mpsc::Sender<TermEvent>,
-    /// Whether this session's grid is the one on screen.  Read from the PTY
+    /// Whether this session's grid is the one on screen. Read from the PTY
     /// thread on every event, written by the UI thread once per frame.
     visible: Arc<AtomicBool>,
     /// `None` for a session with no PTY, whose OSC events are dropped.
@@ -79,10 +79,10 @@ impl<R: Repaint> EventProxy<R> {
 }
 
 /// Whether an event carries something a frame has to act on, rather than just
-/// reporting that the grid changed.  `Wakeup` and `MouseCursorDirty` carry no
+/// reporting that the grid changed. `Wakeup` and `MouseCursorDirty` carry no
 /// payload: the grid they announce was already updated under the terminal
 /// lock, and the mouse icon is recomputed from hover state every frame, so a
-/// repaint is the whole of their effect.  Every other event has one a frame
+/// repaint is the whole of their effect. Every other event has one a frame
 /// must observe: titles and bells reach the sidebar, exits close a tab, and
 /// PTY replies are what the asking program is blocked on until a frame drains
 /// them.
@@ -125,7 +125,7 @@ impl<R: Repaint> EventListener for EventProxy<R> {
             self.route_osc(osc::OscFilter::exited);
         }
         // A hidden session's grid is not on screen, so a repaint for it would
-        // redraw the *visible* session to the same pixels.  Nothing then
+        // redraw the *visible* session to the same pixels. Nothing then
         // drains the channel either, which is why the payload-free events must
         // not enter it: a background agent streaming output would grow it for
         // as long as the window stayed idle.
@@ -196,8 +196,8 @@ pub(crate) enum SessionKind {
     Tasks,
 }
 
-/// What an agent is doing right now.  Mutually exclusive and recomputed from
-/// whatever signal the session has, so nothing here latches.  The two flags
+/// What an agent is doing right now. Mutually exclusive and recomputed from
+/// whatever signal the session has, so nothing here latches. The two flags
 /// that do, `Session::done` and `Session::needs_attention`, are a separate
 /// axis; [`ShownState`] folds them into the one mark a row draws.
 ///
@@ -215,7 +215,7 @@ pub(crate) enum LiveState {
     /// A spinner in the title is the cross-agent signal for active
     /// work, so an unrecognized agent can report working too.
     Working,
-    /// An approval or permission dialog is on screen right now.  Unlike the
+    /// An approval or permission dialog is on screen right now. Unlike the
     /// latched attention flag, this clears itself when the dialog does, so an
     /// agent that auto-approves after you walk away stops claiming to want
     /// you. Only a watcher outside the pane or the program's own OSC 7501
@@ -251,8 +251,8 @@ impl LiveState {
 }
 
 /// The one mark a status slot draws: the live state and the two latches,
-/// folded.  Ordered quietest first, so the loudest thing true of a session is
-/// the `max`.  A latch that a louder state hides stays set, and shows once
+/// folded. Ordered quietest first, so the loudest thing true of a session is
+/// the `max`. A latch that a louder state hides stays set, and shows once
 /// that state clears unless the user looks first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum ShownState {
@@ -269,7 +269,7 @@ pub(crate) enum ShownState {
 }
 
 impl ShownState {
-    /// `None` only for a plain shell with nothing latched.  A shell can be
+    /// `None` only for a plain shell with nothing latched. A shell can be
     /// pinged, but `done` belongs to an agent's turn, so it needs `live`.
     pub(crate) fn of(live: Option<LiveState>, done: bool, pinged: bool) -> Option<Self> {
         let done = (done && live.is_some()).then_some(Self::Done);
@@ -318,9 +318,9 @@ impl From<LiveState> for ShownState {
     }
 }
 
-/// What the sidebar needs to communicate about a live session.  Presence is a
+/// What the sidebar needs to communicate about a live session. Presence is a
 /// gate rather than a state: a plain shell has no agent, so there is no agent
-/// state to draw.  Agent identity remains available for hover text, but every
+/// state to draw. Agent identity remains available for hover text, but every
 /// agent shares the same visual language instead of each CLI bringing its own
 /// status glyph.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -360,7 +360,7 @@ impl SessionActivity {
         }
     }
 
-    /// The same agent, re-reported as doing something else.  A plain shell
+    /// The same agent, re-reported as doing something else. A plain shell
     /// gains the gate: whoever supplies a live state has already established
     /// that an agent is there.
     pub(crate) fn with_live(self, live: LiveState) -> Self {
@@ -405,10 +405,10 @@ pub(crate) struct Session<R: Repaint> {
     /// Cleared when the user views this session.
     pub needs_attention: bool,
     /// Latched finish: the agent's spinner stopped while the user was not
-    /// looking.  Cleared when the user views this session or the agent goes
+    /// looking. Cleared when the user views this session or the agent goes
     /// back to work.
     pub done: bool,
-    /// Triggers not yet surfaced.  `None` once they fire, cancel, or the user
+    /// Triggers not yet surfaced. `None` once they fire, cancel, or the user
     /// views the session.
     pub pending_attention: Option<PendingAttention>,
     /// Sub-cell wheel residue (logical points), retained across frames so that
@@ -441,13 +441,13 @@ pub(crate) struct Session<R: Repaint> {
     proxy: EventProxy<R>,
     exit_status: Option<ExitStatus>,
     /// Set when this session is a shell attached to a multiplexer's pane, so
-    /// the sidebar draws one row for that pane rather than two.  Dies with the
+    /// the sidebar draws one row for that pane rather than two. Dies with the
     /// session, which is why it lives here and not in a map.
     pub pane_key: Option<PaneKey>,
     /// Inventories started before this binding cannot establish its absence.
     pub pane_bound_at: Option<Instant>,
     /// Whether this session shares the multiplexer's whole view rather than
-    /// drawing one pane of its own.  Settled when the attach chose its client
+    /// drawing one pane of its own. Settled when the attach chose its client
     /// and recorded rather than recomputed, because a pane that gains or
     /// loses an agent afterwards does not change what the running client
     /// draws.
@@ -500,15 +500,15 @@ pub(crate) struct DrainOutcome {
     pub reported: bool,
     /// Newest explicit OSC 9 or OSC 777 notification body in this drain.
     pub notification: Option<String>,
-    /// OSC 52 read requests.  Answered by the caller for the same reason
+    /// OSC 52 read requests. Answered by the caller for the same reason
     /// copied text is written there: the drain stays free of OS clipboard
     /// access.
     pub clipboard_reads: Vec<(Target, ClipboardFormatter)>,
-    /// Text the app copied with OSC 52.  Carried out to the caller rather than
+    /// Text the app copied with OSC 52. Carried out to the caller rather than
     /// written here so the drain — which runs once per frame for every session
     /// — stays free of OS clipboard access.
     pub clipboard: Vec<(Target, String)>,
-    /// Set on the batch that carried the child's exit.  It is the one moment a
+    /// Set on the batch that carried the child's exit. It is the one moment a
     /// held session can be written to: the exit arrives after the child's last
     /// output, and every later frame would append the notice again.
     pub exited: bool,
@@ -525,7 +525,7 @@ fn truncate_notification(mut body: String) -> String {
 }
 
 /// Bytes answering an OSC colour query, or `None` when the query has no
-/// answer and the sender should be left to its own default.  `format` is the
+/// answer and the sender should be left to its own default. `format` is the
 /// terminal's own response builder, so the reply carries whatever prefix and
 /// string terminator the query arrived with.
 fn color_query_reply(
@@ -549,11 +549,11 @@ fn text_area_size_reply(
     format(window_size(size, cell_size)).into_bytes()
 }
 
-/// Heuristic for "this title looks like a working/spinner state".  Matches
+/// Heuristic for "this title looks like a working/spinner state". Matches
 /// any title containing a Braille glyph (`U+2800..=U+28FF`), which is the
 /// near-universal spinner alphabet (codex, oh-my-posh, ollama, cargo's
 /// progress indicator, etc.), or one led by a half-filled circle
-/// (`◐◓◑◒`, `U+25D0..=U+25D3`), which Claude Code rotates instead.  The
+/// (`◐◓◑◒`, `U+25D0..=U+25D3`), which Claude Code rotates instead. The
 /// circles only count as the leading glyph, since they also turn up in
 /// ordinary text.
 fn is_spinner_title(title: &str) -> bool {
@@ -570,13 +570,13 @@ pub(crate) struct PendingAttention {
     pub finished: bool,
     pub rang: bool,
     pub reported: bool,
-    /// An explicit notification arrived.  Its body is the session's
+    /// An explicit notification arrived. Its body is the session's
     /// `last_notification`, so a burst coalesces to the newest one.
     pub notified: bool,
 }
 
 impl PendingAttention {
-    /// Folds one drain's triggers into what is already held.  The earliest
+    /// Folds one drain's triggers into what is already held. The earliest
     /// arrival is kept, so a stream of bells cannot keep restarting the grace
     /// window.
     pub(crate) fn merge(held: Option<Self>, drained: &DrainOutcome, now: Instant) -> Option<Self> {
@@ -609,13 +609,13 @@ pub(crate) enum AttentionVerdict {
     Cancel,
 }
 
-/// Debounce for attention triggers.  Agent CLIs driven by an orchestrator
+/// Debounce for attention triggers. Agent CLIs driven by an orchestrator
 /// (e.g. Claude Code running a multi-task workflow) ring BEL and drop their
 /// spinner title at every task boundary, then resume on their own, so an
-/// immediate ping per boundary is noise.  A trigger only fires if the session
-/// stays out of `Working` for the whole grace window.  `Blocked` does not
+/// immediate ping per boundary is noise. A trigger only fires if the session
+/// stays out of `Working` for the whole grace window. `Blocked` does not
 /// cancel: a dialog waiting on the user is a reason to ping, not a sign of
-/// work.  Zero grace disables the debounce and fires on the trigger frame.
+/// work. Zero grace disables the debounce and fires on the trigger frame.
 pub(crate) fn poll_attention_debounce(
     since: Instant,
     now: Instant,
@@ -718,7 +718,7 @@ pub(crate) fn term_config(config: &Config) -> TermConfig {
         osc52: config.osc52,
         // `Term` drops every kitty keyboard request — push, pop, and the
         // support query — unless this is set, so without it an app never gets
-        // to enable the protocol and modified keys stay legacy.  alacritty
+        // to enable the protocol and modified keys stay legacy. alacritty
         // enables it unconditionally too (config/ui_config.rs `term_options`).
         kitty_keyboard: true,
         version_report: concat!("alacritree ", env!("CARGO_PKG_VERSION")).to_owned(),
@@ -728,7 +728,7 @@ pub(crate) fn term_config(config: &Config) -> TermConfig {
 
 /// The directory the PTY starts in: an explicit workspace dir always wins,
 /// then `[general] working_directory` fills in for sessions without one (the
-/// home tab).  A configured dir that does not exist is dropped with a warning
+/// home tab). A configured dir that does not exist is dropped with a warning
 /// rather than failing the spawn — a stale config value must not stop the
 /// home tab from opening (alacritty ignores an invalid `--working-directory`
 /// the same way).
@@ -1029,7 +1029,7 @@ impl<R: Repaint> Session<R> {
     }
 
     /// A pending session running `program args` instead of the user's shell,
-    /// without opening its PTY.  The git sidebar drops into `delta` this way
+    /// without opening its PTY. The git sidebar drops into `delta` this way
     /// for an inline diff view; once the command exits, `reap_exited_sessions`
     /// removes the tab.
     #[allow(clippy::too_many_arguments)]
@@ -1060,7 +1060,7 @@ impl<R: Repaint> Session<R> {
     }
 
     /// The half of a session that costs nothing: ids, the grid, the event
-    /// channel and the arguments its PTY will be opened with.  Cheap enough
+    /// channel and the arguments its PTY will be opened with. Cheap enough
     /// for a frame, which is the whole point of the split.
     #[allow(clippy::too_many_arguments)]
     fn pending(
@@ -1225,7 +1225,7 @@ impl<R: Repaint> Session<R> {
         }
     }
 
-    /// Mark whether this session's grid is the one being painted.  Output from
+    /// Mark whether this session's grid is the one being painted. Output from
     /// a session that isn't stops waking the UI loop, so a busy agent in a
     /// background tab no longer costs a full repaint per chunk of output.
     pub(crate) fn set_visible(&self, visible: bool) {
@@ -1280,7 +1280,7 @@ impl<R: Repaint> Session<R> {
         self.pending_writes.is_some()
     }
 
-    /// Pull every pending event out of the PTY channel.  Called once per frame
+    /// Pull every pending event out of the PTY channel. Called once per frame
     /// for every session — including background ones — so bells, title
     /// changes, and child-exits from non-visible sessions don't pile up.
     /// Hands the session an event as if its terminal had raised it, for a
@@ -1297,10 +1297,10 @@ impl<R: Repaint> Session<R> {
         let title_pinned = matches!(self.kind, SessionKind::Diff { .. });
         while let Ok(event) = self.events.try_recv() {
             match event {
-                // OSC 4 / 10 / 11 / 12.  Programs that ask the terminal for its
+                // OSC 4 / 10 / 11 / 12. Programs that ask the terminal for its
                 // palette (delta, vim, terminal-colorsaurus) block on the reply,
                 // so leaving the query unanswered costs them a timeout on every
-                // run rather than degrading gracefully.  Answered here rather
+                // run rather than degrading gracefully. Answered here rather
                 // than in apply_term_event, which stays free of the term lock
                 // the live palette sits behind.
                 TermEvent::ColorRequest(index, format) => {
@@ -1391,18 +1391,18 @@ impl<R: Repaint> Session<R> {
         self.exit_status.is_some()
     }
 
-    /// Whether an exited child left cleanly.  A herdr agent that refuses to
+    /// Whether an exited child left cleanly. A herdr agent that refuses to
     /// attach exits within a frame, and only a non-zero exit distinguishes
     /// that refusal from an ordinary shell the user closed.
     pub(crate) fn exit_was_clean(&self) -> bool {
         self.exit_status.is_none_or(|status| status.success())
     }
 
-    /// Whether `reap_exited_sessions` should close this session.  A refused
+    /// Whether `reap_exited_sessions` should close this session. A refused
     /// attach — the agent already has a client, or herdr refuses on this
     /// platform — exits within a frame; reaping it would take herdr's
     /// message with it and leave only a flash, so a session holding a herdr
-    /// key stays until the user closes it, unless it exited cleanly.  That
+    /// key stays until the user closes it, unless it exited cleanly. That
     /// carve-out outranks `hold`, which only ever widens what is held.
     pub(crate) fn should_reap(&self, hold: HoldExitedSessions) -> bool {
         if !self.is_exited() {
@@ -1424,7 +1424,7 @@ impl<R: Repaint> Session<R> {
         Processor::<StdSyncHandler>::new().advance(&mut *term, &hold_notice_bytes(chord));
     }
 
-    /// The distro a shimmed WSL session runs in.  Dropped paths need it to
+    /// The distro a shimmed WSL session runs in. Dropped paths need it to
     /// decide whether a `C:\` path has to be rewritten before a shell sees it.
     pub(crate) fn wsl_distro(&self) -> Option<&str> {
         self.wsl_distro.as_deref()
@@ -1475,12 +1475,12 @@ impl<R: Repaint> Session<R> {
     }
 
     /// Whether a split-managing TUI (vim, tmux) is running in this terminal
-    /// — the FocusLeft/FocusRight passthrough signal.  Identity comes from
+    /// — the FocusLeft/FocusRight passthrough signal. Identity comes from
     /// the process probe rather than the terminal title: a title-based
     /// signal needs every cooperating program to publish a recognizable
     /// value, and Windows' ConPTY interleaves the console title into the
     /// stream, so a launcher touching it after vim starts clobbers vim's
-    /// own title until vim re-emits it.  A direct herdr attach is excluded:
+    /// own title until vim re-emits it. A direct herdr attach is excluded:
     /// it runs as `herdr` but draws one agent with no splits to hand back.
     pub(crate) fn nav_tui_running(&self) -> bool {
         if self.scratchpad.is_some()
@@ -1493,7 +1493,7 @@ impl<R: Repaint> Session<R> {
     }
 
     /// Text dump of the visible screen plus up to `scrollback_lines` of
-    /// history above it.  Reads the live (unscrolled) screen regardless of
+    /// history above it. Reads the live (unscrolled) screen regardless of
     /// the user's display offset so IPC clients always see where output and
     /// the cursor actually are.
     pub(crate) fn screen_snapshot(&self, scrollback_lines: usize) -> ScreenSnapshot {
@@ -1554,7 +1554,7 @@ impl<R: Repaint> Session<R> {
     }
 }
 
-/// Apply one terminal event, returning any bytes owed back to the PTY.  Free
+/// Apply one terminal event, returning any bytes owed back to the PTY. Free
 /// of `Session` so the classification stays testable without spawning a shell.
 fn apply_term_event(
     event: TermEvent,
@@ -1579,11 +1579,11 @@ fn apply_term_event(
             outcome.exited = true;
         },
         TermEvent::Bell => outcome.rang = true,
-        // OSC 52.  Apps that copy this way (Claude Code, tmux, vim) get no
+        // OSC 52. Apps that copy this way (Claude Code, tmux, vim) get no
         // acknowledgement, so dropping it leaves them reporting a successful
         // copy while the system clipboard keeps its previous contents.
         TermEvent::ClipboardStore(ty, text) => outcome.clipboard.push((clipboard_target(ty), text)),
-        // OSC 52 read.  `Term` only emits this once the config allows it, so
+        // OSC 52 read. `Term` only emits this once the config allows it, so
         // reaching here means the user opted in.
         TermEvent::ClipboardLoad(ty, format) => {
             outcome.clipboard_reads.push((clipboard_target(ty), format))
@@ -1593,7 +1593,7 @@ fn apply_term_event(
     None
 }
 
-/// The line a held session ends on.  It is written into the grid rather than
+/// The line a held session ends on. It is written into the grid rather than
 /// painted as chrome so it scrolls with the output it explains and can be
 /// selected and copied like any other line.
 ///
@@ -1607,10 +1607,10 @@ fn hold_notice(chord: Option<&str>) -> String {
     }
 }
 
-/// The notice as the parser receives it.  A fresh `Processor` resets parser
+/// The notice as the parser receives it. A fresh `Processor` resets parser
 /// state but not the terminal's cursor template, so a child that died in
 /// reverse video or `ESC[8m` would otherwise paint the notice in its pen —
-/// invisibly, in the worst case.  wezterm's `emit_output_for_pane` leads with
+/// invisibly, in the worst case. wezterm's `emit_output_for_pane` leads with
 /// the same reset for the same reason.
 fn hold_notice_bytes(chord: Option<&str>) -> Vec<u8> {
     format!("\x1b[0m\r\n{}\r\n", hold_notice(chord)).into_bytes()
@@ -1655,9 +1655,9 @@ pub(crate) mod tests {
     use alacritree_session_backend::{Call, Scripted, SessionBackend};
 
     /// A repainted frame costs a full grid paint of whatever session is on
-    /// screen — milliseconds, at a maximized window.  Output from a session
+    /// screen — milliseconds, at a maximized window. Output from a session
     /// the user cannot see changes nothing about that frame, so waking the UI
-    /// for it spends that cost to draw the same pixels again.  Several busy
+    /// for it spends that cost to draw the same pixels again. Several busy
     /// agents in background tabs is enough to keep the loop saturated, which
     /// is what typing then queues behind.
     #[test]
@@ -1762,7 +1762,7 @@ pub(crate) mod tests {
         );
     }
 
-    /// Only grid content is invisible while a session is off-screen.  Titles
+    /// Only grid content is invisible while a session is off-screen. Titles
     /// and bells drive the sidebar, and PTY replies block the program that
     /// asked until a frame drains them, so those still have to wake the loop.
     /// A spinner giving way to a plain title is how an agent signals it is
@@ -1807,7 +1807,7 @@ pub(crate) mod tests {
     }
 
     /// Nothing drains a hidden session's channel, because nothing wakes the
-    /// loop for it.  Payload-free wakeups therefore cannot go in: a background
+    /// loop for it. Payload-free wakeups therefore cannot go in: a background
     /// agent streaming output would grow the channel for as long as the window
     /// stays idle, and the next frame would have to pop all of it.
     #[test]
@@ -1823,9 +1823,9 @@ pub(crate) mod tests {
         assert_eq!(events.try_iter().count(), 0);
     }
 
-    /// OSC 52 is how Claude Code, tmux and vim copy.  The sequence is
+    /// OSC 52 is how Claude Code, tmux and vim copy. The sequence is
     /// fire-and-forget — the app reports a successful copy either way — so a
-    /// dropped `ClipboardStore` shows up only as a stale paste later.  Drives
+    /// dropped `ClipboardStore` shows up only as a stale paste later. Drives
     /// the real sequence through a real terminal into the real drain.
     #[test]
     fn osc52_copy_is_carried_out_to_the_clipboard() {
@@ -2366,7 +2366,7 @@ pub(crate) mod tests {
     }
 
     /// A session with no PTY behind it, so an injected sequence is the only
-    /// event there is to drain.  A real child has to be waited out first, and
+    /// event there is to drain. A real child has to be waited out first, and
     /// on Windows its ConPTY publishes a startup title of its own that would
     /// race the injected one.
     fn pty_less_probe(kind: SessionKind, title: &str) -> Session<Recorder> {
@@ -2425,7 +2425,7 @@ pub(crate) mod tests {
 
     /// ConPTY defaults a child's console title to its command line and publishes
     /// it as OSC 0, so a diff pane on Windows renamed itself after git's exe
-    /// path.  A diff pane's title is set by alacritree and never means to change.
+    /// path. A diff pane's title is set by alacritree and never means to change.
     #[test]
     fn a_diff_panes_title_survives_a_title_sequence() {
         let session =
@@ -2445,7 +2445,7 @@ pub(crate) mod tests {
         assert_eq!(title_after_osc(session, "nvim src/app.rs"), "nvim src/app.rs");
     }
 
-    /// Pinning suppresses one event arm, not the drain.  A bell in a diff pane
+    /// Pinning suppresses one event arm, not the drain. A bell in a diff pane
     /// still raises attention and a child exit still reaps the pane.
     #[test]
     fn a_pinned_session_still_reports_bells_and_exit() {
@@ -2479,7 +2479,7 @@ pub(crate) mod tests {
     }
 
     /// A refused herdr attach exits non-zero; an ordinary shell the user
-    /// closed exits zero.  `reap_exited_sessions` tells them apart by this.
+    /// closed exits zero. `reap_exited_sessions` tells them apart by this.
     #[test]
     fn exit_was_clean_reflects_the_captured_status() {
         #[cfg(not(windows))]
@@ -2693,9 +2693,9 @@ pub(crate) mod tests {
     /// The wheel scrolls a diff pane only because its pager sits on the alternate
     /// screen: `terminal_view::apply_scroll` emits arrow keys for `ALT_SCREEN |
     /// ALTERNATE_SCROLL` and otherwise falls back to a scrollback the pager
-    /// repaints over rather than fills.  git hands its pager `LESS=FRX`, whose `X`
+    /// repaints over rather than fills. git hands its pager `LESS=FRX`, whose `X`
     /// (`--no-init`) suppresses that screen, so a diff pane's `LESS` must not carry
-    /// it.  Drives a real pager through a real PTY and reads the negotiated mode.
+    /// it. Drives a real pager through a real PTY and reads the negotiated mode.
     #[cfg(unix)]
     #[test]
     fn a_diff_panes_pager_runs_on_the_alternate_screen() {
@@ -2748,9 +2748,9 @@ pub(crate) mod tests {
     /// Windows has no real readiness for the console pipe, so the reader
     /// emulates it: a completion packet is posted from the waker `piper`
     /// holds, and `piper` installs that waker only when a drain comes up
-    /// empty.  A read burst that stops at `MAX_LOCKED_READ` with more still
+    /// empty. A read burst that stops at `MAX_LOCKED_READ` with more still
     /// buffered therefore leaves nothing able to announce the rest, and the
-    /// loop sleeps until an unrelated event arrives.  A keystroke is one; a
+    /// loop sleeps until an unrelated event arrives. A keystroke is one; a
     /// benchmark writing megabytes is not, so its output stalls until the
     /// user types.
     #[cfg(windows)]
@@ -2760,10 +2760,10 @@ pub(crate) mod tests {
 
         // Writing to the standard output handle rather than `Console.Out`,
         // because the stall needs one drain to come back holding more than
-        // `MAX_LOCKED_READ`.  `Console.Out` is a `StreamWriter` and hands the
+        // `MAX_LOCKED_READ`. `Console.Out` is a `StreamWriter` and hands the
         // console a few hundred bytes at a time however large the string is,
         // which the reader keeps up with; the handle takes the whole buffer in
-        // one write.  This is also why a program printing line by line never
+        // one write. This is also why a program printing line by line never
         // stalls and an ordinary shell session looks fine.
         let script =
             std::env::temp_dir().join(format!("alacritree-burst-{}.ps1", std::process::id()));
@@ -2820,7 +2820,7 @@ pub(crate) mod tests {
     ///
     /// Exits with the error code `LoadLibraryW("conpty.dll")` failed with, or 0
     /// if it loaded something, so the parent can tell a loader that reached
-    /// PATH from one that did not.  `ALACRITREE_PROBE_HARDEN` picks the arm; it
+    /// PATH from one that did not. `ALACRITREE_PROBE_HARDEN` picks the arm; it
     /// has to be a child because `SetDefaultDllDirectories` is process-wide and
     /// cannot be undone, and every other test in this binary may already have
     /// called it.
@@ -2849,9 +2849,9 @@ pub(crate) mod tests {
     /// `alacritty_terminal` opens a pseudoconsole through
     /// `LoadLibraryW("conpty.dll")`, and Windows ships no `conpty.dll` of its
     /// own, so that bare name matches nothing until some other terminal's
-    /// install directory is on PATH.  WezTerm ships one whose console server
+    /// install directory is on PATH. WezTerm ships one whose console server
     /// blocks the child for three seconds waiting on a device-attributes reply,
-    /// which reads as a stall opening every pane.  `harden_dll_search_path`
+    /// which reads as a stall opening every pane. `harden_dll_search_path`
     /// drops PATH from the search order to keep it out.
     ///
     /// A file named `conpty.dll` that is not a module separates the two loader
@@ -2937,7 +2937,7 @@ pub(crate) mod tests {
         // Waiting for the child's exit event first would put the pty event
         // loop's own scheduling inside the deadline alongside the write, and a
         // loaded machine can spend longer delivering that event than the child
-        // spent running.  The file is what the assertion needs, so polling it
+        // spent running. The file is what the assertion needs, so polling it
         // ends the wait as soon as the answer exists.
         let probe = dir.path().join("cwd-probe.txt");
         let deadline = Instant::now() + Duration::from_secs(60);
@@ -3147,7 +3147,7 @@ pub(crate) mod tests {
         assert_eq!(LiveState::Unknown.label(), "unknown");
     }
 
-    /// One mark per row, the loudest thing true of the session.  A latch
+    /// One mark per row, the loudest thing true of the session. A latch
     /// hidden by a louder state is still there once that state clears.
     #[test]
     fn shown_state_ranks_blocked_then_done_then_pinged() {
@@ -3164,7 +3164,7 @@ pub(crate) mod tests {
     }
 
     /// A finished turn belongs to an agent, so a plain shell never shows
-    /// done.  It can still be pinged.
+    /// done. It can still be pinged.
     #[test]
     fn a_shell_shows_only_a_ping() {
         assert_eq!(ShownState::of(None, false, false), None);
@@ -3268,7 +3268,7 @@ pub(crate) mod tests {
     }
 
     /// An agent's title glyph that no probe could confirm is an agent in an
-    /// unknown state.  Once the probe answers without finding one, the title
+    /// unknown state. Once the probe answers without finding one, the title
     /// alone reads idle as before, and a spinner is working either way.
     #[test]
     fn an_unconfirmed_agent_title_reads_unknown_until_the_probe_answers() {
@@ -3318,7 +3318,7 @@ pub(crate) mod tests {
         assert_eq!(env.get("ALACRITREE_SESSION_ID").map(String::as_str), Some("42"));
     }
 
-    /// The `[env]` table is the user's; the id key is ours.  A user-set
+    /// The `[env]` table is the user's; the id key is ours. A user-set
     /// `ALACRITREE_SESSION_ID` would misroute every shell hook, so ours wins.
     #[test]
     fn the_session_id_overrides_a_user_env_entry() {
@@ -3448,7 +3448,7 @@ pub(crate) mod tests {
     }
 
     /// Poll the grid until `needle` appears, or fail saying what was there
-    /// instead.  A deadline rather than a sleep: the shells these tests drive
+    /// instead. A deadline rather than a sleep: the shells these tests drive
     /// take wildly different times to come up on a loaded runner.
     fn grid_contains(session: &Session<impl Repaint>, needle: &str, patience: Duration) -> bool {
         let deadline = Instant::now() + patience;
@@ -3466,7 +3466,7 @@ pub(crate) mod tests {
     }
 
     /// Input typed into a tab whose PTY is still opening has to arrive, and
-    /// in order.  Under load that gap is long enough to swallow a command.
+    /// in order. Under load that gap is long enough to swallow a command.
     #[cfg(windows)]
     #[test]
     fn input_written_before_attach_arrives_before_input_written_after() {
@@ -3498,7 +3498,7 @@ pub(crate) mod tests {
         assert!(alpha < beta, "buffered input was replayed out of order");
     }
 
-    /// A pending session's grid tracks the pane it is drawn in.  Without
+    /// A pending session's grid tracks the pane it is drawn in. Without
     /// this the shell prints its first prompt into a grid that is about to
     /// be reflowed under it.
     #[test]

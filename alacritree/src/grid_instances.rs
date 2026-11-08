@@ -1,12 +1,12 @@
 //! Per-cell instance records for the GPU grid.
 //!
 //! An epaint mesh spends four 20-byte vertices on a cell, and almost all of that
-//! is position arithmetic a vertex shader does for free.  One [`GlyphInstance`]
+//! is position arithmetic a vertex shader does for free. One [`GlyphInstance`]
 //! per cell carries the same information in twelve bytes, so the CPU writes
 //! under a sixth of them and no geometry at all.
 //!
 //! Records are laid out at a fixed `cols` stride with a blank slot for empty
-//! cells, so row `r` always occupies `[r * cols, (r + 1) * cols)`.  That is
+//! cells, so row `r` always occupies `[r * cols, (r + 1) * cols)`. That is
 //! what lets a frame rebuild and upload only the rows the terminal reported
 //! damaged instead of the whole grid.
 
@@ -14,12 +14,12 @@ use egui::{Color32, Galley};
 
 use crate::glyph_cache::{AtlasState, Face, MAX_EXTRA_CELLS};
 
-/// Slot 0 is reserved for a cell with nothing to draw.  Its size is zero, so
+/// Slot 0 is reserved for a cell with nothing to draw. Its size is zero, so
 /// the vertex shader collapses the quad and the rasterizer discards it.
 const BLANK_SLOT: u16 = 0;
 
 /// Where one character's artwork sits in egui's font atlas and where it is
-/// drawn relative to its cell.  Read off a galley epaint laid out, so the
+/// drawn relative to its cell. Read off a galley epaint laid out, so the
 /// atlas stays epaint's and nothing here rasterizes a glyph.
 ///
 /// Lives in the glyph table rather than in the per-cell record: a screen shows
@@ -41,7 +41,7 @@ pub(crate) struct GlyphSlot {
 ///
 /// It carries no coordinates: records sit at a fixed row stride, so the cell a
 /// record belongs to is its own index, which the vertex shader reads from
-/// `gl_InstanceID`.  That also leaves every blank cell holding the same twelve
+/// `gl_InstanceID`. That also leaves every blank cell holding the same twelve
 /// bytes as every other, which is what lets a row be cleared with a fill.
 ///
 /// The background lives here rather than in a buffer of its own, so a frame is
@@ -80,20 +80,20 @@ fn slot_from_galley(galley: &Galley) -> Option<GlyphSlot> {
 ///
 /// The index is a two-level table rather than a map: a terminal asks tens of
 /// thousands of times a frame, and two array loads cost a fraction of a hash
-/// and a probe.  A flat array over every codepoint and face would be megabytes
+/// and a probe. A flat array over every codepoint and face would be megabytes
 /// of mostly-untouched memory, so the low byte of the character picks an entry
 /// within a page and the rest picks the page, which is allocated the first
 /// time a character on it is asked for.
 pub(crate) struct GlyphTable {
     size: f32,
-    /// Where each page starts in `entries`.  Offset zero is the shared page of
+    /// Where each page starts in `entries`. Offset zero is the shared page of
     /// blanks every untouched page points at, so a lookup is two loads with
     /// nothing to branch on.
     page_offset: Vec<u32>,
     entries: Vec<u16>,
     slots: Vec<GlyphSlot>,
     /// The atlas the live slots were read against, once a frame has observed
-    /// one.  `None` before the first `begin_frame`, when nothing is cached.
+    /// one. `None` before the first `begin_frame`, when nothing is cached.
     atlas: Option<AtlasState>,
     /// Bumped whenever `slots` grows, so a renderer holding an uploaded copy
     /// knows to send the new entries without diffing the table.
@@ -134,7 +134,7 @@ impl GlyphTable {
     }
 
     /// Drop every slot the atlas or the font size has outlived, and say
-    /// whether that happened.  Call once per frame ahead of any `slot`.
+    /// whether that happened. Call once per frame ahead of any `slot`.
     ///
     /// A hit returns the cached index without laying the character out again,
     /// so the relayout that `GlyphCache` does on a repack never reaches here.
@@ -154,7 +154,7 @@ impl GlyphTable {
         stale
     }
 
-    /// Drop every slot when the atlas or the font size moves under us.  A slot
+    /// Drop every slot when the atlas or the font size moves under us. A slot
     /// holds texel coordinates, so a repacked atlas leaves every one of them
     /// pointing at whatever landed in its place.
     fn clear(&mut self, size: f32) {
@@ -207,7 +207,7 @@ impl GlyphTable {
 ///
 /// Colour emoji and built-in box-drawing shapes carry their own textures, and
 /// an over-wide icon is placed by the blanks after it, so they go on egui's
-/// painter over the callback rather than through the atlas.  What painting
+/// painter over the callback rather than through the atlas. What painting
 /// needs is kept here because the overlay is repainted every frame while the
 /// records behind it are only rewritten on damage.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -228,7 +228,7 @@ pub(crate) struct Overlay {
 pub(crate) struct GridInstances {
     pub glyphs: Vec<GlyphInstance>,
     /// Per row, so rewriting three rows rescans three rows rather than the
-    /// screen.  Almost always empty: a terminal of text has no emoji in it.
+    /// screen. Almost always empty: a terminal of text has no emoji in it.
     overlays: Vec<Vec<Overlay>>,
     cols: usize,
     rows: usize,
@@ -246,7 +246,7 @@ impl GridInstances {
     ///
     /// Conservative: a decorated run whose cells all landed past the last
     /// column still counts, so the pass runs on a frame that would have drawn
-    /// nothing.  Erring the other way would drop a real underline.
+    /// nothing. Erring the other way would drop a real underline.
     pub(crate) fn any_decorated(&self) -> bool {
         self.deco_rows.contains(&true)
     }
@@ -292,7 +292,7 @@ impl GridInstances {
     }
 
     /// Write every run in `runs` into the rows it covers, clearing those rows
-    /// first.  `runs` must be confined to `rows_touched`.
+    /// first. `runs` must be confined to `rows_touched`.
     ///
     /// Runs arrive as an iterator rather than a slice because the caller's come
     /// out of a `flat_map`, whose `size_hint` floors at zero: collecting them
@@ -401,7 +401,7 @@ mod tests {
     /// `cargo test -p alacritree --release -- --ignored --nocapture report_slot_lookup`
     ///
     /// What one screen's worth of slot lookups costs, split by how many
-    /// distinct characters are on it.  ASCII resolves through a flat array;
+    /// distinct characters are on it. ASCII resolves through a flat array;
     /// everything else takes the general path, which is what a CJK or
     /// Nerd-Font-heavy screen spends its whole frame in.
     #[test]
@@ -501,7 +501,7 @@ mod tests {
     }
 
     /// A slot holds texel coordinates into whatever atlas was live when it was
-    /// read.  A font-size change relays out every glyph, so keeping the old
+    /// read. A font-size change relays out every glyph, so keeping the old
     /// slots would paint from the wrong part of the atlas.
     #[test]
     fn a_font_size_change_drops_every_slot() {
@@ -519,7 +519,7 @@ mod tests {
     }
 
     /// Every cell the caller holds addresses the table by index, and only the
-    /// frames it is told about get rewritten.  A clear the caller never hears
+    /// frames it is told about get rewritten. A clear the caller never hears
     /// of leaves those cells drawing whatever took over their index.
     #[test]
     fn a_frame_that_changes_nothing_keeps_the_numbering() {
@@ -534,7 +534,7 @@ mod tests {
     }
 
     /// A slot is texel coordinates into whatever atlas epaint had packed when
-    /// the glyph was laid out.  Rebuilding the fonts repacks that atlas, so a
+    /// the glyph was laid out. Rebuilding the fonts repacks that atlas, so a
     /// slot that outlives the rebuild samples whatever landed in its place.
     #[test]
     fn an_atlas_rebuild_drops_every_slot() {

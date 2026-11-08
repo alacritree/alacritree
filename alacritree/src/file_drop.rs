@@ -2,7 +2,7 @@
 //!
 //! The decisions are functions of a pointer position, a set of paths and the
 //! config, with two exceptions: `project_roots` stats the paths it is given,
-//! and `screen_pointer` asks the OS and egui where the cursor is.  `app.rs`
+//! and `screen_pointer` asks the OS and egui where the cursor is. `app.rs`
 //! supplies the region rectangles and owns the sinks; keeping the rest out of
 //! the frame loop is what makes it testable without a window.
 
@@ -77,7 +77,7 @@ pub(crate) fn route(
 /// `paste::paste_bytes`'s unbracketed branch turns `\n` into `\r`, which is
 /// Enter; readline binds `\x0f` to `operate-and-get-next`, which accepts the
 /// line just as Enter does, `\x18\x05` to `edit-and-execute-command`, `\x04`
-/// to end-of-file and `\t` to completion.  Quoting is no substitute for any of
+/// to end-of-file and `\t` to completion. Quoting is no substitute for any of
 /// it: the line editor acts on the byte before the shell parser ever sees the
 /// quotes around it.
 pub(crate) fn is_terminal_safe(path: &str) -> bool {
@@ -89,7 +89,7 @@ pub(crate) fn is_terminal_safe(path: &str) -> bool {
 /// the next argument does not run into the last path.
 ///
 /// `distro` names the WSL distro the receiving session runs in, `None` for a
-/// native session.  Paths that would act as terminal input are left out.
+/// native session. Paths that would act as terminal input are left out.
 pub(crate) fn shell_payload(
     paths: &[PathBuf],
     distro: Option<&str>,
@@ -109,7 +109,7 @@ pub(crate) fn shell_payload(
 }
 
 /// A path as the receiving shell should spell it, with the quoting rules that
-/// spelling implies.  A path rewritten for a distro is a POSIX shell word even
+/// spelling implies. A path rewritten for a distro is a POSIX shell word even
 /// when the configured mode says otherwise — `windows` quoting fed to `bash` is
 /// broken by construction.
 fn shell_word(
@@ -130,7 +130,7 @@ fn shell_word(
 ///
 /// `windows_to_linux` discards which distro a UNC path names (`wsl.rs:141`), so
 /// handing it `\\wsl.localhost\Ubuntu\home\a` inside a Kali session would return
-/// `/home/a` — a different file, with nothing to show for it.  Classify first
+/// `/home/a` — a different file, with nothing to show for it. Classify first
 /// and only accept a UNC path that belongs to this distro.
 fn distro_path(path: &Path, distro: &str) -> Option<String> {
     match wsl::classify(path) {
@@ -152,7 +152,7 @@ fn distro_path(path: &Path, distro: &str) -> Option<String> {
 /// line, since a document is not a command line.
 ///
 /// `preceding` and `following` are the characters either side of the insertion
-/// point.  Without the boundary newlines a drop into the middle of a line welds
+/// point. Without the boundary newlines a drop into the middle of a line welds
 /// the first path onto the text before it and the last onto the text after.
 pub(crate) fn document_payload(
     paths: &[PathBuf],
@@ -182,7 +182,7 @@ pub(crate) fn document_payload(
 /// The text a pasted path list becomes for the sink that is about to receive
 /// it.
 ///
-/// The shell form is a drop's, character for character.  The document form is
+/// The shell form is a drop's, character for character. The document form is
 /// deliberately not `document_payload`'s: a drop frames its paths as their own
 /// block, while a paste lands wherever the cursor is and must leave the
 /// surrounding line alone.
@@ -199,9 +199,9 @@ pub(crate) fn paste_payload(
     }
 }
 
-/// The project roots a set of dropped paths names.  A directory is its own
+/// The project roots a set of dropped paths names. A directory is its own
 /// root; a file means the directory holding it, which is what dragging a file
-/// out of a checkout is asking for.  Dragging several files from one folder is
+/// out of a checkout is asking for. Dragging several files from one folder is
 /// ordinary, so repeats collapse rather than adding the same project twice.
 pub(crate) fn project_roots(paths: &[PathBuf]) -> Vec<PathBuf> {
     let mut roots = Vec::new();
@@ -229,8 +229,8 @@ pub(crate) fn project_roots(paths: &[PathBuf]) -> Vec<PathBuf> {
 /// winit 0.30 discards the drag position on every platform — its Windows
 /// `DragEnter`/`DragOver`/`Drop` handlers all ignore their `POINTL`, and no
 /// `CursorMoved` is synthesized during a drag — so egui's own pointer is still
-/// wherever it was before the drag began.  Asking Win32 directly is the only
-/// way to learn where a drop landed.  No other platform has an equivalent
+/// wherever it was before the drag began. Asking Win32 directly is the only
+/// way to learn where a drop landed. No other platform has an equivalent
 /// here, so they route by the central-panel fallback in `route`.
 #[cfg(windows)]
 pub(crate) fn screen_pointer(ctx: &egui::Context) -> Option<egui::Pos2> {
@@ -412,7 +412,7 @@ mod tests {
 
     /// `paste::paste_bytes`'s unbracketed branch rewrites `\n` to `\r`, and
     /// `\r` is Enter — so a filename containing a newline would run whatever
-    /// follows it without the user touching the keyboard.  Quoting does not
+    /// follows it without the user touching the keyboard. Quoting does not
     /// help: `shlex` wraps the newline inside single quotes and the rewrite
     /// still fires.
     #[test]
@@ -473,7 +473,7 @@ mod tests {
         assert_eq!(shell_payload(&paths, Some("Ubuntu"), &spelling), r#""C:\\pics\\my pic.png" "#);
     }
 
-    /// A plain UNC share has no distro-side spelling.  Pasting the raw path is
+    /// A plain UNC share has no distro-side spelling. Pasting the raw path is
     /// more useful than pasting nothing.
     #[cfg(windows)]
     #[test]
@@ -497,7 +497,7 @@ mod tests {
 
     /// `windows_to_linux` throws the distro away (`wsl.rs:141`), so stripping a
     /// UNC prefix that belongs to another distro would name a different file
-    /// with no error.  Refuse it: an unresolvable Windows path fails loudly.
+    /// with no error. Refuse it: an unresolvable Windows path fails loudly.
     #[cfg(windows)]
     #[test]
     fn a_unc_path_for_another_distro_is_never_stripped() {
@@ -637,13 +637,13 @@ mod tests {
         assert!(project_roots(&[missing]).is_empty());
     }
 
-    /// The seam, not either half.  `shell_payload` cannot see what `paste.rs`
+    /// The seam, not either half. `shell_payload` cannot see what `paste.rs`
     /// does to its output and `paste.rs` cannot see where the text came from,
     /// so a filename carrying a line-submitting byte is inert only if the two
-    /// agree.  This is the assertion that fails if the control-character filter
+    /// agree. This is the assertion that fails if the control-character filter
     /// is ever removed as redundant with quoting — `paste::paste_bytes`'s
     /// unbracketed branch turns `\n` into `\r`, and readline accepts the line
-    /// on `\x0f` with no `\r` involved at all.  It stops at the bytes `paste`
+    /// on `\x0f` with no `\r` involved at all. It stops at the bytes `paste`
     /// would write — reaching the PTY needs a spawned child.
     ///
     /// Run under `Auto` as well as `None` because `Auto` is what ships.

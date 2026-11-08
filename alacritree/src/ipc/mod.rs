@@ -4,7 +4,7 @@
 //! Follows alacritty's `polling/ipc.rs`: a local socket advertised through the
 //! `ALACRITREE_SOCKET` environment variable (so processes running *inside* an
 //! alacritree session find their own instance), one newline-delimited JSON
-//! request per connection, one JSON reply line back.  Unlike alacritty we need
+//! request per connection, one JSON reply line back. Unlike alacritty we need
 //! replies with data, so every request gets a `{"ok": …}` / `{"error": …}`
 //! response instead of fire-and-forget.
 //!

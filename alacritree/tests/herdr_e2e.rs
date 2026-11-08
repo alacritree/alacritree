@@ -337,7 +337,7 @@ fn type_a_key(harness: &Harness) {
 }
 
 /// A follow arriving while the user is typing waits, and lands once they
-/// stop.  Only real keyboard input through the OS can show this: no CLI
+/// stop. Only real keyboard input through the OS can show this: no CLI
 /// surface produces an egui event, so a test built on one would pass
 /// against a debounce hung on a clock that never moves at all.
 #[test]

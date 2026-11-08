@@ -11,7 +11,7 @@
           "properties": {
             "args": {
               "default": [],
-              "description": "Arguments passed to the program.  Optional.",
+              "description": "Arguments passed to the program. Optional.",
               "items": {
                 "type": "string"
               },
@@ -40,7 +40,7 @@
       "type": "string"
     },
     "RawBinding": {
-      "description": "One `[[keyboard.bindings]]` entry.  A binding needs `key`, plus exactly one\nof `chars`, `action` or `command` to say what pressing it does.",
+      "description": "One `[[keyboard.bindings]]` entry. A binding needs `key`, plus exactly one\nof `chars`, `action` or `command` to say what pressing it does.",
       "properties": {
         "action": {
           "anyOf": [
@@ -165,7 +165,7 @@
               "type": "string"
             }
           ],
-          "description": "Named action to run, e.g. `\"Paste\"`, `\"ToggleLeftSidebar\"`.  The schema\nsuggests every name alacritree implements without rejecting the rest:\nthe shared `alacritty.toml` legitimately carries actions only the real\nalacritty implements, and alacritree ignores those rather than\nrejecting them.  `docs/keyboard-shortcuts.md` says what each one does."
+          "description": "Named action to run, e.g. `\"Paste\"`, `\"ToggleLeftSidebar\"`. The schema\nsuggests every name alacritree implements without rejecting the rest:\nthe shared `alacritty.toml` legitimately carries actions only the real\nalacritty implements, and alacritree ignores those rather than\nrejecting them. `docs/keyboard-shortcuts.md` says what each one does."
         },
         "chars": {
           "description": "Bytes to write to the PTY, with the usual escapes (`\\x1b`, `\\u001b`).",
@@ -177,10 +177,10 @@
               "$ref": "#/$defs/BindingCommand"
             }
           ],
-          "description": "External program to run.  alacritree parses it so the binding still\ndisplaces alacritty's default for that key, but never runs it."
+          "description": "External program to run. alacritree parses it so the binding still\ndisplaces alacritty's default for that key, but never runs it."
         },
         "key": {
-          "description": "The key, as alacritty spells it: a character (`\"A\"`), a named key\n(`\"F5\"`, `\"PageUp\"`), or a scancode.  A key alacritree cannot map is\ndropped with a warning.",
+          "description": "The key, as alacritty spells it: a character (`\"A\"`), a named key\n(`\"F5\"`, `\"PageUp\"`), or a scancode. A key alacritree cannot map is\ndropped with a warning.",
           "type": "string"
         },
         "mode": {
@@ -188,7 +188,7 @@
           "type": "string"
         },
         "mods": {
-          "description": "Modifiers held with the key, joined by `|`: `\"Control\"`, `\"Shift\"`,\n`\"Alt\"`, `\"Super\"`.  Unset means no modifiers.",
+          "description": "Modifiers held with the key, joined by `|`: `\"Control\"`, `\"Shift\"`,\n`\"Alt\"`, `\"Super\"`. Unset means no modifiers.",
           "type": "string"
         }
       },
@@ -293,7 +293,7 @@
               "$ref": "#/$defs/RawSet"
             }
           ],
-          "description": "The eight dim ANSI colors.  Unset derives them from `normal`."
+          "description": "The eight dim ANSI colors. Unset derives them from `normal`."
         },
         "draw_bold_text_with_bright_colors": {
           "default": false,
@@ -302,7 +302,7 @@
         },
         "indexed_colors": {
           "default": [],
-          "description": "Overrides within the 16–255 range of the 256-color palette.  Unlisted\nindices keep their standard values.",
+          "description": "Overrides within the 16–255 range of the 256-color palette. Unlisted\nindices keep their standard values.",
           "items": {
             "$ref": "#/$defs/RawIndexed"
           },
@@ -381,7 +381,7 @@
         },
         "blink_timeout": {
           "default": 5,
-          "description": "Seconds of blinking after which the cursor is left solid; `0` blinks\nforever.  A timeout that would cut the first blink short is stretched\nto one full show and hide.",
+          "description": "Seconds of blinking after which the cursor is left solid; `0` blinks\nforever. A timeout that would cut the first blink short is stretched\nto one full show and hide.",
           "format": "uint8",
           "maximum": 255,
           "minimum": 0,
@@ -393,7 +393,7 @@
               "$ref": "#/$defs/RawCursorStyle"
             }
           ],
-          "description": "Cursor shape and blinking.  Older alacritty configs write just\n`style = \"Block\"` rather than `style.shape = \"Block\"`; both are\naccepted."
+          "description": "Cursor shape and blinking. Older alacritty configs write just\n`style = \"Block\"` rather than `style.shape = \"Block\"`; both are\naccepted."
         },
         "unfocused_hollow": {
           "default": true,
@@ -406,14 +406,14 @@
     "RawCursorStyle": {
       "anyOf": [
         {
-          "description": "Just the shape: `\"Block\"`, `\"Underline\"`, `\"Beam\"`, `\"HollowBlock\"` or\n`\"Hidden\"`.  Lowercase spellings are accepted too.",
+          "description": "Just the shape: `\"Block\"`, `\"Underline\"`, `\"Beam\"`, `\"HollowBlock\"` or\n`\"Hidden\"`. Lowercase spellings are accepted too.",
           "type": "string"
         },
         {
           "description": "Shape and blinking together.",
           "properties": {
             "blinking": {
-              "description": "`\"Never\"`, `\"Off\"`, `\"On\"` or `\"Always\"`.  Lowercase spellings are\naccepted too.  `Never` and `Always` overrule what the running\nprogram asks for; `Off` and `On` only choose the starting state.",
+              "description": "`\"Never\"`, `\"Off\"`, `\"On\"` or `\"Always\"`. Lowercase spellings are\naccepted too. `Never` and `Always` overrule what the running\nprogram asks for; `Off` and `On` only choose the starting state.",
               "type": "string"
             },
             "shape": {
@@ -511,33 +511,33 @@
       "properties": {
         "crash_log": {
           "default": true,
-          "description": "Write an artifact when the process panics.  alacritree-only, so it\nbelongs in `alacritree.toml`.  A crash that leaves no record is the\nfailure this exists to prevent.",
+          "description": "Write an artifact when the process panics. alacritree-only, so it\nbelongs in `alacritree.toml`. A crash that leaves no record is the\nfailure this exists to prevent.",
           "type": "boolean"
         },
         "frame_log": {
           "default": false,
-          "description": "Measure whole frames and report the period, CPU time, grid share and\nkeystroke echo every few seconds.  alacritree-only, so it belongs in\n`alacritree.toml`.\n\n`ALACRITREE_FRAME_LOG` wins over this key both ways: `1` turns\nmeasurements on, `0` and the empty string turn them off.  The variable\nis the only switch available before the config is read.\n\nKeeps this session's log file for as long as it is on.  The report goes\nto the log stream, and a GUI-subsystem binary has no console.",
+          "description": "Measure whole frames and report the period, CPU time, grid share and\nkeystroke echo every few seconds. alacritree-only, so it belongs in\n`alacritree.toml`.\n\n`ALACRITREE_FRAME_LOG` wins over this key both ways: `1` turns\nmeasurements on, `0` and the empty string turn them off. The variable\nis the only switch available before the config is read.\n\nKeeps this session's log file for as long as it is on. The report goes\nto the log stream, and a GUI-subsystem binary has no console.",
           "type": "boolean"
         },
         "gpu_timing": {
           "default": false,
-          "description": "Log what the GPU grid's paint callback costs: the wall time of\nissuing a frame, and the GPU's own time for the upload and each of\nthe three draws.  alacritree-only, so it belongs in\n`alacritree.toml`.  Timer queries are cheap but not free, and the\nline is only meaningful to someone reading it.  Needs a GL 3.3\ncontext.  Keeps this session's log file for as long as it is on,\nsince the report has nowhere else to go.",
+          "description": "Log what the GPU grid's paint callback costs: the wall time of\nissuing a frame, and the GPU's own time for the upload and each of\nthe three draws. alacritree-only, so it belongs in\n`alacritree.toml`. Timer queries are cheap but not free, and the\nline is only meaningful to someone reading it. Needs a GL 3.3\ncontext. Keeps this session's log file for as long as it is on,\nsince the report has nowhere else to go.",
           "type": "boolean"
         },
         "log_dir": {
-          "description": "Where crash artifacts and session logs are written.  alacritree-only,\nso it belongs in `alacritree.toml`.  A leading `~` expands to the home\ndirectory; a relative path is ignored.\n\nUnset writes to the machine-local state directory: `%LOCALAPPDATA%\\\nalacritree` on Windows, `$XDG_STATE_HOME/alacritree` or\n`~/.local/state/alacritree` elsewhere.  Logs stay out of the config\ndirectory, which on Windows roams between machines.\n\nSetting this moves no log already written, and a panic during config\nparsing still lands in the default directory: the crash hook is armed\nbefore this key can be read.",
+          "description": "Where crash artifacts and session logs are written. alacritree-only,\nso it belongs in `alacritree.toml`. A leading `~` expands to the home\ndirectory; a relative path is ignored.\n\nUnset writes to the machine-local state directory: `%LOCALAPPDATA%\\\nalacritree` on Windows, `$XDG_STATE_HOME/alacritree` or\n`~/.local/state/alacritree` elsewhere. Logs stay out of the config\ndirectory, which on Windows roams between machines.\n\nSetting this moves no log already written, and a panic during config\nparsing still lands in the default directory: the crash hook is armed\nbefore this key can be read.",
           "type": "string"
         },
         "persistent_logging": {
           "default": false,
-          "description": "Keep the log file after quitting.  Upstream's name and upstream's\ndefault.",
+          "description": "Keep the log file after quitting. Upstream's name and upstream's\ndefault.",
           "type": "boolean"
         }
       },
       "type": "object"
     },
     "RawDecorations": {
-      "description": "Corrections applied to what the font reports for its underline and\nstrikeout.  Each value is `\"2px\"` (physical pixels, added), `\"2pt\"` or a\nbare `\"2\"` (points, added), or `\"150%\"` (a multiplier).  Positive moves a\nline down, matching kitty and ghostty.  A percentage takes no sign.  A\nzero offset draws what the font asked for.",
+      "description": "Corrections applied to what the font reports for its underline and\nstrikeout. Each value is `\"2px\"` (physical pixels, added), `\"2pt\"` or a\nbare `\"2\"` (points, added), or `\"150%\"` (a multiplier). Positive moves a\nline down, matching kitty and ghostty. A percentage takes no sign. A\nzero offset draws what the font asked for.",
       "properties": {
         "strikeout_position": {
           "default": "0px",
@@ -553,13 +553,13 @@
         },
         "underline_position": {
           "default": "0px",
-          "description": "Shift or scale of how far the underline sits from the top of the\ncell, for the straight, dotted and dashed styles.  The double and\ncurly styles are placed from the font's descent instead, so this\nknob does not reach them.",
+          "description": "Shift or scale of how far the underline sits from the top of the\ncell, for the straight, dotted and dashed styles. The double and\ncurly styles are placed from the font's descent instead, so this\nknob does not reach them.",
           "pattern": "^(-?[0-9]*\\.?[0-9]+(px|pt)?|[0-9]*\\.?[0-9]+%)$",
           "type": "string"
         },
         "underline_thickness": {
           "default": "0px",
-          "description": "Shift or scale of the underline's stroke weight.  Every style draws\nwith this value, including double and curly.",
+          "description": "Shift or scale of the underline's stroke weight. Every style draws\nwith this value, including double and curly.",
           "pattern": "^(-?[0-9]*\\.?[0-9]+(px|pt)?|[0-9]*\\.?[0-9]+%)$",
           "type": "string"
         }
@@ -639,7 +639,7 @@
               "$ref": "#/$defs/Color"
             }
           ],
-          "description": "Outline color.  Unset uses the sidebar accent."
+          "description": "Outline color. Unset uses the sidebar accent."
         },
         "sidebar": {
           "default": false,
@@ -664,11 +664,11 @@
       "properties": {
         "bold": {
           "$ref": "#/$defs/RawFontFace",
-          "description": "The bold face.  An unset family falls back to `normal`'s."
+          "description": "The bold face. An unset family falls back to `normal`'s."
         },
         "bold_italic": {
           "$ref": "#/$defs/RawFontFace",
-          "description": "The bold-italic face.  An unset family falls back to `normal`'s."
+          "description": "The bold-italic face. An unset family falls back to `normal`'s."
         },
         "builtin_box_drawing": {
           "default": true,
@@ -677,19 +677,19 @@
         },
         "color_glyph_cache_mb": {
           "default": 10,
-          "description": "Budget in megabytes for the rasterized colour-glyph cache.  The cache\nis already bounded by how many codepoints the colour fonts cover, but\nthat ceiling moves with cell size and with the fallback list.",
+          "description": "Budget in megabytes for the rasterized colour-glyph cache. The cache\nis already bounded by how many codepoints the colour fonts cover, but\nthat ceiling moves with cell size and with the fallback list.",
           "format": "uint",
           "minimum": 0,
           "type": "integer"
         },
         "color_glyphs": {
           "default": true,
-          "description": "Draw emoji from their font's colour tables.  Turning this off falls\nthrough to the first fallback face with ordinary outlines, so emoji\nrender monochrome.  Also alacritree-only, so it belongs in\n`alacritree.toml` alongside `fallback`.",
+          "description": "Draw emoji from their font's colour tables. Turning this off falls\nthrough to the first fallback face with ordinary outlines, so emoji\nrender monochrome. Also alacritree-only, so it belongs in\n`alacritree.toml` alongside `fallback`.",
           "type": "boolean"
         },
         "fallback": {
           "default": [],
-          "description": "Ordered list of fallback font families or font file paths, tried in\norder after the four primary faces and before the automatic system\nchain.  Recommended home is `alacritree.toml`: upstream alacritty\nwarns about unknown keys, so putting it in the shared `alacritty.toml`\nwould make the real alacritty noisy.",
+          "description": "Ordered list of fallback font families or font file paths, tried in\norder after the four primary faces and before the automatic system\nchain. Recommended home is `alacritree.toml`: upstream alacritty\nwarns about unknown keys, so putting it in the shared `alacritty.toml`\nwould make the real alacritty noisy.",
           "items": {
             "type": "string"
           },
@@ -697,11 +697,11 @@
         },
         "glyph_offset": {
           "$ref": "#/$defs/RawFontDelta",
-          "description": "Where the glyph sits inside its cell, in pixels.  Increasing `x` moves\nit right, increasing `y` moves it up.  Built-in glyphs ignore this,\nmatching alacritty."
+          "description": "Where the glyph sits inside its cell, in pixels. Increasing `x` moves\nit right, increasing `y` moves it up. Built-in glyphs ignore this,\nmatching alacritty."
         },
         "italic": {
           "$ref": "#/$defs/RawFontFace",
-          "description": "The italic face.  An unset family falls back to `normal`'s."
+          "description": "The italic face. An unset family falls back to `normal`'s."
         },
         "normal": {
           "$ref": "#/$defs/RawFontFace",
@@ -773,11 +773,11 @@
           "type": "boolean"
         },
         "state_dir": {
-          "description": "Where alacritree keeps what it remembers between runs: `state.toml`\n(project roots, expanded rows, sidebar visibility, per-worktree base\nbranches) and the per-workspace scratchpad notes.  alacritree-only, so\nit belongs in `alacritree.toml`.  A leading `~` expands to the home\ndirectory; a relative path is ignored.\n\nUnset keeps the per-user config base, where these files have always\nlived: `%APPDATA%\\alacritree` on Windows, `$XDG_CONFIG_HOME/alacritree`\nor `~/.config/alacritree` elsewhere.\n\nSetting this moves nothing.  The old state and notes stay where they\nare and the new directory starts empty, so move the files across\nyourself if you want them.  Every alacritree on the machine needs the\nsame value: the CLI resolves this key the way the window does, so a\ncommand run against a different config reads a state file the window is\nnot writing.",
+          "description": "Where alacritree keeps what it remembers between runs: `state.toml`\n(project roots, expanded rows, sidebar visibility, per-worktree base\nbranches) and the per-workspace scratchpad notes. alacritree-only, so\nit belongs in `alacritree.toml`. A leading `~` expands to the home\ndirectory; a relative path is ignored.\n\nUnset keeps the per-user config base, where these files have always\nlived: `%APPDATA%\\alacritree` on Windows, `$XDG_CONFIG_HOME/alacritree`\nor `~/.config/alacritree` elsewhere.\n\nSetting this moves nothing. The old state and notes stay where they\nare and the new directory starts empty, so move the files across\nyourself if you want them. Every alacritree on the machine needs the\nsame value: the CLI resolves this key the way the window does, so a\ncommand run against a different config reads a state file the window is\nnot writing.",
           "type": "string"
         },
         "working_directory": {
-          "description": "Directory sessions on the home tab start in; worktree tabs always start\nin their checkout.  A leading `~` expands to the home directory.  Unset\ninherits the launching process's directory.",
+          "description": "Directory sessions on the home tab start in; worktree tabs always start\nin their checkout. A leading `~` expands to the home directory. Unset\ninherits the launching process's directory.",
           "type": "string"
         }
       },
@@ -838,7 +838,7 @@
       "properties": {
         "attach": {
           "default": "agent",
-          "description": "Whether opening a row attaches to that agent's pane directly\n(\"agent\") or to the herdr session around it with the pane focused\n(\"session\").\n\n\"session\" hands the mouse to herdr's own client, where a selection\njoins soft-wrapped rows and copy mode works; a direct attach is\nrepainted row by row, so the host terminal sees every wrap as a line\nbreak.  Honoured per side: the native side of a Windows host always\nattaches to the session, because herdr implements no direct attach\nthere.",
+          "description": "Whether opening a row attaches to that agent's pane directly\n(\"agent\") or to the herdr session around it with the pane focused\n(\"session\").\n\n\"session\" hands the mouse to herdr's own client, where a selection\njoins soft-wrapped rows and copy mode works; a direct attach is\nrepainted row by row, so the host terminal sees every wrap as a line\nbreak. Honoured per side: the native side of a Windows host always\nattaches to the session, because herdr implements no direct attach\nthere.",
           "enum": [
             "agent",
             "session"
@@ -847,12 +847,12 @@
         },
         "enabled": {
           "default": true,
-          "description": "Discover herdr servers and list their agents in the sidebar.  Inert\nwhen no herdr binary or server is present.\n\nChanges arrive on herdr's event stream, read through `herdr\nremote-api-bridge`.  0.9.1 has it and 0.8.2 does not; a herdr without\nit lists nothing.",
+          "description": "Discover herdr servers and list their agents in the sidebar. Inert\nwhen no herdr binary or server is present.\n\nChanges arrive on herdr's event stream, read through `herdr\nremote-api-bridge`. 0.9.1 has it and 0.8.2 does not; a herdr without\nit lists nothing.",
           "type": "boolean"
         },
         "follow_focus": {
           "default": "herdr",
-          "description": "Whether a focus change made inside herdr moves alacritree to the\nmatching session.\n\n\"off\" never moves it.  \"herdr\" moves it only while the active session\nis already showing herdr's view, which is what an unmodified config\nhas always done.  \"always\" also moves it from a plain native session,\non any reachable side, after a gap in typing.",
+          "description": "Whether a focus change made inside herdr moves alacritree to the\nmatching session.\n\n\"off\" never moves it. \"herdr\" moves it only while the active session\nis already showing herdr's view, which is what an unmodified config\nhas always done. \"always\" also moves it from a plain native session,\non any reachable side, after a gap in typing.",
           "enum": [
             "off",
             "herdr",
@@ -876,7 +876,7 @@
         },
         "show_panes": {
           "default": false,
-          "description": "List every pane a herdr server owns, not only the ones it detected an\nagent in.  A pane running a plain shell gets a row named by its own\ntitle, carrying no status, and opening it shares herdr's view of the\ntab that holds it rather than attaching to the pane.\n\nNeeds a herdr that knows `pane list` (0.8.2 does).  An older one\nanswers with a usage error, which reads as no herdr on that side.  A\nside that has never answered is then abandoned for the process\nlifetime; one that answered before this was turned on keeps retrying\nand recovers when it goes back off.",
+          "description": "List every pane a herdr server owns, not only the ones it detected an\nagent in. A pane running a plain shell gets a row named by its own\ntitle, carrying no status, and opening it shares herdr's view of the\ntab that holds it rather than attaching to the pane.\n\nNeeds a herdr that knows `pane list` (0.8.2 does). An older one\nanswers with a usage error, which reads as no herdr on that side. A\nside that has never answered is then abandoned for the process\nlifetime; one that answered before this was turned on keeps retrying\nand recovers when it goes back off.",
           "type": "boolean"
         },
         "show_unmatched": {
@@ -950,10 +950,10 @@
                   "$ref": "#/$defs/Color"
                 }
               ],
-              "description": "Glyph color.  Unset inherits the row's foreground."
+              "description": "Glyph color. Unset inherits the row's foreground."
             },
             "glyph": {
-              "description": "The character to draw.  Unset keeps the built-in glyph and applies\nonly the styling.",
+              "description": "The character to draw. Unset keeps the built-in glyph and applies\nonly the styling.",
               "type": "string"
             },
             "italic": {
@@ -962,7 +962,7 @@
               "type": "boolean"
             },
             "size": {
-              "description": "Point size, clamped to a minimum of `1.0`.  Unset uses the sidebar\nfont size.",
+              "description": "Point size, clamped to a minimum of `1.0`. Unset uses the sidebar\nfont size.",
               "format": "float",
               "type": "number"
             }
@@ -973,7 +973,7 @@
       "description": "A styled icon override: either a bare glyph string (`worktree = \"◆\"`) or a\ntable (`worktree = { glyph = \"◆\", color = \"#ff5555\", bold = true }`)."
     },
     "RawIcons": {
-      "description": "`[ui.icons]`: sidebar glyph overrides.  A bare string sets the glyph\nalone; a table also styles color/weight/slant/size.  Any glyph works, so\nNerd Font users can substitute their own icons.",
+      "description": "`[ui.icons]`: sidebar glyph overrides. A bare string sets the glyph\nalone; a table also styles color/weight/slant/size. Any glyph works, so\nNerd Font users can substitute their own icons.",
       "properties": {
         "add_project": {
           "$ref": "#/$defs/RawIconStyle",
@@ -986,7 +986,7 @@
               "$ref": "#/$defs/RawIconStyle"
             }
           ],
-          "description": "An agent held at a dialog it needs a human to answer.  Unset follows\n`[ui] status_indicators`: `⬤` for dots, `×` for symbols."
+          "description": "An agent held at a dialog it needs a human to answer. Unset follows\n`[ui] status_indicators`: `⬤` for dots, `×` for symbols."
         },
         "agent_done": {
           "anyOf": [
@@ -994,7 +994,7 @@
               "$ref": "#/$defs/RawIconStyle"
             }
           ],
-          "description": "An agent that finished a turn while nobody was looking.  Unset follows\n`[ui] status_indicators`: `⬤` for dots, `✓` for symbols."
+          "description": "An agent that finished a turn while nobody was looking. Unset follows\n`[ui] status_indicators`: `⬤` for dots, `✓` for symbols."
         },
         "agent_error": {
           "anyOf": [
@@ -1010,7 +1010,7 @@
               "$ref": "#/$defs/RawIconStyle"
             }
           ],
-          "description": "An agent waiting with nothing in flight.  Unset follows\n`[ui] status_indicators`: `◯` in both sets."
+          "description": "An agent waiting with nothing in flight. Unset follows\n`[ui] status_indicators`: `◯` in both sets."
         },
         "agent_unknown": {
           "anyOf": [
@@ -1018,7 +1018,7 @@
               "$ref": "#/$defs/RawIconStyle"
             }
           ],
-          "description": "An agent nothing could read a state from.  Unset follows\n`[ui] status_indicators`: `◯` for dots, `?` for symbols."
+          "description": "An agent nothing could read a state from. Unset follows\n`[ui] status_indicators`: `◯` for dots, `?` for symbols."
         },
         "agent_working": {
           "anyOf": [
@@ -1026,7 +1026,7 @@
               "$ref": "#/$defs/RawIconStyle"
             }
           ],
-          "description": "An agent at work.  Unset draws the braille loader; a glyph replaces\nit."
+          "description": "An agent at work. Unset draws the braille loader; a glyph replaces\nit."
         },
         "attention": {
           "anyOf": [
@@ -1034,7 +1034,7 @@
               "$ref": "#/$defs/RawIconStyle"
             }
           ],
-          "description": "A session that rang while nobody was looking.  Unset draws `⬤` in\nboth sets."
+          "description": "A session that rang while nobody was looking. Unset draws `⬤` in\nboth sets."
         },
         "close_session": {
           "$ref": "#/$defs/RawIconStyle",
@@ -1259,7 +1259,7 @@
               "$ref": "#/$defs/Color"
             }
           ],
-          "description": "Background block color.  Alacritty calls this `cursor`; we accept both."
+          "description": "Background block color. Alacritty calls this `cursor`; we accept both."
         },
         "foreground": {
           "anyOf": [
@@ -1275,7 +1275,7 @@
               "$ref": "#/$defs/Color"
             }
           ],
-          "description": "Foreground glyph color.  Alacritty calls this `text`; we accept both."
+          "description": "Foreground glyph color. Alacritty calls this `text`; we accept both."
         }
       },
       "type": "object"
@@ -1283,7 +1283,7 @@
     "RawKeyboard": {
       "properties": {
         "bindings": {
-          "description": "Key bindings, as `[[keyboard.bindings]]` entries.  Vi- and search-mode\nbindings are accepted and ignored: alacritree tracks neither mode.",
+          "description": "Key bindings, as `[[keyboard.bindings]]` entries. Vi- and search-mode\nbindings are accepted and ignored: alacritree tracks neither mode.",
           "items": {
             "$ref": "#/$defs/RawBinding"
           },
@@ -1296,7 +1296,7 @@
       "properties": {
         "hide_when_typing": {
           "default": false,
-          "description": "Hide the mouse pointer while typing.  The next pointer motion, click\nor wheel tick brings it back.",
+          "description": "Hide the mouse pointer while typing. The next pointer motion, click\nor wheel tick brings it back.",
           "type": "boolean"
         }
       },
@@ -1420,7 +1420,7 @@
               "$ref": "#/$defs/Color"
             }
           ],
-          "description": "Foreground for bold text, used only when\n`draw_bold_text_with_bright_colors` is `true`.  Unset uses\n`foreground`."
+          "description": "Foreground for bold text, used only when\n`draw_bold_text_with_bright_colors` is `true`. Unset uses\n`foreground`."
         },
         "dim_foreground": {
           "anyOf": [
@@ -1428,7 +1428,7 @@
               "$ref": "#/$defs/Color"
             }
           ],
-          "description": "Foreground for dimmed text.  Unset derives it from `foreground`."
+          "description": "Foreground for dimmed text. Unset derives it from `foreground`."
         },
         "foreground": {
           "$ref": "#/$defs/Color",
@@ -1439,7 +1439,7 @@
       "type": "object"
     },
     "RawProfile": {
-      "description": "One `[[ui.profiles]]` entry.  Fields are optional so a malformed entry\ndegrades to a warning instead of failing the whole config parse.",
+      "description": "One `[[ui.profiles]]` entry. Fields are optional so a malformed entry\ndegrades to a warning instead of failing the whole config parse.",
       "properties": {
         "args": {
           "default": [],
@@ -1918,7 +1918,7 @@
         "osc52": {
           "$ref": "#/$defs/SerdeOsc52",
           "default": "onlycopy",
-          "description": "Whether an application may use OSC 52 to write the clipboard, read\nit, both, or neither.  Upstream alacritty's key, so it belongs in the\nshared `alacritty.toml`.  An application that can read the clipboard\ncan read whatever was last copied anywhere else."
+          "description": "Whether an application may use OSC 52 to write the clipboard, read\nit, both, or neither. Upstream alacritty's key, so it belongs in the\nshared `alacritty.toml`. An application that can read the clipboard\ncan read whatever was last copied anywhere else."
         },
         "shell": {
           "anyOf": [
@@ -1926,7 +1926,7 @@
               "$ref": "#/$defs/RawShell"
             }
           ],
-          "description": "The program each session runs, as either a bare path or a table with\narguments.  Unset uses `$SHELL` (the login shell as a fallback) on\nUnix and PowerShell on Windows."
+          "description": "The program each session runs, as either a bare path or a table with\narguments. Unset uses `$SHELL` (the login shell as a fallback) on\nUnix and PowerShell on Windows."
         }
       },
       "type": "object"
@@ -1944,7 +1944,7 @@
               "$ref": "#/$defs/Color"
             }
           ],
-          "description": "Text color.  Unset inherits the row's foreground."
+          "description": "Text color. Unset inherits the row's foreground."
         },
         "italic": {
           "default": false,
@@ -2007,7 +2007,7 @@
           "description": "Corrections to the underline and strikeout the font placed\n([`RawDecorations`])."
         },
         "default_profile": {
-          "description": "Name of the profile new sessions use.  Must match a `[[ui.profiles]]`\nentry, or it is ignored with a warning.",
+          "description": "Name of the profile new sessions use. Must match a `[[ui.profiles]]`\nentry, or it is ignored with a warning.",
           "type": "string"
         },
         "delta_path": {
@@ -2033,7 +2033,7 @@
         },
         "hold_exited_sessions": {
           "default": "never",
-          "description": "Whether a session whose child has exited stays on screen instead of\nclosing with it: \"never\" | \"on_error\" | \"always\".  A held session\nwrites one line into its own grid naming the key that closes it.  A\nherdr attach that was refused is held whatever this says, since its\nrefusal message is the only report of what happened.",
+          "description": "Whether a session whose child has exited stays on screen instead of\nclosing with it: \"never\" | \"on_error\" | \"always\". A held session\nwrites one line into its own grid naming the key that closes it. A\nherdr attach that was refused is held whatever this says, since its\nrefusal message is the only report of what happened.",
           "enum": [
             "never",
             "on_error",
@@ -2169,7 +2169,7 @@
         },
         "sessions_filter_counts_detached": {
           "default": false,
-          "description": "Whether the sidebar's sessions toggle counts an unattached herdr row\nthe same as a live session: an agent nothing is attached to, and,\nonce `show_panes` is on, an agentless pane.  Off keeps the toggle's\noriginal session-only behavior, and those rows stay hidden even under\na workspace a live session keeps.",
+          "description": "Whether the sidebar's sessions toggle counts an unattached herdr row\nthe same as a live session: an agent nothing is attached to, and,\nonce `show_panes` is on, an agentless pane. Off keeps the toggle's\noriginal session-only behavior, and those rows stay hidden even under\na workspace a live session keeps.",
           "type": "boolean"
         },
         "sidebar_accent": {
@@ -2178,7 +2178,7 @@
               "$ref": "#/$defs/Color"
             }
           ],
-          "description": "Accent for selected rows and focus outlines.  Unset uses the palette's\n`normal.blue`."
+          "description": "Accent for selected rows and focus outlines. Unset uses the palette's\n`normal.blue`."
         },
         "sidebar_attention": {
           "anyOf": [
@@ -2186,7 +2186,7 @@
               "$ref": "#/$defs/Color"
             }
           ],
-          "description": "Badge color for a session asking to be looked at.  Unset uses the\npalette's `normal.yellow`."
+          "description": "Badge color for a session asking to be looked at. Unset uses the\npalette's `normal.yellow`."
         },
         "sidebar_background": {
           "anyOf": [
@@ -2194,7 +2194,7 @@
               "$ref": "#/$defs/Color"
             }
           ],
-          "description": "Sidebar background.  Unset derives it from the terminal palette."
+          "description": "Sidebar background. Unset derives it from the terminal palette."
         },
         "sidebar_border": {
           "anyOf": [
@@ -2229,7 +2229,7 @@
               "$ref": "#/$defs/Color"
             }
           ],
-          "description": "Sidebar text color.  Unset derives it from the terminal palette."
+          "description": "Sidebar text color. Unset derives it from the terminal palette."
         },
         "sidebar_scroll_align": {
           "default": "minimal",
@@ -2252,7 +2252,7 @@
         },
         "status_indicators": {
           "default": "dots",
-          "description": "Glyph set for agent status marks, on native and multiplexer rows\nalike: \"dots\" | \"symbols\".  Dots draws two same-sized circles, hollow\nand filled, and tells states apart by colour; symbols by shape.  `[ui.icons]` overrides one\nstate at a time.",
+          "description": "Glyph set for agent status marks, on native and multiplexer rows\nalike: \"dots\" | \"symbols\". Dots draws two same-sized circles, hollow\nand filled, and tells states apart by colour; symbols by shape. `[ui.icons]` overrides one\nstate at a time.",
           "enum": [
             "dots",
             "symbols"
@@ -2275,7 +2275,7 @@
         },
         "worktree_liveness": {
           "default": true,
-          "description": "Re-check on a 1.5 s tick whether each listed worktree's checkout is\nstill on disk, so a `git worktree remove` typed into one of our own\nsessions greys the row without waiting for a manual refresh.  The\nprobe is one `stat` per listed row, which an exotic filesystem could\nmake expensive.",
+          "description": "Re-check on a 1.5 s tick whether each listed worktree's checkout is\nstill on disk, so a `git worktree remove` typed into one of our own\nsessions greys the row without waiting for a manual refresh. The\nprobe is one `stat` per listed row, which an exotic filesystem could\nmake expensive.",
           "type": "boolean"
         },
         "worktree_name": {
@@ -2290,7 +2290,7 @@
       "type": "object"
     },
     "RawUiCursor": {
-      "description": "`[ui.cursor]`: the cursor keys alacritty has no equivalent for.  Upstream\nwarns about keys it does not know, so these live in `alacritree.toml`\nrather than beside `[cursor]` in the shared file.",
+      "description": "`[ui.cursor]`: the cursor keys alacritty has no equivalent for. Upstream\nwarns about keys it does not know, so these live in `alacritree.toml`\nrather than beside `[cursor]` in the shared file.",
       "properties": {
         "animate": {
           "default": false,
@@ -2299,7 +2299,7 @@
         },
         "animation_min_cells": {
           "default": 2,
-          "description": "Cells the cursor has to jump before the glide is worth playing.  Below\nthis it snaps, which keeps ordinary typing from smearing.",
+          "description": "Cells the cursor has to jump before the glide is worth playing. Below\nthis it snaps, which keeps ordinary typing from smearing.",
           "format": "uint8",
           "maximum": 255,
           "minimum": 0,
@@ -2307,7 +2307,7 @@
         },
         "animation_ms": {
           "default": 80,
-          "description": "How long that glide takes, in milliseconds.  Zero draws every cell\ndirectly, the same as leaving `animate` off.",
+          "description": "How long that glide takes, in milliseconds. Zero draws every cell\ndirectly, the same as leaving `animate` off.",
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
@@ -2319,7 +2319,7 @@
       "properties": {
         "enabled": {
           "default": true,
-          "description": "Accept dropped files at all.  `false` turns every target off.",
+          "description": "Accept dropped files at all. `false` turns every target off.",
           "type": "boolean"
         },
         "highlight": {
@@ -2366,11 +2366,11 @@
     "RawUiFont": {
       "properties": {
         "bold_family": {
-          "description": "Family used where the sidebar draws bold.  Unset uses `family`.",
+          "description": "Family used where the sidebar draws bold. Unset uses `family`.",
           "type": "string"
         },
         "bold_italic_family": {
-          "description": "Family used where the sidebar draws bold italic.  Unset uses `family`.",
+          "description": "Family used where the sidebar draws bold italic. Unset uses `family`.",
           "type": "string"
         },
         "builtin_symbols": {
@@ -2379,11 +2379,11 @@
           "type": "boolean"
         },
         "family": {
-          "description": "Family for sidebars, tabs and dialogs.  Unset uses the terminal font.",
+          "description": "Family for sidebars, tabs and dialogs. Unset uses the terminal font.",
           "type": "string"
         },
         "italic_family": {
-          "description": "Family used where the sidebar draws italic.  Unset uses `family`.",
+          "description": "Family used where the sidebar draws italic. Unset uses `family`.",
           "type": "string"
         },
         "size": {
@@ -2407,7 +2407,7 @@
           "type": "boolean"
         },
         "image_dir": {
-          "description": "Where pasted images are written.  Unset uses a cache directory.",
+          "description": "Where pasted images are written. Unset uses a cache directory.",
           "type": "string"
         },
         "image_keep": {
@@ -2523,7 +2523,7 @@
       "properties": {
         "notify": {
           "default": false,
-          "description": "Surface OSC 9 and OSC 777 desktop notifications.  The text reaches\nthe sidebar row either way; `[ui] notifications` decides whether a\ndesktop toast fires.",
+          "description": "Surface OSC 9 and OSC 777 desktop notifications. The text reaches\nthe sidebar row either way; `[ui] notifications` decides whether a\ndesktop toast fires.",
           "type": "boolean"
         },
         "pointer_shape": {
@@ -2538,7 +2538,7 @@
         },
         "report_cwd": {
           "default": false,
-          "description": "Track the shell's working directory from OSC 7 and OSC 9;9, and show\nit in the session row's hover text.  A sibling session then starts\nwhere the shell is rather than at the workspace root.",
+          "description": "Track the shell's working directory from OSC 7 and OSC 9;9, and show\nit in the session row's hover text. A sibling session then starts\nwhere the shell is rather than at the workspace root.",
           "type": "boolean"
         }
       },
@@ -2574,7 +2574,7 @@
           "type": "array"
         },
         "worktree_dir": {
-          "description": "Where new worktrees are created.  `$project` expands to the\nrepository's directory name.",
+          "description": "Where new worktrees are created. `$project` expands to the\nrepository's directory name.",
           "type": "string"
         }
       },
@@ -2601,17 +2601,17 @@
       "description": "Top-level `[wsl]`: platform-integration options. Lives outside `[ui]`\nbecause nothing here is presentation. It governs how the app talks to\ndistros.",
       "properties": {
         "automount_root": {
-          "description": "Distro-side mount point for Windows drives, mirroring wsl.conf's\n`[automount] root`.  Only used for paths *we* translate (git output\nfrom inside a distro); `wsl.exe --cd` translates with the distro's\nreal mount table regardless of this value.  Unset means `/mnt`; the\nkey stays optional so the deprecated `[ui.wsl]` spelling can still win\nwhen this one is absent.",
+          "description": "Distro-side mount point for Windows drives, mirroring wsl.conf's\n`[automount] root`. Only used for paths *we* translate (git output\nfrom inside a distro); `wsl.exe --cd` translates with the distro's\nreal mount table regardless of this value. Unset means `/mnt`; the\nkey stays optional so the deprecated `[ui.wsl]` spelling can still win\nwhen this one is absent.",
           "type": "string"
         },
         "resident_helper": {
           "default": true,
-          "description": "Keep a resident helper process per distro for foreground probes,\nbatched git queries, and tool discovery.  `false` restores one-shot\nwsl.exe spawns everywhere; WSL sessions then always report \"no\nTUI\", so FocusLeft/FocusRight always move panel focus.",
+          "description": "Keep a resident helper process per distro for foreground probes,\nbatched git queries, and tool discovery. `false` restores one-shot\nwsl.exe spawns everywhere; WSL sessions then always report \"no\nTUI\", so FocusLeft/FocusRight always move panel focus.",
           "type": "boolean"
         },
         "warm_spare": {
           "default": false,
-          "description": "Keep one pre-launched terminal per distro a session has opened in, and\nhand it to the next WSL session there instead of launching `wsl.exe`.\nA launch can hang for half a minute while WSL compacts memory; a spare\nis already past that point.  Costs one idle `wsl.exe` and `sh` per\ndistro.  Read at startup.",
+          "description": "Keep one pre-launched terminal per distro a session has opened in, and\nhand it to the next WSL session there instead of launching `wsl.exe`.\nA launch can hang for half a minute while WSL compacts memory; a spare\nis already past that point. Costs one idle `wsl.exe` and `sh` per\ndistro. Read at startup.",
           "type": "boolean"
         }
       },
@@ -2689,7 +2689,7 @@
         "type": "string"
       },
       "default": {},
-      "description": "Environment variables added to every process alacritree spawns,\nincluding the shell.  Entries here may override variables alacritree\nsets itself.",
+      "description": "Environment variables added to every process alacritree spawns,\nincluding the shell. Entries here may override variables alacritree\nsets itself.",
       "type": "object"
     },
     "font": {
@@ -2706,7 +2706,7 @@
     },
     "keyboard": {
       "$ref": "#/$defs/RawKeyboard",
-      "description": "Key bindings.  Arrays concatenate across the two files, so bindings\nwritten in `alacritree.toml` add to the shared ones rather than\nreplacing them."
+      "description": "Key bindings. Arrays concatenate across the two files, so bindings\nwritten in `alacritree.toml` add to the shared ones rather than\nreplacing them."
     },
     "mouse": {
       "$ref": "#/$defs/RawMouse",
@@ -2730,7 +2730,7 @@
     },
     "vt": {
       "$ref": "#/$defs/RawVt",
-      "description": "Sequences read directly from the PTY byte stream.  `alacritree.toml`\nonly."
+      "description": "Sequences read directly from the PTY byte stream. `alacritree.toml`\nonly."
     },
     "window": {
       "$ref": "#/$defs/RawWindow",
@@ -2738,11 +2738,11 @@
     },
     "workspace": {
       "$ref": "#/$defs/RawWorkspace",
-      "description": "Where alacritree creates git worktrees.  `alacritree.toml` only."
+      "description": "Where alacritree creates git worktrees. `alacritree.toml` only."
     },
     "wsl": {
       "$ref": "#/$defs/RawWsl",
-      "description": "How alacritree talks to WSL distros.  `alacritree.toml` only."
+      "description": "How alacritree talks to WSL distros. `alacritree.toml` only."
     }
   },
   "title": "alacritree configuration",
