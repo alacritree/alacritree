@@ -16,7 +16,9 @@ use std::time::{Duration, Instant};
 
 use alacritree_common::side::Side;
 use alacritree_common::wsl_helper::{self, WslProbe};
-use alacritree_session_backend::{ForegroundProgram, Signals};
+#[cfg(any(test, target_os = "linux", target_os = "macos", windows))]
+use alacritree_session_backend::is_nav_tui_name;
+use alacritree_session_backend::{AGENT_PROCESS_NAMES, ForegroundProgram, Signals};
 
 /// The process that holds a native terminal: on Unix the foreground group's
 /// leader, on Windows the shell's newest child.
@@ -119,12 +121,6 @@ struct AgentCache {
 
 const AGENT_CACHE_TTL: Duration = Duration::from_millis(1000);
 
-/// Foreground process names recognized as agents. `comm` is kernel-truncated
-/// — 15 bytes on Linux, 16 on macOS (`cursor-agent` would otherwise miss) —
-/// and Windows names carry an `.exe` suffix, so matching uses `starts_with`.
-const AGENT_PROCESS_NAMES: &[&str] =
-    &["claude", "codex", "gemini", "aider", "cursor-agent", "continue"];
-
 /// Pids in the tree rooted at `root` (inclusive), from a `(pid, parent)`
 /// snapshot.  Root-inclusive so a session whose spawned program *is* the
 /// agent still matches.  Parent links in a snapshot can be stale or cyclic
@@ -156,19 +152,6 @@ fn agent_name_by_name(names: impl IntoIterator<Item = impl AsRef<str>>) -> Optio
         let n = n.as_ref().to_ascii_lowercase();
         AGENT_PROCESS_NAMES.iter().find(|name| n.starts_with(*name)).copied()
     })
-}
-
-/// TUIs that manage their own splits and cooperate with FocusLeft/
-/// FocusRight (vim, nvim, tmux, zellij, herdr): the key is forwarded while
-/// one runs, and the TUI calls `alacritree action FocusLeft` or `FocusRight`
-/// over IPC once it has no split left in that direction.  Matches Linux
-/// `comm` values (`tmux: client`) and Windows image names (`nvim.exe`)
-/// alike.  gvim stays out because it owns its own window.  The WSL helper's
-/// `PROBE` script carries the same list.
-#[cfg(any(test, target_os = "linux", target_os = "macos", windows))]
-fn is_nav_tui_name(name: &str) -> bool {
-    let n = name.to_ascii_lowercase();
-    ["nvim", "vim", "tmux", "zellij", "herdr"].iter().any(|tui| n.starts_with(tui))
 }
 
 /// FocusLeft/FocusRight passthrough decision for a shimmed WSL session: the

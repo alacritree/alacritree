@@ -11,6 +11,7 @@
 extern crate self as alacritree_session_backend;
 
 mod model;
+mod programs;
 #[cfg(any(test, feature = "test-support"))]
 mod scripted;
 
@@ -22,6 +23,7 @@ pub use alacritree_multiplexer::PaneKey;
 use strum::Display;
 
 pub use self::model::{ForegroundProgram, OpenRequest, ProcessTree, Screen, ShellCommand, Signals};
+pub use self::programs::{AGENT_PROCESS_NAMES, is_nav_tui_name};
 #[cfg(any(test, feature = "test-support"))]
 pub use self::scripted::{Call, Record, Scripted, ScriptedHandle};
 
