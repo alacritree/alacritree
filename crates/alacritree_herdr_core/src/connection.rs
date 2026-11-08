@@ -243,7 +243,11 @@ impl Connection {
         match answer.recv_timeout(CALL_TIMEOUT) {
             Ok(answer) => answer,
             Err(RecvTimeoutError::Timeout) => {
-                self.shared.routes().calls.remove(&id);
+                // A late reply that opens a stream must still find its call,
+                // so the demux thread can close the stream nobody reads.
+                if opens != Opens::Stream {
+                    self.shared.routes().calls.remove(&id);
+                }
                 Err(CoreError::Timeout(method.to_string()))
             },
             Err(RecvTimeoutError::Disconnected) => Err(CoreError::Closed),
@@ -447,7 +451,11 @@ fn answer(routes: &mut Routes, frames: &Sender<Vec<u8>>, waker: &Waker, payload:
         },
         _ => None,
     };
-    let _ = pending.reply.send(Ok(Answer { result, stream }));
+    let delivered = pending.reply.send(Ok(Answer { result, stream }));
+    if let Err(mpsc::SendError(Ok(Answer { stream: Some((channel, _)), .. }))) = delivered {
+        routes.streams.remove(&channel);
+        let _ = frames.send(wire::encode(channel, wire::CLOSE, &[]));
+    }
 }
 
 fn snapshot(terminals: &Value) -> HashMap<String, Facts> {
@@ -601,6 +609,23 @@ mod tests {
         route(&shared, &frames, Frame { channel: 3, kind: wire::DATA, payload: b"late".to_vec() });
 
         assert!(matches!(stream.try_recv(), Err(mpsc::TryRecvError::Disconnected)));
+    }
+
+    /// A stream whose attach gave up waiting is closed when its reply comes
+    /// in after all, so the core does not hold it open with nobody reading.
+    #[test]
+    fn a_stream_opened_after_its_call_gave_up_is_closed() {
+        let mut routes = Routes::default();
+        let (reply, gave_up) = mpsc::channel();
+        drop(gave_up);
+        routes.calls.insert(7, Pending { opens: Opens::Stream, reply });
+        let (frames, sent) = mpsc::channel();
+        let late = json!({ "jsonrpc": "2.0", "id": 7, "result": { "channel": 9 } });
+
+        answer(&mut routes, &frames, &Waker::default(), late.to_string().as_bytes());
+
+        assert_eq!(sent.try_recv().ok(), Some(wire::encode(9, wire::CLOSE, &[])));
+        assert!(!routes.streams.contains_key(&9));
     }
 
     /// The core may cut an event line across frames.
