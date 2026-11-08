@@ -510,6 +510,16 @@ fn hidden_core(session: &str) -> (Core, u64, String) {
     (core, pid, terminal)
 }
 
+/// The core that `backend`'s refused connect finds elsewhere. It comes
+/// without waiting out hc's start of a second core, so a new session never
+/// stalls on a core it cannot reach.
+fn found_elsewhere(backend: &HerdrCore) -> CoreElsewhere {
+    let asked = Instant::now();
+    let refused = backend.connect().expect_err("hc does not reach the core");
+    assert!(asked.elapsed() < Duration::from_secs(5), "the refusal took {:?}", asked.elapsed());
+    refused.elsewhere.expect("the core's lock names where it listens")
+}
+
 /// A core of the default session that listens where hc no longer looks is
 /// found through its lock. hc's config takes its socket, so alacritree and
 /// `hc` both reach that same core, its terminal still live.
@@ -519,8 +529,7 @@ fn a_default_core_hc_does_not_resolve_is_reached_through_hcs_config() {
     let (core, pid, terminal) = hidden_core("default");
 
     let backend = HerdrCore::new("hc");
-    let refused = backend.connect().expect_err("hc does not reach the core");
-    let found = refused.elsewhere.expect("the core's lock names where it listens");
+    let found = found_elsewhere(&backend);
     assert_eq!(found, CoreElsewhere {
         socket: PathBuf::from(&core.socket),
         remedy: Remedy::WriteConfig
@@ -543,8 +552,7 @@ fn a_core_of_another_session_is_reached_without_touching_hcs_config() {
     let (core, pid, terminal) = hidden_core(&format!("alacritree-e2e-{}", std::process::id()));
 
     let backend = HerdrCore::new("hc");
-    let refused = backend.connect().expect_err("hc does not reach the core");
-    let found = refused.elsewhere.expect("the core's lock names where it listens");
+    let found = found_elsewhere(&backend);
     assert_eq!(found, CoreElsewhere {
         socket: PathBuf::from(&core.socket),
         remedy: Remedy::SetEnv

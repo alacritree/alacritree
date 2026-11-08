@@ -44,9 +44,9 @@ pub(crate) struct HcPaths {
     config: PathBuf,
     /// `HC_SOCKET` is set, and it wins over the `socket` key.
     env_socket: bool,
-    /// `HC_SESSION` names the `default` session, which is the only one the
-    /// `socket` key may point elsewhere for.
-    default_session: bool,
+    /// The `HC_SESSION` this hc serves. Only `default` may have the shared
+    /// `socket` key point elsewhere.
+    session: String,
 }
 
 impl HcPaths {
@@ -61,7 +61,7 @@ impl HcPaths {
             lock: state_home.join("herdr-core").join(session).join("core.lock"),
             config: config_home.join("herdr-core").join("config.toml"),
             env_socket: var("HC_SOCKET").is_some(),
-            default_session: session == "default",
+            session: session.to_string(),
         }
     }
 }
@@ -95,8 +95,36 @@ pub(crate) fn find(paths: &HcPaths) -> Option<CoreElsewhere> {
     let socket = read_lock(&paths.lock)
         .filter(|socket| configured.as_ref() != Some(socket))
         .filter(|socket| answers(socket))?;
-    let remedy = if paths.default_session { Remedy::WriteConfig } else { Remedy::SetEnv };
+    let remedy = if paths.session == "default" { Remedy::WriteConfig } else { Remedy::SetEnv };
     Some(CoreElsewhere { socket, remedy })
+}
+
+/// A core elsewhere, found before hc runs. On Windows hc cannot read the
+/// lock a live core holds, so instead of refusing it starts a second core
+/// and waits seconds for it. Elsewhere hc refuses at once.
+#[cfg(windows)]
+pub(crate) fn before_hc(paths: &HcPaths) -> Option<CoreElsewhere> {
+    if paths.env_socket || answers(&hc_socket(paths)) {
+        return None;
+    }
+    find(paths)
+}
+
+#[cfg(not(windows))]
+pub(crate) fn before_hc(_paths: &HcPaths) -> Option<CoreElsewhere> {
+    None
+}
+
+/// Where hc looks for this session's core on Windows when `HC_SOCKET` is
+/// unset: the config's `socket`, else a pipe named for the user and the
+/// session, as herdr-core v0.1.18 `platform/windows.rs` `endpoints` names it.
+#[cfg(windows)]
+fn hc_socket(paths: &HcPaths) -> PathBuf {
+    configured_socket(&paths.config).unwrap_or_else(|| {
+        let user = std::env::var("USERNAME").unwrap_or_default();
+        let user: String = user.chars().filter(char::is_ascii_alphanumeric).collect();
+        format!(r"\\.\pipe\herdr-core-{user}-{}.sock", paths.session).into()
+    })
 }
 
 /// The socket that the `socket` key of hc's `config.toml` names.
@@ -183,7 +211,7 @@ mod tests {
             lock: dir.join("state").join("core.lock"),
             config: dir.join("config").join("config.toml"),
             env_socket: false,
-            default_session: true,
+            session: "default".into(),
         }
     }
 
@@ -220,7 +248,7 @@ mod tests {
 
         let found = |remedy| Some(CoreElsewhere { socket: listening.clone(), remedy });
         assert_eq!(find(&paths), found(Remedy::WriteConfig));
-        let other_session = HcPaths { default_session: false, ..paths_in(dir.path()) };
+        let other_session = HcPaths { session: "other".into(), ..paths_in(dir.path()) };
         assert_eq!(find(&other_session), found(Remedy::SetEnv));
 
         point_hc_at(&paths, &listening).unwrap();

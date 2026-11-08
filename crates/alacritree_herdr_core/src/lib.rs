@@ -46,6 +46,8 @@ pub enum CoreError {
     Spawn { program: String, source: std::io::Error },
     #[error("`hc connect` exited before it answered: {0}")]
     Refused(String),
+    #[error("a core listens at {}, where hc does not look", .0.socket.display())]
+    Elsewhere(CoreElsewhere),
     #[error("the core's answer was not herdr-core's protocol: {0}")]
     Protocol(String),
     #[error("the connection to the core closed")]
@@ -152,8 +154,13 @@ impl HerdrCore {
     /// already chose is not looked past.
     pub fn connect(&self) -> Result<(), Unreachable> {
         self.connection().map(drop).map_err(|error| {
-            let refused = matches!(error, CoreError::Refused(_)) && lock(&self.socket).is_none();
-            let elsewhere = refused.then(|| elsewhere::find(&HcPaths::from_env())).flatten();
+            let elsewhere = match &error {
+                CoreError::Elsewhere(found) => Some(found.clone()),
+                CoreError::Refused(_) if lock(&self.socket).is_none() => {
+                    elsewhere::find(&HcPaths::from_env())
+                },
+                _ => None,
+            };
             Unreachable { error, elsewhere }
         })
     }
@@ -196,7 +203,11 @@ impl HerdrCore {
             return Ok(connection);
         }
         let socket = lock(&self.socket).clone();
-        let opened = Connection::open(&self.program, socket.as_deref(), self.waker.clone());
+        let elsewhere = socket.is_none().then(|| elsewhere::before_hc(&HcPaths::from_env()));
+        let opened = match elsewhere.flatten() {
+            Some(found) => Err(CoreError::Elsewhere(found)),
+            None => Connection::open(&self.program, socket.as_deref(), self.waker.clone()),
+        };
         slot.failed_at = opened.is_err().then(Instant::now);
         let connection = opened?;
         slot.connection = Some(connection.clone());
