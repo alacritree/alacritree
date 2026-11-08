@@ -39,6 +39,7 @@ pub enum Tool {
     Tuicr,
     Task,
     Zellij,
+    Hc,
 }
 
 impl Tool {
@@ -315,7 +316,9 @@ mod tests {
     #[test]
     fn tool_names_are_the_lowercase_program_names() {
         let names: Vec<&str> = Tool::VARIANTS.iter().map(|t| t.name()).collect();
-        assert_eq!(names, ["git", "gh", "delta", "doppler", "herdr", "tuicr", "task", "zellij"]);
+        assert_eq!(names, [
+            "git", "gh", "delta", "doppler", "herdr", "tuicr", "task", "zellij", "hc"
+        ]);
         assert_eq!(Tool::Doppler.to_string(), "doppler");
     }
 

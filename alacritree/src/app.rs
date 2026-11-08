@@ -52,7 +52,7 @@ use crate::session::{
     self, AttentionVerdict, LiveState, PendingAttention, Session, SessionActivity, SessionId,
     SessionKind, ShellCommand, ShownState, TermSize, poll_attention_debounce,
 };
-use crate::session_backend::{self, Backend, Opened};
+use crate::session_backend::{self, Backend, Cores, Opened};
 use crate::shell_decision::{ShellDecision, shell_decision};
 use crate::sidebar_model::{SidebarInputs, SidebarModel, Step};
 use crate::sidebar_nav::{self, SidebarRow, StepTarget};
@@ -556,10 +556,10 @@ pub struct AlacritreeApp {
     /// What opens a new session's terminal when no other backend is
     /// preferred, or when the preferred one is unavailable.
     session_backend: Backend,
-    /// What `[integrations.herdr_core] session_backend` prefers for shells on
-    /// the native side, or `None` when it prefers native.
-    core_backend: Option<Backend>,
-    /// The startup connect to `core_backend`. The home tab's first shell
+    /// The core `[integrations.herdr_core] session_backend` prefers on each
+    /// side, or `None` when it prefers native.
+    cores: Option<Cores>,
+    /// The startup connect to the native core. The home tab's first shell
     /// waits for it, so a home tab whose terminals the core kept gets them
     /// back rather than one more. It answers a core that hc does not reach,
     /// when one listens elsewhere.
@@ -627,7 +627,7 @@ impl AlacritreeApp {
         ipc: (Option<ipc::server::SocketHandle>, Option<Receiver<ipc::server::AppCall>>),
     ) -> Self {
         let (font_chain, face_metrics) = fonts;
-        let core_backend = Backend::for_native_shells(&config.integrations.herdr_core);
+        let cores = Cores::from_config(&config.integrations.herdr_core);
         let color_glyph_budget_mb = config.font.color_glyph_cache_mb;
         let grid_snapshot = crate::terminal_view::GridSnapshot::new(&config.palette);
         let (ipc_socket, ipc_rx) = ipc;
@@ -695,7 +695,7 @@ impl AlacritreeApp {
             last_pane_geometry: None,
             project_refreshes: Default::default(),
             session_backend: Backend::native(),
-            core_backend,
+            cores,
             core_connect: None,
             pending_spawns: Default::default(),
             multiplexers,
@@ -844,11 +844,12 @@ impl AlacritreeApp {
             wsl::prime_distros_from_cli(blocking);
         }));
 
-        // `hc connect` may start the core. Clones share one connection, so
-        // connecting here keeps that wait off the frame that opens the first
-        // session.
-        if let Some(core) = &app.core_backend {
-            core.wake_on_new_terminals(&cc.egui_ctx);
+        // `hc connect` may start the core, so connecting here keeps that wait
+        // off the frame that opens the first session. A distro's connection
+        // opens with its WSL helper.
+        if let Some(cores) = &app.cores {
+            cores.wake_on_new_terminals(&cc.egui_ctx);
+            cores.open_beside_wsl_helpers();
         }
         app.start_core_connect();
 
@@ -1184,9 +1185,9 @@ impl AlacritreeApp {
 
     /// Connect to the core on a job, which `poll_core_terminals` follows.
     fn start_core_connect(&mut self) {
-        let Some(core) = self.core_backend.clone() else { return };
+        let Some(cores) = self.cores.clone() else { return };
         self.core_connect =
-            Some(jobs::pool().spawn(jobs::Priority::Interactive, move |_| core.connect()));
+            Some(jobs::pool().spawn(jobs::Priority::Interactive, move |_| cores.connect()));
     }
 
     /// Once the startup connect to the core is done, take in the terminals
@@ -1218,11 +1219,17 @@ impl AlacritreeApp {
     /// terminal becomes its workspace's active session only when that
     /// workspace has none.
     fn adopt_core_terminals(&mut self, ctx: &Context) {
-        let Some(core) = self.core_backend.clone() else { return };
-        let mut adoptable = core.adoptable();
+        let Some(cores) = &self.cores else { return };
+        let mut adoptable: Vec<_> = cores
+            .all()
+            .into_iter()
+            .flat_map(|(side, core)| {
+                core.adoptable().into_iter().map(move |found| (side.clone(), core.clone(), found))
+            })
+            .collect();
         // Each insert counts the ones before it, so the lowest goes first.
-        adoptable.sort_by_key(|adoptable| adoptable.placement.position);
-        for Adoptable { terminal, placement } in adoptable {
+        adoptable.sort_by_key(|(_, _, adoptable)| adoptable.placement.position);
+        for (side, core, Adoptable { terminal, placement }) in adoptable {
             let workspace =
                 placement.workspace.as_deref().and_then(|path| self.workspace_for_path(path));
             let (size, cell_size) = self.next_spawn_geometry();
@@ -1233,13 +1240,16 @@ impl AlacritreeApp {
                 size,
                 cell_size,
                 terminal,
+                match side {
+                    Side::Wsl(distro) => Some(distro),
+                    Side::Native => None,
+                },
             );
             let id = session.id;
             self.sessions.insert_at(session, placement.position);
             if !self.sessions.has_active(&workspace) {
                 self.sessions.set_active(workspace, id);
             }
-            let core = core.clone();
             let attached = self.start_open(id, move || {
                 core.attach(request).map(|handle| Opened { handle, fell_back: None })
             });
@@ -1399,8 +1409,10 @@ impl AlacritreeApp {
         wsl_probe: Option<WslProbe>,
         wsl_distro: Option<String>,
     ) -> Result<SessionId, SessionError> {
-        let native_side = wsl_distro.is_none() && wsl_probe.is_none();
-        let preferred = self.core_backend.clone().filter(|_| native_side);
+        // Only a login shell carries `wsl_distro`, and it runs in its
+        // distro's core.
+        let side = wsl_distro.clone().map_or(Side::Native, Side::Wsl);
+        let preferred = self.cores.as_ref().and_then(|cores| cores.on(&side));
         self.spawn_shell_on(preferred, ctx, workspace, directory, shell, wsl_probe, wsl_distro)
     }
 
@@ -4678,6 +4690,7 @@ mod tests {
 
     use super::*;
     use crate::config::{SidebarFocus, UiTheme};
+    use crate::session_backend::Cores;
     use alacritree_multiplexer::{CreatedPane, Launch};
     use alacritree_session_backend::{
         ForegroundProgram, Scripted as ScriptedSessions, Side, Signals,
@@ -5214,8 +5227,44 @@ mod tests {
     fn app_preferring_a_scripted_core() -> (AlacritreeApp, ScriptedSessions, ScriptedSessions) {
         let (mut app, native) = app_on_scripted_backend();
         let core = ScriptedSessions::default();
-        app.core_backend = Some(Backend::Scripted(core.clone()));
+        app.cores = Some(Cores::Scripted(HashMap::from([(Side::Native, core.clone())])));
         (app, native, core)
+    }
+
+    /// A shell in a distro runs in that distro's core, and its sidebar row
+    /// shows the program and cwd that core reports, with no stream needed.
+    #[test]
+    fn a_distro_shell_opens_in_its_distros_core_and_lists_what_it_reports() {
+        let (mut app, native, native_core) = app_preferring_a_scripted_core();
+        app.session_rows_always = true;
+        let distro_core = ScriptedSessions::default();
+        if let Some(Cores::Scripted(cores)) = &mut app.cores {
+            cores.insert(Side::Wsl("d".into()), distro_core.clone());
+        }
+
+        let id = app
+            .spawn_session_with_shell(&Context::default(), None, None, None, None, Some("d".into()))
+            .expect("a scripted open");
+        let program = ForegroundProgram {
+            side: Side::Wsl("d".into()),
+            pid: Some(7),
+            argv: vec!["claude".into()],
+            cwd: Some(PathBuf::from(r"\\wsl.localhost\d\home\me\src")),
+        };
+        distro_core.set_foreground(id, Some(program));
+
+        assert!(distro_core.session(id).is_some());
+        assert!(native.session(id).is_none() && native_core.session(id).is_none());
+        let listed = app.listed_workspace_rows();
+        let row = app
+            .workspace_rows(&None, &listed)
+            .into_iter()
+            .find_map(|row| match row {
+                WorkspaceRowData::Session(row) if row.id == id => Some(row),
+                _ => None,
+            })
+            .expect("the sidebar lists the session");
+        assert_eq!(row.cwd, Some(PathBuf::from(r"\\wsl.localhost\d\home\me\src")));
     }
 
     #[test]

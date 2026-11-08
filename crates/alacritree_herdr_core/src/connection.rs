@@ -8,8 +8,8 @@
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, ChildStdout, Stdio};
+use std::path::PathBuf;
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
@@ -23,7 +23,7 @@ use crate::parser::Chunk;
 use crate::wire::{self, Frame};
 
 /// The protocol generation this client speaks.
-const GENERATION: u32 = 1;
+pub(crate) const GENERATION: u32 = 1;
 
 /// How long `hc connect` may take to answer `hello`. It starts the core
 /// when none is running.
@@ -150,18 +150,14 @@ pub(crate) struct Connection {
 }
 
 impl Connection {
-    /// Start `hc connect`, switch it to framed mode and follow its events.
-    /// `socket` replaces the socket hc resolves.
+    /// Start `command`, which runs `hc connect`, switch it to framed mode and
+    /// follow its events. `program` names it in a spawn error.
     pub(crate) fn open(
+        mut command: Command,
         program: &str,
-        socket: Option<&Path>,
         waker: Waker,
     ) -> Result<Arc<Self>, CoreError> {
-        let mut command = alacritree_common::command_ext::hidden(program);
-        command.arg("connect").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
-        if let Some(socket) = socket {
-            command.env("HC_SOCKET", socket);
-        }
+        command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
         // Backend calls may block, as the trait says. The app connects on a
         // job at startup so the first session finds the connection open.
         #[allow(clippy::disallowed_methods)]

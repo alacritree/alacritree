@@ -67,6 +67,10 @@ pub enum SessionError {
     /// does not answer.
     #[error("the {backend} session backend is unavailable: {source}")]
     Unavailable { backend: SessionBackendKind, source: Box<dyn std::error::Error + Send + Sync> },
+    /// The request went out and no answer came back, so the terminal may
+    /// run. Opening it on another backend could run the program twice.
+    #[error("the {backend} session backend may have started the terminal: {source}")]
+    Unconfirmed { backend: SessionBackendKind, source: Box<dyn std::error::Error + Send + Sync> },
     #[cfg(any(test, feature = "test-support"))]
     #[error("{0}")]
     Scripted(String),

@@ -6,7 +6,9 @@
 //! the native loop must also go here. It sends CREDIT for the bytes it has
 //! parsed, so the core's flow control follows the parser and not the socket.
 //! After a dropped connection it alone takes up the new stream, so nothing
-//! from the earlier one reaches the grid after the reset.
+//! from the earlier one reaches the grid after the reset. A session whose
+//! side had no connection when it opened starts with no stream, and its
+//! first attach goes through the same wait.
 
 use std::process::ExitStatus;
 use std::sync::Arc;
@@ -66,10 +68,12 @@ impl CloseReason {
 const RECONNECTING: &[u8] =
     b"\x1b[0m\r\n[alacritree] lost the connection to herdr-core, reconnecting\r\n";
 
+/// Follow `stream`, or with none, the first stream the session's side
+/// gives once its connection is up.
 pub(crate) fn spawn<L>(
     term: Arc<FairMutex<Term<L>>>,
     listener: L,
-    stream: Receiver<Chunk>,
+    stream: Option<Receiver<Chunk>>,
     attached: Arc<Attached>,
 ) -> std::io::Result<()>
 where
@@ -98,15 +102,21 @@ enum End {
 impl<L: EventListener> Parser<L> {
     /// Follow the session's stream, and each one that replaces it after a
     /// dropped connection. A reattach repaints the whole screen and its
-    /// scrollback, so the grid starts over from a reset.
-    fn run(self, mut stream: Receiver<Chunk>) {
+    /// scrollback, so the grid starts over from a reset. The first attach
+    /// of a session that started without a stream waits the same way.
+    fn run(self, stream: Option<Receiver<Chunk>>) {
+        let mut stream = match stream.map_or_else(|| self.attached.resume(false), Resumed::Stream) {
+            Resumed::Stream(first) => first,
+            Resumed::Gone => return self.close(Some(CloseReason::default())),
+            Resumed::Released => return,
+        };
         loop {
             if let End::Closed(reason) = self.follow(&stream) {
                 return self.close(reason);
             }
             Processor::<StdSyncHandler>::new().advance(&mut *self.term.lock(), RECONNECTING);
             self.listener.send_event(Event::Wakeup);
-            stream = match self.attached.resume() {
+            stream = match self.attached.resume(true) {
                 Resumed::Stream(next) => next,
                 Resumed::Gone => return self.close(Some(CloseReason::default())),
                 Resumed::Released => return,

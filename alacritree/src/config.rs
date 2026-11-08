@@ -657,6 +657,7 @@ impl IntegrationsConfig {
             Tool::Tuicr => (&self.tuicr.path, &self.tuicr.wsl_path),
             Tool::Task => (&self.taskwarrior.path, &self.taskwarrior.wsl_path),
             Tool::Zellij => (&self.zellij.path, &self.zellij.wsl_path),
+            Tool::Hc => (&self.herdr_core.path, &self.herdr_core.wsl_path),
         };
         ToolPaths { native: native.clone(), wsl: wsl.clone() }
     }

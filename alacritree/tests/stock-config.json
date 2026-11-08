@@ -126,7 +126,8 @@
         "size": null
       },
       "path": "hc",
-      "session_backend": "native"
+      "session_backend": "native",
+      "wsl_path": null
     },
     "tasks": {
       "command": null

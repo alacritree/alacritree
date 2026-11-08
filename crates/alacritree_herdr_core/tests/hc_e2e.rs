@@ -592,3 +592,120 @@ fn own_terminals_carry_alacritree_labels_and_where_and_keep() {
     assert_eq!(listed.map(|r| r["where"].clone()), Some(Value::from("app / main")));
     opened.handle.kill();
 }
+
+#[cfg(windows)]
+use alacritree_common::{side, wsl};
+
+/// A throwaway core inside a WSL distro: the one `ALACRITREE_E2E_DISTRO`
+/// names, else the default. Its `HC_*` and XDG paths reach every `wsl.exe`
+/// this test starts through `WSLENV`, the helper and the resident
+/// connection included.
+#[cfg(windows)]
+struct DistroCore {
+    distro: String,
+    dir: String,
+}
+
+#[cfg(windows)]
+impl DistroCore {
+    /// `None` when this machine has no distro.
+    fn start() -> Option<Self> {
+        let distro = std::env::var("ALACRITREE_E2E_DISTRO")
+            .ok()
+            .or_else(|| wsl::distros().into_iter().find(|d| d.is_default).map(|d| d.name))?;
+        let dir = format!("/tmp/alacritree-hc-e2e-{}", std::process::id());
+        let vars = [
+            ("HC_SOCKET", format!("{dir}/hc.sock")),
+            ("HC_SESSION", format!("alacritree-e2e-{}", std::process::id())),
+            ("XDG_STATE_HOME", format!("{dir}/state")),
+            ("XDG_CONFIG_HOME", format!("{dir}/config")),
+            ("WSLENV", "HC_SOCKET:HC_SESSION:XDG_STATE_HOME:XDG_CONFIG_HOME".to_string()),
+        ];
+        for (name, value) in vars {
+            // SAFETY: nextest gives each test a process of its own, and this
+            // runs before any thread.
+            unsafe { std::env::set_var(name, value) };
+        }
+        let made = wsl::command(&distro, None).args(["mkdir", "-p", &dir]).output();
+        assert!(made.is_ok_and(|out| out.status.success()), "the core's directory exists");
+        let core = Self { distro, dir };
+        let started = core.hc(&["server", "start"]);
+        assert!(started.status.success(), "the throwaway core starts: {started:?}");
+        Some(core)
+    }
+
+    /// `hc` inside the distro, found the way the resident connection finds it.
+    fn hc(&self, args: &[&str]) -> std::process::Output {
+        side::wsl_command_with_clean_stdout(&self.distro, "hc", args)
+            .output()
+            .expect("wsl.exe runs")
+    }
+
+    fn live_terminals(&self) -> usize {
+        let listed: Value =
+            serde_json::from_slice(&self.hc(&["ls", "--json"]).stdout).unwrap_or_default();
+        listed["terminals"].as_array().map_or(0, Vec::len)
+    }
+
+    fn windows_dir(&self) -> std::path::PathBuf {
+        wsl::linux_to_windows(&self.dir, &self.distro)
+    }
+}
+
+#[cfg(windows)]
+impl Drop for DistroCore {
+    fn drop(&mut self) {
+        let _ = self.hc(&["server", "stop"]);
+        let _ = wsl::command(&self.distro, None).args(["rm", "-rf", &self.dir]).output();
+    }
+}
+
+/// The `wsl.exe` processes this test started that still run.
+#[cfg(windows)]
+fn wsl_launches() -> usize {
+    let filter = format!("ParentProcessId={} and Name='wsl.exe'", std::process::id());
+    let count = format!("@(Get-CimInstance Win32_Process -Filter \"{filter}\").Count");
+    let out = Command::new("powershell.exe")
+        .args(["-NoProfile", "-Command", &count])
+        .output()
+        .expect("powershell runs");
+    String::from_utf8_lossy(&out.stdout).trim().parse().expect("a count")
+}
+
+/// A distro's sessions run in the distro's own core, and every one after the
+/// helper and the resident connection are up costs no `wsl.exe` launch.
+#[cfg(windows)]
+#[test]
+#[ignore = "needs a WSL distro with hc"]
+fn distro_sessions_share_one_resident_connection() {
+    use alacritree_common::wsl_helper;
+    use alacritree_herdr_core::{HerdrCoreConfig, HerdrCores};
+    use alacritree_session_backend::Side;
+
+    let Some(core) = DistroCore::start() else {
+        eprintln!("skip: this machine has no WSL distro");
+        return;
+    };
+    let cores = HerdrCores::new(&HerdrCoreConfig::default());
+    cores.open_beside_wsl_helpers();
+    let backend = cores.on(&Side::Wsl(core.distro.clone()));
+    wait_until("the distro's helper", Duration::from_secs(60), || {
+        wsl_helper::client(&core.distro).is_some()
+    });
+    wait_until("the resident connection beside the helper", Duration::from_secs(30), || {
+        wsl_launches() == 2
+    });
+
+    let first = open(&backend, shell(), &core.windows_dir());
+    first.handle.write(b"echo first-in-distro\r".to_vec());
+    shows(&first, "first-in-distro");
+    let launched = wsl_launches();
+
+    let second = open(&backend, shell(), &core.windows_dir());
+    second.handle.write(b"echo second-in-distro\r".to_vec());
+    shows(&second, "second-in-distro");
+
+    assert_eq!(wsl_launches(), launched, "the second session launched wsl.exe");
+    assert_eq!(launched, 2, "one helper and one resident connection");
+    assert_eq!(core.live_terminals(), 2, "both sessions run in the distro's core");
+}

@@ -887,11 +887,16 @@
         },
         "session_backend": {
           "default": "native",
-          "description": "Which backend runs the terminal of a new session on the native side.\n\n\"native\" opens a PTY that alacritree owns. \"herdr_core\" runs the\nsession as a terminal in the native side's herdr-core core, through\n`hc connect`. Such a terminal outlives alacritree: quitting leaves it\nrunning, and the next launch puts it back in its workspace. When that\ncore cannot be used, the session opens native and a notice names the\ncause. WSL sessions and diff panes stay native.",
+          "description": "Which backend runs the terminal of a new session.\n\n\"native\" opens a PTY that alacritree owns. \"herdr_core\" runs the\nsession as a terminal in the core of the session's side, through\n`hc connect`. A native shell runs in the native core, and a shell in\na WSL distro runs in the distro's core. Such a terminal outlives\nalacritree. Quitting leaves it running, and the next launch puts it\nback in its workspace. When that core cannot be used, the session\nopens native and a notice names the cause. Diff panes stay native.",
           "enum": [
             "native",
             "herdr_core"
           ],
+          "type": "string"
+        },
+        "wsl_path": {
+          "default": "",
+          "description": "The `hc` program to run inside every WSL distro, as written. Empty\nfinds it by name through the distro's login shell.",
           "type": "string"
         }
       },

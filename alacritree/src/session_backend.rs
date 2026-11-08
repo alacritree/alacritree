@@ -3,12 +3,16 @@
 //! `alacritree_session_backend`; this module decides which ones exist and
 //! wires them to the window.
 
+#[cfg(test)]
+use std::collections::HashMap;
+
 use alacritree_herdr_core::{
-    CoreElsewhere, HcConfigError, HerdrCore, HerdrCoreConfig, HerdrCoreHandle, SessionBackendChoice,
+    CoreElsewhere, HcConfigError, HerdrCore, HerdrCoreConfig, HerdrCoreHandle, HerdrCores,
+    SessionBackendChoice,
 };
 use alacritree_native::{Native, NativeHandle};
 use alacritree_session_backend::{
-    Adoptable, AttachRequest, OpenRequest, SessionBackend, SessionError, SessionHandle,
+    Adoptable, AttachRequest, OpenRequest, SessionBackend, SessionError, SessionHandle, Side,
     ambassador_impl_SessionHandle,
 };
 #[cfg(test)]
@@ -32,45 +36,101 @@ impl Backend {
     pub(crate) fn native() -> Self {
         Self::Native(Native::new(crate::frame_log::spawn_phase))
     }
+}
 
-    /// The backend that `[integrations.herdr_core] session_backend` picks for
-    /// shells on the native side, or `None` when it picks native.
-    pub(crate) fn for_native_shells(config: &HerdrCoreConfig) -> Option<Self> {
+/// The core that `[integrations.herdr_core] session_backend` prefers on each
+/// side. Cloned into the job that opens a session.
+#[derive(Clone)]
+pub(crate) enum Cores {
+    HerdrCore(HerdrCores),
+    /// A scripted core per side, and none on a side it does not name.
+    #[cfg(test)]
+    Scripted(HashMap<Side, Scripted>),
+}
+
+impl Cores {
+    /// `None` when the config picks native.
+    pub(crate) fn from_config(config: &HerdrCoreConfig) -> Option<Self> {
         match config.session_backend {
             SessionBackendChoice::Native => None,
-            SessionBackendChoice::HerdrCore => Some(Self::HerdrCore(HerdrCore::new(&config.path))),
+            SessionBackendChoice::HerdrCore => Some(Self::HerdrCore(HerdrCores::new(config))),
         }
     }
 
-    /// Connect ahead of the first session. When hc does not reach the core,
-    /// answer a core that listens where hc does not look.
+    /// Connect the native core ahead of the first session. When hc does not
+    /// reach it, answer a core that listens where hc does not look.
     pub(crate) fn connect(&self) -> Option<CoreElsewhere> {
-        let Self::HerdrCore(core) = self else {
-            if let Err(error) = SessionBackend::<Handle>::ready(self) {
-                log::warn!("herdr-core: {error}");
-            }
-            return None;
-        };
-        let unreachable = core.connect().err()?;
-        log::warn!("herdr-core: {unreachable}");
-        unreachable.elsewhere
+        match self {
+            Self::HerdrCore(cores) => {
+                let unreachable = cores.on(&Side::Native).connect().err()?;
+                log::warn!("herdr-core: {unreachable}");
+                unreachable.elsewhere
+            },
+            #[cfg(test)]
+            Self::Scripted(_) => {
+                if let Some(Err(error)) =
+                    self.on(&Side::Native).map(|core| SessionBackend::<Handle>::ready(&core))
+                {
+                    log::warn!("herdr-core: {error}");
+                }
+                None
+            },
+        }
     }
 
-    /// Reach the core that `found` names. Only a herdr-core backend has an
-    /// hc to point.
+    /// Reach the core that `found` names. Only the native side's herdr-core
+    /// has an hc to point.
     pub(crate) fn use_core(&self, found: &CoreElsewhere) -> Result<(), HcConfigError> {
         match self {
-            Self::HerdrCore(core) => core.use_core(found),
-            _ => Ok(()),
+            Self::HerdrCore(cores) => cores.on(&Side::Native).use_core(found),
+            #[cfg(test)]
+            Self::Scripted(_) => Ok(()),
         }
     }
 
-    /// Repaint whenever this backend reports a terminal that may be
-    /// adoptable, so an idle window still picks it up.
+    /// Open each distro's core connection when its WSL helper starts.
+    pub(crate) fn open_beside_wsl_helpers(&self) {
+        match self {
+            Self::HerdrCore(cores) => cores.open_beside_wsl_helpers(),
+            #[cfg(test)]
+            Self::Scripted(_) => {},
+        }
+    }
+
+    /// Every side's core that this run has used so far, with its side.
+    pub(crate) fn all(&self) -> Vec<(Side, Backend)> {
+        match self {
+            Self::HerdrCore(cores) => cores
+                .all()
+                .into_iter()
+                .map(|(side, core)| (side, Backend::HerdrCore(core)))
+                .collect(),
+            #[cfg(test)]
+            Self::Scripted(cores) => cores
+                .iter()
+                .map(|(side, core)| (side.clone(), Backend::Scripted(core.clone())))
+                .collect(),
+        }
+    }
+
+    pub(crate) fn on(&self, side: &Side) -> Option<Backend> {
+        match self {
+            Self::HerdrCore(cores) => Some(Backend::HerdrCore(cores.on(side))),
+            #[cfg(test)]
+            Self::Scripted(cores) => cores.get(side).cloned().map(Backend::Scripted),
+        }
+    }
+
+    /// Repaint whenever a core reports a terminal that may be adoptable, so
+    /// an idle window still picks it up.
     pub(crate) fn wake_on_new_terminals(&self, ctx: &egui::Context) {
-        if let Self::HerdrCore(core) = self {
-            let ctx = ctx.clone();
-            core.set_waker(move || ctx.request_repaint());
+        match self {
+            Self::HerdrCore(cores) => {
+                let ctx = ctx.clone();
+                cores.set_waker(move || ctx.request_repaint());
+            },
+            #[cfg(test)]
+            Self::Scripted(_) => {},
         }
     }
 }
@@ -83,7 +143,9 @@ pub(crate) struct Opened {
 }
 
 /// Open on `preferred`, and on `native` when `preferred` is not ready or
-/// cannot start the terminal, so a new session always gets one.
+/// cannot start the terminal, so a new session always gets one. A terminal
+/// that `preferred` may have started opens nowhere else, since the backend
+/// adopts it once it reports it.
 pub(crate) fn open_preferring<L>(
     preferred: Option<&Backend>,
     native: &Backend,
@@ -95,6 +157,7 @@ where
     let fell_back = match preferred {
         Some(backend) => match backend.ready().and_then(|()| backend.open(request.clone())) {
             Ok(handle) => return Ok(Opened { handle, fell_back: None }),
+            Err(error @ SessionError::Unconfirmed { .. }) => return Err(error),
             Err(error) => Some(error),
         },
         None => None,

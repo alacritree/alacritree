@@ -175,11 +175,11 @@ set -u
 b64() { printf %s "$1" | base64 | tr -d '\n'; }
 s=$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f7)
 [ -x "$s" ] || s=${SHELL:-/bin/sh}
-caps=$("$s" -lc 'command -v git || echo; command -v gh || echo; command -v delta || echo; command -v doppler || echo; command -v herdr || echo; command -v tuicr || echo; command -v task || echo; command -v zellij || echo' 2>/dev/null)
+caps=$("$s" -lc 'command -v git || echo; command -v gh || echo; command -v delta || echo; command -v doppler || echo; command -v herdr || echo; command -v tuicr || echo; command -v task || echo; command -v zellij || echo; command -v hc || echo' 2>/dev/null)
 rt=${XDG_RUNTIME_DIR:-/tmp}/alacritree
 printf 'hello\t3'
 i=1
-while [ "$i" -le 8 ]; do
+while [ "$i" -le 9 ]; do
   printf '\t%s' "$(b64 "$(printf %s "$caps" | sed -n "${i}p")")"
   i=$((i + 1))
 done
@@ -513,6 +513,12 @@ pub fn is_wsl_program(program: &str) -> bool {
         .file_stem()
         .and_then(|stem| stem.to_str())
         .is_some_and(|stem| stem.eq_ignore_ascii_case("wsl"))
+}
+
+/// The directory a `wsl.exe` argv starts in through `--cd`, as written.
+pub fn launch_dir(args: &[String]) -> Option<String> {
+    let (flags, _, _) = split_leading_flags(args)?;
+    flags.chunks(2).rfind(|pair| pair[0] == "--cd").map(|pair| pair[1].clone())
 }
 
 /// The leading `-d`/`--distribution <distro>` and `--cd <dir>` flags, the
@@ -1024,7 +1030,25 @@ pub fn client(distro: &str) -> Option<Arc<HelperClient>> {
         _ => {},
     }
     reg.insert(distro.to_string(), Slot::Live(HelperClient::spawn(distro)));
+    drop(reg);
+    if let Some(hook) = SPAWN_HOOK.get() {
+        hook(distro);
+    }
     None
+}
+
+type SpawnHook = Box<dyn Fn(&str) + Send + Sync>;
+
+static SPAWN_HOOK: OnceLock<SpawnHook> = OnceLock::new();
+
+/// Run `hook` with the distro's name each time a helper starts, so a caller
+/// that keeps its own long-lived `wsl.exe` per distro launches it beside the
+/// helper and the two pay the distro's start together. Set once per process.
+/// The hook runs on the caller's thread and must not block or call [`client`].
+pub fn on_spawn(hook: impl Fn(&str) + Send + Sync + 'static) {
+    if SPAWN_HOOK.set(Box::new(hook)).is_err() {
+        log::warn!("wsl helper: a spawn hook was already set");
+    }
 }
 
 /// Requests `distro`'s helper has been sent. A quiet tab sends none.
@@ -1127,6 +1151,12 @@ pub fn watch_tests() -> std::sync::MutexGuard<'static, ()> {
     LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// A hello `parse_hello` accepts: every tool field and the runtime dir empty.
+#[cfg(any(test, feature = "test-support"))]
+fn empty_hello() -> String {
+    format!("hello\t{PROTOCOL_VERSION}{}\t\n", "\t".repeat(HELLO_TOOLS.len()))
+}
+
 /// A helper that has said hello and then waits. `watches_sent` is how a
 /// test sees the request a tab sends after a failure.
 #[cfg(any(test, feature = "test-support"))]
@@ -1164,7 +1194,7 @@ pub fn silent_helper() -> Arc<HelperClient> {
     }
 
     let (hello_tx, hello_rx) = mpsc::channel();
-    hello_tx.send(b"hello\t3\t\t\t\t\t\t\t\t\t\n".to_vec()).expect("the client has not started");
+    hello_tx.send(empty_hello().into_bytes()).expect("the client has not started");
     std::mem::forget(hello_tx);
     let client = HelperClient::over(
         "silent",
@@ -1212,7 +1242,7 @@ pub fn refusing_client() -> Arc<HelperClient> {
     }
 
     let (tx, rx) = mpsc::channel();
-    tx.send(b"hello\t3\t\t\t\t\t\t\t\t\t\n".to_vec()).expect("the client has not started");
+    tx.send(empty_hello().into_bytes()).expect("the client has not started");
     // The reader treats a closed pipe as the helper dying. The sender stays
     // so the refusal is the write, not that death.
     std::mem::forget(tx);
@@ -1578,8 +1608,14 @@ fn ensure_cell_size_writer() {
 mod tests {
     use super::*;
 
-    /// A hello `parse_hello` accepts: every tool field and the runtime dir empty.
-    const HELLO_LINE: &str = "hello\t3\t\t\t\t\t\t\t\t\t\n";
+    #[test]
+    fn a_launch_dir_is_the_cd_flag_of_a_wsl_argv() {
+        let argv = |args: &[&str]| args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();
+
+        assert_eq!(launch_dir(&argv(&["-d", "d", "--cd", "~", "--exec", "sh"])), Some("~".into()));
+        assert_eq!(launch_dir(&argv(&["-d", "d"])), None);
+        assert_eq!(launch_dir(&argv(&["--exec", "sh", "--cd", "/x"])), None);
+    }
 
     /// One end of a pipe pair standing in for the helper's stdio.
     struct FakePipe {
@@ -1657,7 +1693,7 @@ mod tests {
         fn with_timing(timing: Timing) -> (Arc<HelperClient>, FakeHelper) {
             let (to_client, client_reads) = mpsc::channel();
             let (client_writes, from_client) = mpsc::channel();
-            to_client.send(HELLO_LINE.as_bytes().to_vec()).expect("client not started yet");
+            to_client.send(empty_hello().into_bytes()).expect("client not started yet");
             let client = HelperClient::over(
                 "fake",
                 Box::new(FakePipe { rx: client_reads, buf: Default::default() }),
@@ -2131,7 +2167,7 @@ mod tests {
     fn parses_hello_with_missing_tools() {
         // git and runtime dir present, every other tool absent.
         let line =
-            "hello\t3\tL3Vzci9iaW4vZ2l0\t\t\t\t\t\t\t\tL3J1bi91c2VyLzEwMDAvYWxhY3JpdHJlZQ==\n";
+            "hello\t3\tL3Vzci9iaW4vZ2l0\t\t\t\t\t\t\t\t\tL3J1bi91c2VyLzEwMDAvYWxhY3JpdHJlZQ==\n";
         let caps = parse_hello(line).unwrap();
         assert_eq!(caps.path("git"), Some("/usr/bin/git"));
         assert_eq!(caps.path("delta"), None);
@@ -2149,7 +2185,7 @@ mod tests {
 
     #[test]
     fn hello_with_empty_trailing_field_still_parses() {
-        let caps = parse_hello(HELLO_LINE).expect("empty fields are valid");
+        let caps = parse_hello(&empty_hello()).expect("empty fields are valid");
         assert_eq!(caps.path("git"), None);
         assert_eq!(caps.runtime_dir, "");
     }
