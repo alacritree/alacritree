@@ -570,7 +570,6 @@ impl AlacritreeApp {
         let place = hc_place(installer.side());
         let command = installer.command_line();
 
-        let opening = self.modals.gate.opening(ModalKind::HcInstallOffer);
         let (cancel_via_key, confirm_via_key) =
             consume_modal_keys(ctx, &self.modals.gate, ModalKind::HcInstallOffer);
         let frame = modal_frame(&theme);
@@ -621,7 +620,7 @@ impl AlacritreeApp {
                         if modal_button(ui, &theme, "Not now", theme.text_dim).clicked() {
                             cancelled = true;
                         }
-                        focus_default_on_open(ui.ctx(), opening, install.id);
+                        focus_default(ui.ctx(), install.id);
                     });
                 });
             });
@@ -679,7 +678,6 @@ impl AlacritreeApp {
             ),
             Err(error) => (format!("Could not install hc {place}"), theme.error, error.to_string()),
         };
-        let opening = self.modals.gate.opening(ModalKind::HcInstallDone);
         let (cancel_via_key, confirm_via_key) =
             consume_modal_keys(ctx, &self.modals.gate, ModalKind::HcInstallDone);
         let frame = modal_frame(&theme);
@@ -701,7 +699,7 @@ impl AlacritreeApp {
                     if ok.clicked() {
                         close = true;
                     }
-                    focus_default_on_open(ui.ctx(), opening, ok.id);
+                    focus_default(ui.ctx(), ok.id);
                 });
             });
         if confirm_via_key || cancel_via_key || close || modal.should_close() {

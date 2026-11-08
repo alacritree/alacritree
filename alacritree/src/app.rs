@@ -3029,23 +3029,15 @@ fn consume_modal_keys(ctx: &Context, gate: &ModalGate, modal: ModalKind) -> (boo
     })
 }
 
-/// Move focus to `id` if no widget currently has it. This gives the modal's
-/// primary control focus on open without stealing it from the user later.
+/// Move focus to `id` unless a widget the user can reach has it. This gives
+/// the modal's primary control focus on open without stealing it from the
+/// user later. A terminal under the modal keeps egui's focus but is out of
+/// reach, so the modal takes focus from it.
 fn focus_default(ctx: &Context, id: egui::Id) {
-    let has_focus = ctx.memory(|m| m.focused().is_some());
-    if !has_focus {
+    let held = ctx.memory(|m| m.focused()).and_then(|focused| ctx.read_response(focused));
+    let reachable = held.is_some_and(|held| ctx.memory(|m| m.is_above_modal_layer(held.layer_id)));
+    if !reachable {
         ctx.memory_mut(|m| m.request_focus(id));
-    }
-}
-
-/// Give `id` focus on the frame its modal opens, as [`focus_default`] does
-/// for a modal opened from the sidebar. A modal that opens over a focused
-/// terminal would otherwise show no default button.
-fn focus_default_on_open(ctx: &Context, opening: bool, id: egui::Id) {
-    if opening {
-        ctx.memory_mut(|m| m.request_focus(id));
-    } else {
-        focus_default(ctx, id);
     }
 }
 
@@ -5557,9 +5549,8 @@ mod tests {
         assert!(notice.contains("hc is not installed") && notice.contains("native"), "{notice}");
     }
 
-    /// The install dialogs open over a terminal that holds the keyboard,
-    /// and their default button still opens focused, which is what draws
-    /// its highlight.
+    /// A dialog that opens over a terminal holding the keyboard still
+    /// focuses its default button, which is what draws its highlight.
     #[test]
     fn the_install_dialogs_open_with_their_default_button_focused() {
         let (mut app, _native, _core) = app_preferring_a_scripted_core();
