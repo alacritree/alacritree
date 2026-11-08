@@ -551,7 +551,7 @@ impl AlacritreeApp {
             title,
             SessionKind::Diff { key: new_key },
         );
-        match self.open_session(session, request) {
+        match self.open_session(session, request, None) {
             Ok(id) => {
                 self.sessions.set_active(Some(workspace), id);
             },

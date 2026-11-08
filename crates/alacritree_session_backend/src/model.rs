@@ -9,6 +9,7 @@ use alacritree_common::wsl_helper::WslProbe;
 use alacritty_terminal::event::WindowSize;
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::Term;
+use alacritty_terminal::vte::ansi::Rgb;
 
 /// A program and its arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,6 +33,15 @@ pub struct Screen<L> {
     /// The pane's size when the terminal starts, so the program draws its
     /// first output at the size it keeps.
     pub window_size: WindowSize,
+}
+
+/// The colors a session's grid draws with when the program sets none, for a
+/// backend that answers the program's color queries itself.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TerminalColors {
+    pub foreground: Rgb,
+    pub background: Rgb,
+    pub cursor: Option<Rgb>,
 }
 
 /// Whether a session's whole process tree is held in one job, which the
@@ -61,6 +71,7 @@ pub struct OpenRequest<L> {
     /// the WSL helper finds its foreground program.
     pub wsl_probe: Option<WslProbe>,
     pub process_tree: ProcessTree,
+    pub colors: TerminalColors,
     pub screen: Screen<L>,
 }
 

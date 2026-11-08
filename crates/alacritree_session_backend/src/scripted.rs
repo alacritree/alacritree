@@ -54,6 +54,7 @@ struct Started {
 
 #[derive(Default)]
 struct State {
+    unready: Option<SessionError>,
     failures: VecDeque<SessionError>,
     adoptable: Vec<PaneKey>,
     started: Vec<Started>,
@@ -101,6 +102,13 @@ impl Scripted {
     /// order they were pushed.
     pub fn fail_next(&self, error: SessionError) -> &Self {
         lock(&self.state).failures.push_back(error);
+        self
+    }
+
+    /// Every later [`SessionBackend::ready`] fails with `error`, as a backend
+    /// with nothing to open terminals on does.
+    pub fn set_unready(&self, error: SessionError) -> &Self {
+        lock(&self.state).unready = Some(error);
         self
     }
 
@@ -172,6 +180,14 @@ impl Scripted {
 }
 
 impl<H: From<ScriptedHandle>> SessionBackend<H> for Scripted {
+    /// A scripted error cannot be cloned, so each answer carries its text.
+    fn ready(&self) -> Result<(), SessionError> {
+        match &lock(&self.state).unready {
+            Some(error) => Err(SessionError::Scripted(error.to_string())),
+            None => Ok(()),
+        }
+    }
+
     fn open<L>(&self, request: OpenRequest<L>) -> Result<H, SessionError>
     where
         L: EventListener + Send + 'static,
@@ -216,6 +232,11 @@ impl SessionHandle for ScriptedHandle {
         }
     }
 
+    /// A reply is input to a scripted terminal.
+    fn reply(&self, bytes: Vec<u8>) {
+        self.write(bytes);
+    }
+
     /// A watching session never sizes its terminal.
     fn resize(&mut self, size: WindowSize) {
         let mut record = lock(&self.record);
@@ -245,6 +266,11 @@ impl SessionHandle for ScriptedHandle {
         }
         record.detached = true;
         Ok(())
+    }
+
+    /// A scripted terminal tracks the cwd of the program it was told runs.
+    fn cwd(&self) -> Option<PathBuf> {
+        lock(&self.record).foreground.as_ref().and_then(|program| program.cwd.clone())
     }
 
     fn foreground(&self) -> Option<ForegroundProgram> {
@@ -305,6 +331,7 @@ mod tests {
             env: HashMap::new(),
             wsl_probe: None,
             process_tree: ProcessTree::default(),
+            colors: Default::default(),
             screen: screen(),
         }
     }

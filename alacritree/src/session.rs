@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use alacritree_common::wsl_helper::WslProbe;
 use alacritree_multiplexer::{AgentStatus, PaneKey};
-use alacritree_session_backend::{ProcessTree, Screen, SessionHandle, Signals};
+use alacritree_session_backend::{ProcessTree, Screen, SessionHandle, Signals, TerminalColors};
 pub(crate) use alacritree_session_backend::{SESSION_ID_ENV, ShellCommand};
 use alacritty_terminal::event::{Event as TermEvent, EventListener, WindowSize};
 use alacritty_terminal::grid::Dimensions;
@@ -1073,6 +1073,11 @@ impl<R: Repaint> Session<R> {
                 boost_on_focus: config.ui.focus_priority_boost,
                 reap_on_close: config.ui.reap_descendants_on_close,
             },
+            colors: TerminalColors {
+                foreground: config.palette.fg,
+                background: config.palette.bg,
+                cursor: config.palette.cursor_bg,
+            },
             screen: Screen { term: term.clone(), listener: proxy.clone(), window_size },
         };
 
@@ -1153,6 +1158,21 @@ impl<R: Repaint> Session<R> {
         }
     }
 
+    /// Answer a query the program sent its terminal. Before the terminal
+    /// exists the answer waits with the typing.
+    pub(crate) fn reply(&mut self, bytes: Vec<u8>) {
+        match &self.handle {
+            Some(handle) => handle.reply(bytes),
+            None => self.write(bytes),
+        }
+    }
+
+    /// Where the program is: what its shell last reported through OSC 7, or
+    /// else what the backend tracks.
+    pub(crate) fn cwd(&self) -> Option<PathBuf> {
+        self.reported_cwd.clone().or_else(|| self.handle.as_ref().and_then(SessionHandle::cwd))
+    }
+
     /// What the backend's probe says, or nothing for a session that has no
     /// terminal yet.
     fn signals(&self) -> Signals {
@@ -1195,14 +1215,14 @@ impl<R: Repaint> Session<R> {
                         palette,
                     );
                     if let Some(bytes) = reply {
-                        self.write(bytes);
+                        self.reply(bytes);
                     }
                 },
                 // CSI 14 t and 16 t. Image protocols and TUIs that size themselves in
                 // pixels block on this the same way the color queries do.
                 TermEvent::TextAreaSizeRequest(format) => {
                     let reply = text_area_size_reply(format.as_ref(), self.size, self.cell_size);
-                    self.write(reply);
+                    self.reply(reply);
                 },
                 event => {
                     if let Some(bytes) = apply_term_event(
@@ -1212,7 +1232,7 @@ impl<R: Repaint> Session<R> {
                         &mut self.exit_status,
                         &mut outcome,
                     ) {
-                        self.write(bytes);
+                        self.reply(bytes);
                     }
                 },
             }

@@ -631,6 +631,7 @@ pub struct IntegrationsConfig {
     pub doppler: alacritree_doppler::DopplerConfig,
     pub checkout_hooks: Vec<alacritree_checkout_hooks::CommandHook>,
     pub herdr: alacritree_herdr::HerdrConfig,
+    pub herdr_core: alacritree_herdr_core::HerdrCoreConfig,
     pub zellij: alacritree_zellij::ZellijConfig,
     pub delta: ToolConfig,
     pub tuicr: ToolConfig,
@@ -3150,6 +3151,9 @@ struct RawIntegrations {
     checkout_hooks: alacritree_checkout_hooks::RawCheckoutHooks,
     /// Agents running under a herdr server.
     herdr: alacritree_herdr::RawHerdr,
+    /// Terminals that a herdr-core core keeps alive, and whether new
+    /// sessions run in one.
+    herdr_core: alacritree_herdr_core::RawHerdrCore,
     /// Panes of running zellij sessions.
     zellij: alacritree_zellij::RawZellij,
     /// The pager the delta diff viewer runs.
@@ -3172,6 +3176,7 @@ impl RawIntegrations {
             doppler: self.doppler.resolve(),
             checkout_hooks: self.checkout_hooks.resolve(),
             herdr: self.herdr.resolve(moved.herdr_icon),
+            herdr_core: self.herdr_core.resolve(),
             zellij: self.zellij.resolve(),
             delta: self.delta.resolve(moved.delta_path),
             tuicr: self.tuicr.resolve(),

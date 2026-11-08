@@ -65,6 +65,11 @@ pub struct NativeHandle {
 }
 
 impl<H: From<NativeHandle>> SessionBackend<H> for Native {
+    /// A PTY needs nothing running first.
+    fn ready(&self) -> Result<(), SessionError> {
+        Ok(())
+    }
+
     fn open<L>(&self, request: OpenRequest<L>) -> Result<H, SessionError>
     where
         L: EventListener + Send + 'static,
@@ -107,6 +112,11 @@ impl SessionHandle for NativeHandle {
         self.notifier.notify(bytes);
     }
 
+    /// A PTY carries no tag, so a reply is written like typing.
+    fn reply(&self, bytes: Vec<u8>) {
+        self.write(bytes);
+    }
+
     fn resize(&mut self, size: WindowSize) {
         let _ = self.notifier.0.send(Msg::Resize(size));
         let cell = (size.cell_width, size.cell_height);
@@ -131,6 +141,10 @@ impl SessionHandle for NativeHandle {
 
     fn detach(&mut self) -> Result<(), SessionError> {
         Err(unsupported(Operation::Detach))
+    }
+
+    fn cwd(&self) -> Option<std::path::PathBuf> {
+        None
     }
 
     fn foreground(&self) -> Option<ForegroundProgram> {
@@ -191,6 +205,7 @@ where
         env,
         wsl_probe,
         process_tree: ProcessTree { boost_on_focus: boost, reap_on_close: reap },
+        colors: _,
         screen: Screen { term, listener, window_size },
     } = request;
 
@@ -321,6 +336,7 @@ pub(crate) mod tests {
             env,
             wsl_probe: None,
             process_tree: ProcessTree::default(),
+            colors: Default::default(),
             screen: Screen {
                 term: term.clone(),
                 listener: VoidListener,

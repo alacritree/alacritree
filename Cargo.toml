@@ -37,6 +37,7 @@ alacritree_gh = { path = "crates/alacritree_gh" }
 alacritree_graphics = { path = "crates/alacritree_graphics" }
 alacritree_git = { path = "crates/alacritree_git" }
 alacritree_herdr = { path = "crates/alacritree_herdr" }
+alacritree_herdr_core = { path = "crates/alacritree_herdr_core" }
 alacritree_multiplexer = { path = "crates/alacritree_multiplexer" }
 alacritree_native = { path = "crates/alacritree_native" }
 alacritree_session_backend = { path = "crates/alacritree_session_backend" }

@@ -869,6 +869,34 @@
       },
       "type": "object"
     },
+    "RawHerdrCore": {
+      "properties": {
+        "icon": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawIconStyle"
+            }
+          ],
+          "default": "􏼀",
+          "description": "The glyph on a herdr-core pane's sidebar row and palette entry. A bare\nstring sets the glyph; a table also styles its color, weight, slant\nand size, the way `[ui.icons]` keys do. An ordinary character such as\n`\"◫\"` is drawn by your own fonts, and a glyph from the bundled symbol\nfont by that font."
+        },
+        "path": {
+          "default": "hc",
+          "description": "The `hc` program to run on Windows or natively. Its own name is looked\nup on PATH; any other value runs as written. hc finds its core's\nsocket in its own order: `HC_SOCKET`, then the `socket` key in its\n`config.toml`, then its runtime directory.",
+          "type": "string"
+        },
+        "session_backend": {
+          "default": "native",
+          "description": "Which backend runs the terminal of a new session on the native side.\n\n\"native\" opens a PTY that alacritree owns. \"herdr_core\" runs the\nsession as a terminal in the native side's herdr-core core, through\n`hc connect`. When that core cannot be used, the session opens native\nand a notice names the cause. WSL sessions and diff panes stay native.",
+          "enum": [
+            "native",
+            "herdr_core"
+          ],
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "RawIconStyle": {
       "anyOf": [
         {
@@ -1150,6 +1178,10 @@
         "herdr": {
           "$ref": "#/$defs/RawHerdr",
           "description": "Agents running under a herdr server."
+        },
+        "herdr_core": {
+          "$ref": "#/$defs/RawHerdrCore",
+          "description": "Terminals that a herdr-core core keeps alive, and whether new\nsessions run in one."
         },
         "tasks": {
           "$ref": "#/$defs/RawTasks",

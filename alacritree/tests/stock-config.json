@@ -117,6 +117,17 @@
       "show_unmatched": true,
       "wsl_path": null
     },
+    "herdr_core": {
+      "icon": {
+        "bold": false,
+        "color": null,
+        "glyph": "􏼀",
+        "italic": false,
+        "size": null
+      },
+      "path": "hc",
+      "session_backend": "native"
+    },
     "tasks": {
       "command": null
     },
