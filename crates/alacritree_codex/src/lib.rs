@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use alacritree_subagents::tail::Endings;
-use alacritree_subagents::{Host, Scan, Subagent, SubagentError, SubagentSource};
+use alacritree_subagents::{Home, Host, Scan, Side, Subagent, SubagentError, SubagentSource};
 use serde::Deserialize;
 
 /// How many day folders, newest first, a scan reads.
@@ -32,9 +32,9 @@ pub struct RawCodex {
     /// List the sub-agents each Codex session has running in the sidebar,
     /// under that session's row, or under its workspace's row when the
     /// session is the only one there. They are read from the rollouts Codex
-    /// keeps in `CODEX_HOME` or `~/.codex` and matched to a session by the
-    /// directory Codex started in, so two Codex sessions in one directory
-    /// list none, and a session running inside WSL lists none.
+    /// keeps in `CODEX_HOME` or `~/.codex`, inside the distro for a session
+    /// running in WSL. A session's sub-agents are matched by the directory
+    /// Codex started in, so two Codex sessions in one directory list none.
     subagents: bool,
 }
 
@@ -55,28 +55,25 @@ impl RawCodex {
     }
 }
 
-/// Where Codex keeps its state: `CODEX_HOME` when set, the way Codex itself
-/// resolves it, else `~/.codex`.
-pub fn home_dir() -> Option<PathBuf> {
-    match std::env::var_os("CODEX_HOME") {
-        Some(dir) if !dir.is_empty() => Some(PathBuf::from(dir)),
-        _ => home::home_dir().map(|home| home.join(".codex")),
-    }
+/// Where Codex keeps its state on each side: `CODEX_HOME` when set, the way
+/// Codex itself resolves it, else `~/.codex`.
+pub fn home() -> Home {
+    Home::new("CODEX_HOME", ".codex")
 }
 
 /// Reads Codex's sub-agents across scans, remembering each rollout's header,
 /// which never changes once written, and how each last ended.
 #[derive(Debug)]
 pub struct CodexSubagents {
-    home: Option<PathBuf>,
+    home: Home,
     /// Each rollout's header, `None` for a thread that is not a sub-agent.
     headers: HashMap<PathBuf, Option<Header>>,
     endings: Endings,
 }
 
 impl CodexSubagents {
-    /// Reads the Codex files in `home`, usually [`home_dir`].
-    pub fn at(home: Option<PathBuf>) -> Self {
+    /// Reads the Codex files in `home`, usually [`home()`].
+    pub fn at(home: Home) -> Self {
         Self { home, headers: HashMap::new(), endings: Endings::default() }
     }
 }
@@ -116,31 +113,42 @@ struct Thread {
 impl SubagentSource for CodexSubagents {
     fn scan(&mut self, hosts: &[Host]) -> Scan {
         let mut scan = Scan::empty(hosts.len());
-        let codex: Vec<(usize, &Path)> = hosts
+        let codex: Vec<(usize, &Side, &Path)> = hosts
             .iter()
             .enumerate()
             .filter(|(_, host)| host.agent == Some("codex"))
-            .filter_map(|(i, host)| Some((i, host.native_cwd()?)))
+            .filter_map(|(i, host)| {
+                Some((i, &host.foreground.side, host.foreground.cwd.as_deref()?))
+            })
             .collect();
-        let rollouts = match (&self.home, codex.is_empty()) {
-            (Some(home), false) => recent_rollouts(&home.join("sessions")),
-            _ => Ok(Vec::new()),
-        };
-        let rollouts = rollouts.unwrap_or_else(|e| {
-            scan.errors.push(e);
-            Vec::new()
-        });
+        let mut sides: Vec<&Side> = Vec::new();
+        for &(_, side, _) in &codex {
+            if !sides.contains(&side) {
+                sides.push(side);
+            }
+        }
+        let mut rollouts = Vec::new();
+        for side in sides {
+            let Some(home) = self.home.on(side) else { continue };
+            match recent_rollouts(&home.join("sessions")) {
+                Ok(found) => rollouts.extend(found.into_iter().map(|path| (side.clone(), path))),
+                Err(e) => scan.errors.push(e),
+            }
+        }
         let threads = self.threads(&rollouts);
         self.endings.sweep();
 
-        for &(i, cwd) in &codex {
-            let shared = codex.iter().filter(|(_, other)| same_dir(other, cwd)).count() > 1;
+        for &(i, side, cwd) in &codex {
+            let same_place =
+                |other_side: &Side, other: &Path| other_side == side && same_dir(side, other, cwd);
+            let shared = codex.iter().filter(|(_, s, other)| same_place(s, other)).count() > 1;
             if shared {
                 continue;
             }
             let newest = threads
-                .values()
-                .filter(|thread| same_dir(&thread.cwd, cwd))
+                .iter()
+                .filter(|((s, _), thread)| same_place(s, &thread.cwd))
+                .map(|(_, thread)| thread)
                 .max_by_key(|thread| thread.last_write);
             if let Some(thread) = newest {
                 scan.running[i] = thread.agents.clone();
@@ -151,12 +159,13 @@ impl SubagentSource for CodexSubagents {
 }
 
 impl CodexSubagents {
-    /// The threads with a sub-agent running, keyed by the top-level thread
-    /// that started them, its sub-agents' own sub-agents folded in.
-    fn threads(&mut self, rollouts: &[PathBuf]) -> HashMap<String, Thread> {
-        let listed: HashSet<&PathBuf> = rollouts.iter().collect();
+    /// The threads with a sub-agent running, keyed by their side and the
+    /// top-level thread that started them, its sub-agents' own sub-agents
+    /// folded in.
+    fn threads(&mut self, rollouts: &[(Side, PathBuf)]) -> HashMap<(Side, String), Thread> {
+        let listed: HashSet<&PathBuf> = rollouts.iter().map(|(_, path)| path).collect();
         self.headers.retain(|path, _| listed.contains(path));
-        for path in rollouts {
+        for (_, path) in rollouts {
             if !self.headers.contains_key(path)
                 && let Some(header) = read_header(path)
             {
@@ -171,20 +180,22 @@ impl CodexSubagents {
             .map(|header| (header.id.as_str(), header.parent.as_str()))
             .collect();
 
-        let mut running: Vec<(&Header, Option<SystemTime>)> = Vec::new();
-        for (path, header) in &self.headers {
-            let Some(header) = header else { continue };
+        let mut running: Vec<(&Side, &Header, Option<SystemTime>)> = Vec::new();
+        for (side, path) in rollouts {
+            let Some(Some(header)) = self.headers.get(path) else { continue };
             if self.endings.running(path, turn_running) {
-                running.push((header, fs::metadata(path).and_then(|stat| stat.modified()).ok()));
+                let written = fs::metadata(path).and_then(|stat| stat.modified()).ok();
+                running.push((side, header, written));
             }
         }
         // Codex's thread ids are UUIDv7, so their order is the order the
         // threads started in.
-        running.sort_by(|(a, _), (b, _)| a.id.cmp(&b.id));
+        running.sort_by(|(_, a, _), (_, b, _)| a.id.cmp(&b.id));
 
-        let mut threads: HashMap<String, Thread> = HashMap::new();
-        for (header, written) in running {
-            let thread = threads.entry(root_of(&parent_of, &header.id).to_owned()).or_default();
+        let mut threads: HashMap<(Side, String), Thread> = HashMap::new();
+        for (side, header, written) in running {
+            let root = root_of(&parent_of, &header.id).to_owned();
+            let thread = threads.entry((side.clone(), root)).or_default();
             thread.cwd.clone_from(&header.cwd);
             thread.agents.push(header.subagent());
             thread.last_write = thread.last_write.max(written);
@@ -205,9 +216,13 @@ fn root_of<'a>(parent_of: &HashMap<&'a str, &'a str>, mut id: &'a str) -> &'a st
     id
 }
 
-/// Whether `a` and `b` name one directory, the way either was spelled.
-fn same_dir(a: &Path, b: &Path) -> bool {
-    a == b || matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b)
+/// Whether `a` and `b` name one directory on `side`, the way either was
+/// spelled. A distro's paths are compared by their components alone, since
+/// this machine cannot resolve them.
+fn same_dir(side: &Side, a: &Path, b: &Path) -> bool {
+    a == b
+        || *side == Side::Native
+            && matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b)
 }
 
 /// The rollouts in the newest `RECENT_DAYS` day folders.
@@ -350,15 +365,15 @@ fn turn_running(line: &[u8]) -> Option<bool> {
 
 #[cfg(test)]
 mod tests {
-    use alacritree_subagents::{ForegroundProgram, Side};
+    use alacritree_subagents::ForegroundProgram;
 
     use super::*;
 
     const ROOT: &str = "01a0f1ee-e22f-7642-9e86-af6d804c2fd9";
 
-    struct Home(tempfile::TempDir);
+    struct Dir(tempfile::TempDir);
 
-    impl Home {
+    impl Dir {
         fn new() -> Self {
             Self(tempfile::tempdir().unwrap())
         }
@@ -373,7 +388,7 @@ mod tests {
         }
 
         fn scanner(&self) -> CodexSubagents {
-            CodexSubagents::at(Some(self.0.path().to_path_buf()))
+            CodexSubagents::at(home().with(Side::Native, Some(self.0.path().to_path_buf())))
         }
     }
 
@@ -436,7 +451,7 @@ mod tests {
 
     #[test]
     fn a_codex_session_lists_its_threads_running_sub_agents() {
-        let home = Home::new();
+        let home = Dir::new();
         home.rollout("2026/09/30", ROOT, &[root_meta(ROOT, "/work/app"), event("task_started")]);
         home.rollout("2026/09/30", "01a0f28a-0000", &[
             child_meta("01a0f28a-0000", ROOT, "/work/app", "Wegener", "/root/sequencing"),
@@ -448,19 +463,38 @@ mod tests {
             event("task_started"),
             event("task_complete"),
         ]);
-        let hosts = [
-            codex_in("/work/app"),
-            host(Side::Native, None, "/work/app"),
-            host(Side::Wsl("Ubuntu".into()), Some("codex"), "/work/app"),
-        ];
+        let hosts = [codex_in("/work/app"), host(Side::Native, None, "/work/app")];
         let scan = home.scanner().scan(&hosts);
-        assert_eq!(names(&scan), [vec!["sequencing"], vec![], vec![]]);
+        assert_eq!(names(&scan), [vec!["sequencing"], vec![]]);
         assert_eq!(scan.running[0][0].detail.as_deref(), Some("Wegener"));
+    }
+
+    /// A distro's Codex keeps its rollouts in the distro, so each side's
+    /// session lists the threads in its own home, though both sides spell the
+    /// directory alike.
+    #[test]
+    fn each_side_lists_the_threads_in_its_own_home() {
+        let (here, distro) = (Dir::new(), Dir::new());
+        here.rollout("2026/09/30", "01a0f28a-0000", &[
+            child_meta("01a0f28a-0000", ROOT, "/work/app", "Wegener", "/root/native"),
+            event("task_started"),
+        ]);
+        distro.rollout("2026/09/30", "01a0f28b-0000", &[
+            child_meta("01a0f28b-0000", ROOT, "/work/app/", "Parfit", "/root/linux"),
+            event("task_started"),
+        ]);
+        let ubuntu = Side::Wsl("Ubuntu".into());
+        let home = home()
+            .with(Side::Native, Some(here.0.path().to_path_buf()))
+            .with(ubuntu.clone(), Some(distro.0.path().to_path_buf()));
+        let hosts = [codex_in("/work/app"), host(ubuntu, Some("codex"), "/work/app")];
+        let scan = CodexSubagents::at(home).scan(&hosts);
+        assert_eq!(names(&scan), [vec!["native"], vec!["linux"]]);
     }
 
     #[test]
     fn a_sub_agents_own_sub_agents_count_toward_the_top_thread() {
-        let home = Home::new();
+        let home = Dir::new();
         let child = "01a0f28a-0000";
         home.rollout("2026/09/30", child, &[
             child_meta(child, ROOT, "/work/app", "Wegener", "/root/sequencing"),
@@ -476,7 +510,7 @@ mod tests {
 
     #[test]
     fn two_codex_sessions_in_one_directory_list_nothing() {
-        let home = Home::new();
+        let home = Dir::new();
         home.rollout("2026/09/30", "01a0f28a-0000", &[
             child_meta("01a0f28a-0000", ROOT, "/work/app", "Wegener", "/root/sequencing"),
             event("task_started"),
@@ -487,7 +521,7 @@ mod tests {
 
     #[test]
     fn only_the_newest_day_folders_are_read() {
-        let home = Home::new();
+        let home = Dir::new();
         let meta = |id: &str| child_meta(id, ROOT, "/work/app", "N", &format!("/root/{id}"));
         home.rollout("2026/09/28", "old", &[meta("old"), event("task_started")]);
         home.rollout("2026/09/29", "mid", &[meta("mid"), event("task_started")]);
@@ -498,7 +532,7 @@ mod tests {
 
     #[test]
     fn a_header_still_being_written_is_read_again_later() {
-        let home = Home::new();
+        let home = Dir::new();
         let path = home.rollout("2026/09/30", "01a0f28a-0000", &[]);
         fs::write(&path, r#"{"type":"session_meta","payload":{"id":"#).unwrap();
         let mut scanner = home.scanner();

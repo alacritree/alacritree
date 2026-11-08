@@ -150,7 +150,6 @@ name = "alacritree_claude"
 version = "0.0.0"
 dependencies = [
  "alacritree_subagents",
- "home",
  "schemars",
  "serde",
  "serde_json",
@@ -163,7 +162,6 @@ name = "alacritree_codex"
 version = "0.0.0"
 dependencies = [
  "alacritree_subagents",
- "home",
  "schemars",
  "serde",
  "serde_json",
@@ -355,8 +353,10 @@ dependencies = [
 name = "alacritree_subagents"
 version = "0.0.0"
 dependencies = [
+ "alacritree_common",
  "alacritree_session_backend",
  "ambassador",
+ "home",
  "tempfile",
  "thiserror 2.0.17",
 ]

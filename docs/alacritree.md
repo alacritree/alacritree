@@ -211,7 +211,7 @@ Both are read from the files each agent keeps, for a session on the native backe
 - **Claude Code** registers each process in `~/.claude/sessions/<pid>.json`, so the foreground program's pid names its conversation. Its sub-agents, workflow agents included, are read from their transcripts under `~/.claude/projects/`. alacritree reads `CLAUDE_CONFIG_DIR` from its own environment, so set it where alacritree starts too if you move the folder.
 - **Codex** registers no process, so a session running Codex lists the sub-agents of the thread started in the foreground program's directory, read from the rollouts under `~/.codex/sessions/`. Two Codex sessions in one directory list none, since nothing says which thread is whose. `CODEX_HOME` moves the folder, read the same way.
 
-A session running inside WSL lists none, since its agent keeps these files in the distro's home. `[integrations.claude] subagents` and `[integrations.codex] subagents` turn each listing off.
+For a session inside a WSL distro, alacritree reads these files from the distro's home over its `\\wsl.localhost` share. A scan starts no `wsl.exe`. The distro's resident helper reports the folder once per distro. It reads `CLAUDE_CONFIG_DIR` or `CODEX_HOME` from the helper's own environment, which does not run your shell profile, and falls back to `~/.claude` or `~/.codex`. `[integrations.claude] subagents` and `[integrations.codex] subagents` turn each listing off.
 
 ### Creating a worktree
 

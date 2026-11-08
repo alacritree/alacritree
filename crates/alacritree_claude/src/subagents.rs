@@ -20,20 +20,17 @@ use std::time::SystemTime;
 use std::{fs, io};
 
 use alacritree_subagents::follow::Follow;
-use alacritree_subagents::{Host, Scan, Subagent, SubagentError, SubagentSource};
+use alacritree_subagents::{Home, Host, Scan, Subagent, SubagentError, SubagentSource};
 use serde::Deserialize;
 
 /// What Claude Code writes as a user turn when the user stops an agent,
 /// mid-reply or mid-tool.
 const INTERRUPTED: &str = "[Request interrupted by user";
 
-/// Where Claude Code keeps its state: `CLAUDE_CONFIG_DIR` when set, the way
-/// Claude Code itself resolves it, else `~/.claude`.
-pub fn config_dir() -> Option<PathBuf> {
-    match std::env::var_os("CLAUDE_CONFIG_DIR") {
-        Some(dir) if !dir.is_empty() => Some(PathBuf::from(dir)),
-        _ => home::home_dir().map(|home| home.join(".claude")),
-    }
+/// Where Claude Code keeps its state on each side: `CLAUDE_CONFIG_DIR` when
+/// set, the way Claude Code itself resolves it, else `~/.claude`.
+pub fn home() -> Home {
+    Home::new("CLAUDE_CONFIG_DIR", ".claude")
 }
 
 /// A Claude Code process, as it registered itself.
@@ -94,16 +91,17 @@ impl Meta {
 /// session's transcripts are and how each transcript last ended.
 #[derive(Debug)]
 pub struct ClaudeSubagents {
-    dir: Option<PathBuf>,
-    /// Each session's folder under `projects/`, once found.
-    folders: HashMap<String, PathBuf>,
+    home: Home,
+    /// Each session's folder under `projects/`, once found, by the config
+    /// directory and session id it was found for.
+    folders: HashMap<(PathBuf, String), PathBuf>,
     progress: Follow<Progress>,
 }
 
 impl ClaudeSubagents {
-    /// Reads the Claude Code files in `dir`, usually [`config_dir`].
-    pub fn at(dir: Option<PathBuf>) -> Self {
-        Self { dir, folders: HashMap::new(), progress: Follow::default() }
+    /// Reads the Claude Code files in `home`, usually [`home()`].
+    pub fn at(home: Home) -> Self {
+        Self { home, folders: HashMap::new(), progress: Follow::default() }
     }
 }
 
@@ -113,22 +111,19 @@ type Found = (Option<SystemTime>, Subagent);
 impl SubagentSource for ClaudeSubagents {
     fn scan(&mut self, hosts: &[Host]) -> Scan {
         let mut scan = Scan::empty(hosts.len());
-        let Some(dir) = self.dir.clone() else {
-            return scan;
-        };
         let mut reached = HashSet::new();
         for (host, running) in hosts.iter().zip(&mut scan.running) {
-            let Some(session) = host.native_pid().and_then(|pid| registration(&dir, pid)) else {
-                continue;
-            };
-            reached.insert(session.session_id.clone());
+            let Some(pid) = host.foreground.pid else { continue };
+            let Some(dir) = self.home.on(&host.foreground.side) else { continue };
+            let Some(session) = registration(&dir, pid) else { continue };
+            reached.insert((dir.clone(), session.session_id.clone()));
             match self.running(&dir, &session) {
                 Ok(agents) => running.extend(agents),
                 Err(e) => scan.errors.push(e),
             }
         }
         self.progress.sweep();
-        self.folders.retain(|id, _| reached.contains(id));
+        self.folders.retain(|key, _| reached.contains(key));
         scan
     }
 }
@@ -170,7 +165,8 @@ impl ClaudeSubagents {
     /// when it misses, which is what a long path, shortened with a hash,
     /// needs.
     fn folder(&mut self, config_dir: &Path, session: &Registration) -> Option<PathBuf> {
-        if let Some(folder) = self.folders.get(&session.session_id) {
+        let key = (config_dir.to_path_buf(), session.session_id.clone());
+        if let Some(folder) = self.folders.get(&key) {
             return Some(folder.clone());
         }
         let projects = config_dir.join("projects");
@@ -185,7 +181,7 @@ impl ClaudeSubagents {
                 .map(|entry| entry.path())
                 .find(|dir| dir.join(&transcript).is_file())?
         };
-        self.folders.insert(session.session_id.clone(), folder.clone());
+        self.folders.insert(key, folder.clone());
         Some(folder)
     }
 
@@ -599,9 +595,9 @@ mod tests {
         Host { foreground, agent: Some("claude") }
     }
 
-    struct Home(tempfile::TempDir);
+    struct Dir(tempfile::TempDir);
 
-    impl Home {
+    impl Dir {
         fn new() -> Self {
             Self(tempfile::tempdir().unwrap())
         }
@@ -647,7 +643,7 @@ mod tests {
         }
 
         fn source(&self) -> ClaudeSubagents {
-            ClaudeSubagents::at(Some(self.path().to_path_buf()))
+            ClaudeSubagents::at(home().with(Side::Native, Some(self.path().to_path_buf())))
         }
     }
 
@@ -657,7 +653,7 @@ mod tests {
 
     #[test]
     fn a_registration_is_read_only_under_the_pid_it_names() {
-        let home = Home::new();
+        let home = Dir::new();
         home.conversation();
         home.write("sessions/7.json", "{ not json");
         home.write("sessions/8.json", &format!(r#"{{"pid":9,"sessionId":"{SESSION}","cwd":"/"}}"#));
@@ -672,7 +668,7 @@ mod tests {
 
     #[test]
     fn only_running_agents_are_listed_with_what_their_meta_says() {
-        let home = Home::new();
+        let home = Dir::new();
         let dir = home.conversation();
         home.write(
             &format!("{dir}/subagents/agent-a1.meta.json"),
@@ -697,26 +693,33 @@ mod tests {
 
     #[test]
     fn only_the_registered_process_lists_its_conversations_agents() {
-        let home = Home::new();
+        let home = Dir::new();
         let dir = home.conversation();
         home.write(&format!("{dir}/subagents/agent-a1.jsonl"), &format!("{PROMPT}\n"));
         assert_eq!(names(&home.scan(&mut home.source(), &[7, 42])), [vec![], vec!["a1"]]);
     }
 
     /// A pid on a WSL side names a process in the distro, whose registry
-    /// lives in the distro's home rather than here.
+    /// lives in the distro's home rather than here. Each side's process 42 is
+    /// its own.
     #[test]
-    fn a_program_on_another_side_lists_nothing() {
-        let home = Home::new();
-        let dir = home.conversation();
-        home.write(&format!("{dir}/subagents/agent-a1.jsonl"), &format!("{PROMPT}\n"));
-        let scan = home.source().scan(&[host_on(Side::Wsl("Ubuntu".into()), 42)]);
-        assert_eq!(names(&scan.running), [Vec::<&str>::new()]);
+    fn a_program_in_a_distro_is_read_from_the_distros_home() {
+        let (here, distro) = (Dir::new(), Dir::new());
+        here.conversation();
+        let dir = distro.conversation();
+        distro.write(&format!("{dir}/subagents/agent-a1.jsonl"), &format!("{PROMPT}\n"));
+        let ubuntu = Side::Wsl("Ubuntu".into());
+        let home = home()
+            .with(Side::Native, Some(here.path().to_path_buf()))
+            .with(ubuntu.clone(), Some(distro.path().to_path_buf()));
+        let scan =
+            ClaudeSubagents::at(home).scan(&[host_on(ubuntu, 42), host_on(Side::Native, 42)]);
+        assert_eq!(names(&scan.running), [vec!["a1"], vec![]]);
     }
 
     #[test]
     fn a_workflow_agent_carries_its_run_name_and_phase() {
-        let home = Home::new();
+        let home = Dir::new();
         let dir = home.conversation();
         let run = "wf_77077ed6-501";
         home.write(&format!("{dir}/workflows/scripts/aut-968-labos-run-id-{run}.js"), "");
@@ -739,7 +742,7 @@ mod tests {
 
     #[test]
     fn an_agent_drops_off_once_its_transcript_ends_the_turn() {
-        let home = Home::new();
+        let home = Dir::new();
         let dir = home.conversation();
         let transcript = format!("{dir}/subagents/agent-a1.jsonl");
         home.write(&transcript, &format!("{PROMPT}\n"));
@@ -751,7 +754,7 @@ mod tests {
 
     #[test]
     fn a_folder_the_slug_misses_is_found_by_its_transcript() {
-        let home = Home::new();
+        let home = Dir::new();
         home.write(
             "sessions/42.json",
             &format!(r#"{{"pid":42,"sessionId":"{SESSION}","cwd":"/a/very/long/path"}}"#),
@@ -766,7 +769,7 @@ mod tests {
 
     #[test]
     fn a_session_with_no_transcript_yet_has_no_agents() {
-        let home = Home::new();
+        let home = Dir::new();
         home.write(
             "sessions/42.json",
             &format!(r#"{{"pid":42,"sessionId":"{SESSION}","cwd":"/work/app"}}"#),
