@@ -48,6 +48,9 @@ pub type Reply = Result<serde_json::Value, String>;
 pub enum PaneError {
     #[error("{}", all_disabled_reason())]
     AllDisabled,
+    /// A multiplexer is on, but none of the ones on creates panes.
+    #[error("{}", none_creates_reason())]
+    NoneCreates,
     #[error("{}", .0.disabled_reason())]
     Disabled(MultiplexerKind),
     #[error("`{name}` is not a multiplexer, expected {}", known_names())]
@@ -84,6 +87,20 @@ pub fn all_disabled_reason() -> &'static str {
         let tables: Vec<String> =
             MultiplexerKind::real().map(|kind| format!("[integrations.{kind}]")).collect();
         format!("every multiplexer integration is disabled ({} enabled)", tables.join(" or "))
+    })
+}
+
+fn none_creates_reason() -> &'static str {
+    static REASON: OnceLock<String> = OnceLock::new();
+    REASON.get_or_init(|| {
+        let tables: Vec<String> = MultiplexerKind::real()
+            .filter(|kind| kind.creates_panes())
+            .map(|kind| format!("[integrations.{kind}]"))
+            .collect();
+        format!(
+            "no enabled multiplexer integration creates panes ({} enabled)",
+            tables.join(" or ")
+        )
     })
 }
 
@@ -125,6 +142,12 @@ impl MultiplexerKind {
     #[cfg(any(test, feature = "test-support"))]
     pub fn real() -> impl Iterator<Item = Self> {
         Self::iter().filter(|kind| *kind != Self::Scripted)
+    }
+
+    /// Whether this multiplexer creates panes. herdr-core only lists the
+    /// terminals that other clients started.
+    pub fn creates_panes(self) -> bool {
+        self != Self::HerdrCore
     }
 
     /// Why a request that named this multiplexer is refused while it is off.

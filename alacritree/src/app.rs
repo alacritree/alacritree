@@ -7882,6 +7882,37 @@ mod tests {
         assert_eq!(app.sessions.len(), 2, "a refused detach ends nothing");
     }
 
+    /// herdr-core creates no pane and "Attach all" skips its panes, so with
+    /// it the only multiplexer on, both actions say what to enable.
+    #[test]
+    fn with_only_herdr_core_on_a_create_and_attach_all_name_what_creates_panes() {
+        let mut app = test_app();
+        let mut config = crate::config::IntegrationsConfig::default();
+        config.herdr.enabled = false;
+        config.zellij.enabled = false;
+        config.herdr_core.enabled = true;
+        app.multiplexers = Multiplexers::new(&config);
+        let reason = PaneError::NoneCreates.to_string();
+        assert_eq!(
+            reason,
+            "no enabled multiplexer integration creates panes ([integrations.herdr] or \
+             [integrations.zellij] enabled)"
+        );
+
+        for action in [
+            NamedAction::NewMultiplexerPane(action::NewMultiplexerPane),
+            NamedAction::AttachAllMultiplexerPanes(action::AttachAllMultiplexerPanes),
+        ] {
+            app.modals.error_dialog = None;
+            app.dispatch_action(
+                &Context::default(),
+                BindingAction::Named(action),
+                ActionOrigin::Keyboard,
+            );
+            assert_eq!(app.modals.error_dialog.as_deref(), Some(reason.as_str()));
+        }
+    }
+
     /// herdr reporting an agent in a pane says nothing about what the client
     /// already attached to that pane draws, so the focus a row is owed cannot
     /// be recomputed from the listing: a shared view whose pane picked up an

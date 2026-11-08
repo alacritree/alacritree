@@ -156,7 +156,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "list_multiplexer_panes",
-            "description": "List every pane of the terminal multiplexers alacritree has detected (herdr, zellij), on every side they reach, whether or not a session is attached to one. Each entry carries the multiplexer block naming the pane (the multiplexer's name, side and terminal_id), the pane's agent kind, title and live status, whether the multiplexer's own window is showing it, the workspace its working directory matches, and the id of the alacritree session holding it (null when none is). Unattached panes appear here and nowhere else.",
+            "description": "List every pane of the terminal multiplexers alacritree has detected (herdr, zellij, herdr_core), on every side they reach, whether or not a session is attached to one. Each entry carries the multiplexer block naming the pane (the multiplexer's name, side and terminal_id), the pane's agent kind, title and live status, whether the multiplexer's own window is showing it, the workspace its working directory matches, and the id of the alacritree session holding it (null when none is). Unattached panes appear here and nowhere else.",
             "inputSchema": { "type": "object", "properties": {} },
         },
         {
@@ -175,11 +175,11 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "create_multiplexer_pane",
-            "description": "Open a new pane in a terminal multiplexer (herdr, zellij) and an alacritree session on it, and return the session id once the session can be read. Omit multiplexer to use the active session's, or else the first one enabled. Omit side to use the one the active session's pane belongs to, which is what a machine reaching only one server always wants; a machine reaching several must name it when no multiplexer-backed session is focused. Omit workspace to open the pane in the focused workspace.",
+            "description": "Open a new pane in a terminal multiplexer (herdr, zellij) and an alacritree session on it, and return the session id once the session can be read. Omit multiplexer to use the active session's, or else the first enabled one that creates panes. Omit side to use the one the active session's pane belongs to, which is what a machine reaching only one server always wants; a machine reaching several must name it when no multiplexer-backed session is focused. Omit workspace to open the pane in the focused workspace.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "multiplexer": { "type": "string", "description": "\"herdr\" or \"zellij\". Omit to use the active session's multiplexer, or else the first one enabled." },
+                    "multiplexer": { "type": "string", "description": "\"herdr\" or \"zellij\". Omit to use the active session's multiplexer, or else the first enabled one that creates panes." },
                     "side": { "type": "string", "description": "\"native\" or \"wsl:<distro>\", from list_multiplexer_panes." },
                     "workspace": { "type": "string", "description": "Worktree path from list_projects; omit for the focused workspace." },
                     "no_focus": { "type": "boolean", "description": "Open the pane and its session without switching the window to them, making the session its workspace's active tab, or moving the multiplexer's focus. Defaults to false." },

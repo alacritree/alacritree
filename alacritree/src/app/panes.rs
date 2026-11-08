@@ -95,9 +95,10 @@ impl AlacritreeApp {
         }
     }
 
-    /// Open a session on every listed pane no session holds yet.  The listing
-    /// is the one the sidebar and the palette both draw, so this opens exactly
-    /// the rows the user could have opened one at a time.
+    /// Open a session on every listed pane no session holds yet, except the
+    /// herdr-core panes. The listing is the one the sidebar and the palette
+    /// both draw, so this opens the rows the user could have opened one at a
+    /// time.
     ///
     /// The batch attaches in the background: each session files under its own
     /// pane's workspace, and neither the screen nor the multiplexer's focus
@@ -105,6 +106,10 @@ impl AlacritreeApp {
     pub(super) fn attach_every_multiplexer_pane(&mut self, ctx: &Context) {
         if !self.multiplexers.any_enabled() {
             self.modals.error_dialog = Some(self.multiplexers.disabled_reason().to_string());
+            return;
+        }
+        if self.multiplexers.default_enabled().is_none() {
+            self.modals.error_dialog = Some(PaneError::NoneCreates.to_string());
             return;
         }
         let panes: Vec<(PaneKey, String, WorkspaceKey)> = self
@@ -783,7 +788,7 @@ impl AlacritreeApp {
             None => self.multiplexers.default_enabled(),
         };
         let Some(multiplexer) = default else {
-            return Err(PaneError::AllDisabled);
+            return Err(PaneError::NoneCreates);
         };
         let side = match named {
             Some(side) => side,

@@ -278,6 +278,7 @@ pub enum NamedAction {
     NewMultiplexerPane(action::NewMultiplexerPane),
     /// Open a session on every multiplexer pane the sidebar lists that none
     /// is attached to yet, leaving the panes that already hold one alone.
+    /// The herdr-core panes stay out, since another client uses them.
     AttachAllMultiplexerPanes(action::AttachAllMultiplexerPanes),
     /// End every session attached to a multiplexer pane. The panes keep
     /// running under the multiplexer and their rows come back unattached.
@@ -593,9 +594,9 @@ impl NamedAction {
                 "Close the session on screen once its child exited".into()
             },
             Self::NewMultiplexerPane(_) => "Open a new multiplexer pane and a session on it".into(),
-            Self::AttachAllMultiplexerPanes(_) => {
-                "Attach every unattached multiplexer pane the sidebar lists".into()
-            },
+            Self::AttachAllMultiplexerPanes(_) => "Attach every unattached multiplexer pane the \
+                                                   sidebar lists, except herdr-core's"
+                .into(),
             Self::DetachAllMultiplexerPanes(_) => "Detach every attached multiplexer pane".into(),
             Self::KillTerminal(_) => "Kill a herdr-core terminal alacritree did not create".into(),
             Self::SidebarTop(_) => "Move the sidebar cursor to the first row".into(),
