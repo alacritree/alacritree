@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, TryLockError};
 use std::time::{Duration, Instant};
 
 use alacritree_common::side::{self, Side};
-use alacritree_common::tools::Tool;
+use alacritree_common::tools::{self, Tool};
 use alacritree_common::wsl_helper::{self, HelperClient, TransportError};
 use alacritree_common::{command_ext, wsl};
 use serde_json::Value;
@@ -60,6 +60,13 @@ impl Slot {
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The native `hc` to spawn: where [`tools::locate_spawnable`] finds
+/// `program`, else `program` as written, so the spawn reports it missing.
+fn native_program(program: &str) -> String {
+    tools::locate_spawnable(program)
+        .map_or_else(|| program.to_string(), |hc| hc.display().to_string())
 }
 
 impl SideCore {
@@ -132,14 +139,34 @@ impl SideCore {
         if let Some(connection) = slot.live() {
             return Ok(connection);
         }
-        let opened = self.command().and_then(|(command, label)| {
-            log::info!("herdr-core ({}): starting `{label}`", self.side.name());
-            Connection::open(command, &label, self.waker.clone())
-        });
+        let opened = self
+            .command()
+            .and_then(|(command, label)| {
+                log::info!("herdr-core ({}): starting `{label}`", self.side.name());
+                Connection::open(command, &label, self.waker.clone())
+            })
+            .map_err(|error| self.missing(error));
         slot.failed_at = opened.is_err().then(Instant::now);
         let connection = opened?;
         slot.connection = Some(connection.clone());
         Ok(connection)
+    }
+
+    /// A spawn that found no `hc` is [`CoreError::Missing`] when hc's
+    /// installer would fix it, which a configured path rules out.
+    fn missing(&self, error: CoreError) -> CoreError {
+        let found_by_name = match &self.launch {
+            Launch::Native { program, .. } => program == Tool::Hc.name(),
+            Launch::Wsl { program, .. } => program.is_none(),
+        };
+        match error {
+            CoreError::Spawn { source, .. }
+                if found_by_name && source.kind() == std::io::ErrorKind::NotFound =>
+            {
+                CoreError::Missing(self.side.clone())
+            },
+            error => error,
+        }
     }
 
     /// The `hc connect` command and how a log line names it. The native side
@@ -153,7 +180,8 @@ impl SideCore {
                 {
                     return Err(CoreError::Elsewhere(found));
                 }
-                let mut command = command_ext::hidden(program);
+                let program = native_program(program);
+                let mut command = command_ext::hidden(&program);
                 command.arg("connect");
                 if let Some(socket) = socket {
                     command.env("HC_SOCKET", socket);
@@ -172,7 +200,7 @@ impl SideCore {
     /// A distro's core is never asked, so it answers no.
     pub(crate) fn serving(&self) -> bool {
         let Launch::Native { program, socket } = &self.launch else { return false };
-        let mut command = command_ext::hidden(program);
+        let mut command = command_ext::hidden(native_program(program));
         command.args(["server", "status", "--json"]);
         command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
         if let Some(socket) = lock(socket).as_ref() {
@@ -192,14 +220,18 @@ impl SideCore {
     }
 
     /// The distro's helper when it is up, and the `hc` it runs. That is the
-    /// configured path, else where the helper's login shell found it.
+    /// configured path, else where the helper's login shell found it, else
+    /// where [`tools::wsl_resolved`] found it since. `None` while no `hc` is
+    /// known there, so a call takes the resident's route, which reports a
+    /// missing `hc`. The lookup keeps no miss, so an install made after the
+    /// helper started brings the helper's route back.
     fn helper(&self) -> Option<(Arc<HelperClient>, String)> {
         let Launch::Wsl { distro, program } = &self.launch else { return None };
         let client = wsl_helper::client(distro)?;
         let program = program
             .clone()
             .or_else(|| client.capabilities()?.path(Tool::Hc.name()).map(str::to_string))
-            .unwrap_or_else(|| Tool::Hc.name().to_string());
+            .or_else(|| tools::wsl_resolved(Tool::Hc, distro, || {}))?;
         Some((client, program))
     }
 
@@ -212,8 +244,8 @@ impl SideCore {
             return Some(home.clone());
         }
         let Launch::Wsl { distro, .. } = &self.launch else { return None };
-        let output = match self.helper() {
-            Some((client, _)) => client.run(HOME_SCRIPT, &[]).ok()?.1,
+        let output = match wsl_helper::client(distro) {
+            Some(client) => client.run(HOME_SCRIPT, &[]).ok()?.1,
             None => {
                 wsl::command(distro, None).args(["sh", "-c", HOME_SCRIPT]).output().ok()?.stdout
             },
@@ -246,5 +278,37 @@ impl SideCore {
             }
         }
         self.connection()?.call(method, params)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn not_found() -> CoreError {
+        CoreError::Spawn { program: "hc".into(), source: std::io::ErrorKind::NotFound.into() }
+    }
+
+    /// hc's installer puts `hc` where a search by name finds it, so only a
+    /// side that looks `hc` up by name is missing it.
+    #[test]
+    fn a_side_that_finds_hc_by_name_is_missing_it_when_the_search_fails() {
+        let native = SideCore::native("hc", Waker::default());
+        let distro = SideCore::wsl("Ubuntu", None, Waker::default());
+
+        assert!(matches!(native.missing(not_found()), CoreError::Missing(Side::Native)));
+        assert!(matches!(
+            distro.missing(not_found()),
+            CoreError::Missing(Side::Wsl(name)) if name == "Ubuntu"
+        ));
+    }
+
+    #[test]
+    fn a_configured_path_that_is_not_there_is_not_missing_hc() {
+        let native = SideCore::native(r"C:\tools\hc.exe", Waker::default());
+        let distro = SideCore::wsl("Ubuntu", Some("/opt/hc".into()), Waker::default());
+
+        assert!(matches!(native.missing(not_found()), CoreError::Spawn { .. }));
+        assert!(matches!(distro.missing(not_found()), CoreError::Spawn { .. }));
     }
 }

@@ -13,7 +13,7 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -212,14 +212,22 @@ impl Connection {
 
         let automatic_input = match hello(&mut stdin, &mut stdout, &child) {
             Ok(automatic_input) => automatic_input,
+            Err(CoreError::Closed) => {
+                let text = stderr.recv_timeout(Duration::from_secs(2)).unwrap_or_default();
+                let mut child = lock(&child);
+                let code = exit_code(&mut child);
+                let _ = child.kill();
+                return Err(match code {
+                    Some(alacritree_common::side::NOT_FOUND) => CoreError::Spawn {
+                        program: program.to_string(),
+                        source: std::io::Error::new(std::io::ErrorKind::NotFound, text),
+                    },
+                    _ => CoreError::Refused(text),
+                });
+            },
             Err(error) => {
                 let _ = lock(&child).kill();
-                return Err(match error {
-                    CoreError::Closed => CoreError::Refused(
-                        stderr.recv_timeout(Duration::from_secs(2)).unwrap_or_default(),
-                    ),
-                    error => error,
-                });
+                return Err(error);
             },
         };
 
@@ -393,6 +401,19 @@ fn hello(
     Ok(result["features"]
         .as_array()
         .is_some_and(|features| features.iter().any(|feature| feature == "automatic_input")))
+}
+
+/// The status of a child whose pipes closed. On Windows the pipes close a
+/// moment before the status is set, so it waits a little.
+fn exit_code(child: &mut Child) -> Option<i32> {
+    let deadline = Instant::now() + Duration::from_millis(500);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.code(),
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(5)),
+            _ => return None,
+        }
+    }
 }
 
 /// Read the child's stderr to its end, so a full pipe never stalls it, and
@@ -625,6 +646,33 @@ mod tests {
         assert_eq!(terminals["t1"].foreground, None);
         apply_event(&mut terminals, &event("removed", "t1", json!({})));
         assert!(terminals.is_empty());
+    }
+
+    /// A command that exits with `code` before it answers anything.
+    fn exiting(code: u8) -> Command {
+        let (shell, flag) = if cfg!(windows) { ("cmd", "/c") } else { ("sh", "-c") };
+        let mut command = alacritree_common::command_ext::hidden(shell);
+        command.args([flag, &format!("exit {code}")]);
+        command
+    }
+
+    /// A distro's `hc connect` goes through a shell, which exits 127 when it
+    /// finds no `hc`. That is the same miss as a native spawn that finds none.
+    #[test]
+    fn a_shell_that_finds_no_hc_reads_as_a_spawn_that_found_nothing() {
+        let error = Connection::open(exiting(127), "hc connect", Waker::default()).err();
+
+        assert!(
+            matches!(&error, Some(CoreError::Spawn { source, .. }) if source.kind() == std::io::ErrorKind::NotFound),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn any_other_exit_before_hello_is_a_refusal() {
+        let error = Connection::open(exiting(1), "hc connect", Waker::default()).err();
+
+        assert!(matches!(&error, Some(CoreError::Refused(_))), "{error:?}");
     }
 
     /// A label change can make a terminal adoptable, so it replaces the

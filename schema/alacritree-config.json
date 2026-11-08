@@ -910,12 +910,12 @@
         },
         "path": {
           "default": "hc",
-          "description": "The `hc` program to run on Windows or natively. Its own name is looked\nup on PATH; any other value runs as written. hc finds its core's\nsocket in its own order: `HC_SOCKET`, then the `socket` key in its\n`config.toml`, then its runtime directory.",
+          "description": "The `hc` program to run on Windows or natively. Its own name is looked\nup on PATH, then in the folder hc's installer uses; any other value\nruns as written. hc finds its core's\nsocket in its own order: `HC_SOCKET`, then the `socket` key in its\n`config.toml`, then its runtime directory.",
           "type": "string"
         },
         "session_backend": {
           "default": "native",
-          "description": "Which backend runs the terminal of a new session.\n\n\"native\" opens a PTY that alacritree owns. \"herdr_core\" runs the\nsession as a terminal in the core of the session's side, through\n`hc connect`. A native shell runs in the native core, and a shell in\na WSL distro runs in the distro's core. Such a terminal outlives\nalacritree while its core runs. Quitting leaves it running, and the\nnext launch puts it back in its workspace. When that core cannot be\nused, the session opens native and a notice names the cause. When the\ncore takes the request and gives no answer, no session opens until\nthe core reports the terminal. Diff panes stay native.",
+          "description": "Which backend runs the terminal of a new session.\n\n\"native\" opens a PTY that alacritree owns. \"herdr_core\" runs the\nsession as a terminal in the core of the session's side, through\n`hc connect`. A native shell runs in the native core, and a shell in\na WSL distro runs in the distro's core. Such a terminal outlives\nalacritree while its core runs. Quitting leaves it running, and the\nnext launch puts it back in its workspace. When that core cannot be\nused, the session opens native and a notice names the cause. When the\nside has no `hc`, the notice instead offers hc's official installer\nand shows its command, which runs only once the user confirms. When\nthe core takes the request and gives no answer, no session opens\nuntil the core reports the terminal. Diff panes stay native.",
           "enum": [
             "native",
             "herdr_core"

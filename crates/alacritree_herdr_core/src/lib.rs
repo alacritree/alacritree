@@ -10,6 +10,7 @@
 mod connection;
 mod core;
 mod elsewhere;
+mod install;
 mod labels;
 mod one_shot;
 mod panes;
@@ -39,6 +40,7 @@ use self::connection::{Answer, Connection, Facts, Foreground, State, Waker};
 use self::core::{RECONNECT_INTERVAL, SideCore};
 use self::elsewhere::HcPaths;
 pub use self::elsewhere::{CoreElsewhere, HcConfigError, Remedy};
+pub use self::install::{InstallError, Installer};
 pub use self::panes::HerdrCorePanes;
 use self::parser::Chunk;
 pub use self::settings::{HerdrCoreConfig, RawHerdrCore, SessionBackendChoice};
@@ -54,6 +56,9 @@ pub enum CoreError {
     Spawn { program: String, source: std::io::Error },
     #[error("`hc connect` exited before it answered: {0}")]
     Refused(String),
+    /// No `hc` on the side, where its installer would put one.
+    #[error("hc is not installed on the {} side", .0.name())]
+    Missing(Side),
     #[error("a core listens at {}, where hc does not look", .0.socket.display())]
     Elsewhere(CoreElsewhere),
     #[error("the core's answer was not herdr-core's protocol: {0}")]
@@ -96,6 +101,16 @@ impl CoreError {
 
     fn unavailable(self) -> SessionError {
         SessionError::Unavailable { backend: SessionBackendKind::HerdrCore, source: Box::new(self) }
+    }
+}
+
+/// The side whose missing `hc` kept a terminal out of its core, when that
+/// is why `error` happened.
+pub fn hc_missing(error: &SessionError) -> Option<&Side> {
+    let SessionError::Unavailable { source, .. } = error else { return None };
+    match source.downcast_ref::<CoreError>()? {
+        CoreError::Missing(side) => Some(side),
+        _ => None,
     }
 }
 

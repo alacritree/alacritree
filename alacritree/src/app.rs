@@ -87,7 +87,9 @@ mod widgets;
 
 pub(crate) use actions::{Action, ActionOrigin};
 use focus::DeferredClose;
-use modals::{BaseBranchPicker, CreateState, DeleteRequest, ProjectRemoveState, RenameState};
+use modals::{
+    BaseBranchPicker, CreateState, DeleteRequest, HcInstall, ProjectRemoveState, RenameState,
+};
 use panes::managed_tooltip;
 use session_list::SessionList;
 use sidebar::{
@@ -1332,13 +1334,21 @@ impl AlacritreeApp {
     }
 
     /// Give the session at `idx` its terminal, and say why it opened native
-    /// when the preferred backend was unavailable.
+    /// when the preferred backend was unavailable. A side without `hc` gets
+    /// the offer to install it, which says the same, as does an install
+    /// already under way there.
     fn adopt_opened(&mut self, idx: usize, Opened { handle, fell_back }: Opened) {
         self.sessions[idx].attach(handle);
-        if let Some(cause) = fell_back {
-            self.modals.error_dialog =
-                Some(format!("{cause}. This session opened native instead."));
+        let Some(cause) = fell_back else { return };
+        if let Some(side) = alacritree_herdr_core::hc_missing(&cause) {
+            let side = side.clone();
+            let installing_here =
+                self.modals.hc_install.as_ref().is_some_and(|install| *install.side() == side);
+            if installing_here || self.offer_hc_install(&side) {
+                return;
+            }
         }
+        self.modals.error_dialog = Some(format!("{cause}. This session opened native instead."));
     }
 
     /// Adopt every terminal that finished opening. A session whose record is
@@ -2538,6 +2548,7 @@ impl AlacritreeApp {
             || self.modals.pending_detach_all.is_some()
             || self.modals.pending_kill_terminal.is_some()
             || self.modals.core_elsewhere.is_some()
+            || self.modals.hc_install.as_ref().is_some_and(HcInstall::on_screen)
             || self.modals.pending_rename.is_some()
             || self.modals.pending_base_branch.is_some()
             || self.modals.pending_project_remove.is_some()
@@ -3018,11 +3029,14 @@ fn consume_modal_keys(ctx: &Context, gate: &ModalGate, modal: ModalKind) -> (boo
     })
 }
 
-/// Move focus to `id` if no widget currently has it. This gives the modal's
-/// primary control focus on open without stealing it from the user later.
+/// Move focus to `id` unless a widget the user can reach has it. This gives
+/// the modal's primary control focus on open without stealing it from the
+/// user later. A terminal under the modal keeps egui's focus but is out of
+/// reach, so the modal takes focus from it.
 fn focus_default(ctx: &Context, id: egui::Id) {
-    let has_focus = ctx.memory(|m| m.focused().is_some());
-    if !has_focus {
+    let held = ctx.memory(|m| m.focused()).and_then(|focused| ctx.read_response(focused));
+    let reachable = held.is_some_and(|held| ctx.memory(|m| m.is_above_modal_layer(held.layer_id)));
+    if !reachable {
         ctx.memory_mut(|m| m.request_focus(id));
     }
 }
@@ -3672,6 +3686,7 @@ impl AlacritreeApp {
         self.sync_activities();
         self.poll_pending_deletes(ctx);
         self.poll_pending_creates(ctx);
+        self.poll_hc_install();
         self.poll_multiplexers();
         self.reconcile_pane_sessions(ctx);
         self.sync_pane_views(ctx);
@@ -3900,6 +3915,9 @@ impl AlacritreeApp {
         }
         if self.modals.core_elsewhere.is_some() {
             self.show_core_elsewhere_dialog(ctx);
+        }
+        if self.modals.hc_install.is_some() {
+            self.show_hc_install_dialog(ctx);
         }
         if self.modals.pending_rename.is_some() {
             self.show_rename_dialog(ctx);
@@ -5322,7 +5340,10 @@ mod tests {
     fn app_preferring_a_scripted_core() -> (AlacritreeApp, ScriptedSessions, ScriptedSessions) {
         let (mut app, native) = app_on_scripted_backend();
         let core = ScriptedSessions::default();
-        app.cores = Some(Cores::Scripted(HashMap::from([(Side::Native, core.clone())])));
+        app.cores = Some(Cores::Scripted(
+            HashMap::from([(Side::Native, core.clone())]),
+            Default::default(),
+        ));
         (app, native, core)
     }
 
@@ -5333,7 +5354,7 @@ mod tests {
         let (mut app, native, native_core) = app_preferring_a_scripted_core();
         app.session_rows_always = true;
         let distro_core = ScriptedSessions::default();
-        if let Some(Cores::Scripted(cores)) = &mut app.cores {
+        if let Some(Cores::Scripted(cores, _)) = &mut app.cores {
             cores.insert(Side::Wsl("d".into()), distro_core.clone());
         }
 
@@ -5369,7 +5390,7 @@ mod tests {
     fn a_command_launched_into_a_distro_keeps_its_argv_on_the_native_side() {
         let (mut app, _, native_core) = app_preferring_a_scripted_core();
         let distro_core = ScriptedSessions::default();
-        if let Some(Cores::Scripted(cores)) = &mut app.cores {
+        if let Some(Cores::Scripted(cores, _)) = &mut app.cores {
             cores.insert(Side::Wsl("d".into()), distro_core.clone());
         }
         let attach = ShellCommand::new("wsl.exe".into(), vec![
@@ -5402,7 +5423,7 @@ mod tests {
     fn a_terminal_a_distro_core_kept_is_adopted_through_that_core() {
         let (mut app, _native, native_core) = app_preferring_a_scripted_core();
         let distro_core = ScriptedSessions::default();
-        if let Some(Cores::Scripted(cores)) = &mut app.cores {
+        if let Some(Cores::Scripted(cores, _)) = &mut app.cores {
             cores.insert(Side::Wsl("d".into()), distro_core.clone());
         }
         distro_core.set_adoptable(vec![adoptable("t3", None, 0)]);
@@ -5458,6 +5479,158 @@ mod tests {
         assert!(core.records().is_empty());
         let notice = app.modals.error_dialog.clone().unwrap_or_default();
         assert!(notice.contains("no hc on PATH") && notice.contains("native"), "{notice}");
+    }
+
+    /// What a side's core answers when that side has no `hc`.
+    fn hc_missing_on(side: Side) -> SessionError {
+        SessionError::Unavailable {
+            backend: alacritree_session_backend::SessionBackendKind::HerdrCore,
+            source: Box::new(alacritree_herdr_core::CoreError::Missing(side)),
+        }
+    }
+
+    fn installs_ran(app: &AlacritreeApp) -> Vec<Side> {
+        match &app.cores {
+            Some(Cores::Scripted(_, installs)) => installs.lock().unwrap().clone(),
+            _ => panic!("a scripted core"),
+        }
+    }
+
+    /// The installer fetches and runs a script, so the offer shows the exact
+    /// command and nothing runs until the user confirms it. An Enter typed
+    /// before the offer appeared is no confirmation.
+    #[test]
+    fn a_side_without_hc_offers_its_installer_and_runs_it_only_on_confirm() {
+        let (mut app, native, core) = app_preferring_a_scripted_core();
+        core.fail_next(hc_missing_on(Side::Native));
+        let ctx = Context::default();
+
+        let id = app.spawn_session(&ctx, None).expect("the native backend opens it");
+
+        assert!(native.session(id).is_some());
+        let Some(HcInstall::Offer(installer)) = &app.modals.hc_install else {
+            panic!("no install offer");
+        };
+        let expected = if cfg!(windows) {
+            r#"powershell -c "irm https://releases.herdr.dev/core/install.ps1 | iex""#
+        } else {
+            "curl -fsSL https://releases.herdr.dev/core/install.sh | sh"
+        };
+        assert_eq!(installer.command_line(), expected);
+        assert_eq!(app.modals.error_dialog, None, "the offer already says it opened native");
+
+        dialog_frame(&mut app, &ctx, vec![key_ev(egui::Key::Enter, true)]);
+        assert!(installs_ran(&app).is_empty(), "an unseen Enter ran the installer");
+        dialog_frame(&mut app, &ctx, Vec::new());
+        assert!(installs_ran(&app).is_empty(), "the installer ran unconfirmed");
+
+        dialog_frame(&mut app, &ctx, vec![key_ev(egui::Key::Enter, true)]);
+        assert_eq!(installs_ran(&app), [Side::Native]);
+        assert!(matches!(app.modals.hc_install, Some(HcInstall::Running { .. })));
+    }
+
+    /// Turning the offer down runs nothing, and a later session that falls
+    /// back on that side gets the plain notice rather than the offer again.
+    #[test]
+    fn a_declined_install_runs_nothing_and_is_not_offered_again() {
+        let (mut app, _native, core) = app_preferring_a_scripted_core();
+        core.fail_next(hc_missing_on(Side::Native)).fail_next(hc_missing_on(Side::Native));
+        let ctx = Context::default();
+        app.spawn_session(&ctx, None).expect("the native backend opens it");
+        assert!(matches!(app.modals.hc_install, Some(HcInstall::Offer(_))));
+
+        dialog_frame(&mut app, &ctx, Vec::new());
+        dialog_frame(&mut app, &ctx, vec![key_ev(egui::Key::Escape, true)]);
+        app.spawn_session(&ctx, None).expect("the native backend opens it");
+
+        assert!(installs_ran(&app).is_empty());
+        assert!(app.modals.hc_install.is_none());
+        let notice = app.modals.error_dialog.clone().unwrap_or_default();
+        assert!(notice.contains("hc is not installed") && notice.contains("native"), "{notice}");
+    }
+
+    /// A dialog that opens over a terminal holding the keyboard still
+    /// focuses its default button, which is what draws its highlight.
+    #[test]
+    fn the_install_dialogs_open_with_their_default_button_focused() {
+        let (mut app, _native, _core) = app_preferring_a_scripted_core();
+        let ctx = Context::default();
+        let terminal = egui::Id::new("terminal");
+        let frame = |app: &mut AlacritreeApp| {
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    ui.interact(ui.max_rect(), terminal, egui::Sense::click());
+                });
+                app.paint_dialogs(ctx, true);
+            });
+            ctx.memory(|m| m.focused())
+        };
+        ctx.memory_mut(|m| m.request_focus(terminal));
+        frame(&mut app);
+
+        assert!(app.offer_hc_install(&Side::Native));
+        frame(&mut app);
+        let install = frame(&mut app);
+        assert!(install.is_some_and(|id| id != terminal), "the offer left focus on the terminal");
+
+        let installer = alacritree_herdr_core::Installer::on(Side::Native);
+        app.modals.hc_install = Some(HcInstall::Running {
+            installer: installer.clone(),
+            job: jobs::pool().spawn(jobs::Priority::Interactive, |_| Ok(String::new())),
+            hidden: false,
+        });
+        frame(&mut app);
+        app.modals.hc_install = Some(HcInstall::Done { installer, result: Ok(String::new()) });
+        frame(&mut app);
+        let ok = frame(&mut app);
+        assert!(ok.is_some_and(|id| Some(id) != install), "the result opened without focus");
+    }
+
+    /// An install sent to the background does not take the keyboard from a
+    /// shell when it lands, the way a minimized worktree create does not.
+    #[test]
+    fn a_hidden_install_that_succeeds_ends_without_a_dialog() {
+        let (mut app, _native, _core) = app_preferring_a_scripted_core();
+        assert!(app.offer_hc_install(&Side::Native));
+        app.install_hc();
+        if let Some(HcInstall::Running { hidden, .. }) = &mut app.modals.hc_install {
+            *hidden = true;
+        }
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while app.modals.hc_install.is_some() && Instant::now() < deadline {
+            app.poll_hc_install();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        assert!(app.modals.hc_install.is_none(), "the result took the screen");
+        assert_eq!(app.modals.error_dialog, None);
+        assert!(!app.is_modal_open());
+    }
+
+    /// An install under way on one side speaks only for that side. A distro
+    /// that falls back meanwhile still says why.
+    #[test]
+    fn a_fallback_on_another_side_during_an_install_still_gets_its_notice() {
+        let (mut app, _native, core) = app_preferring_a_scripted_core();
+        let distro_core = ScriptedSessions::default();
+        if let Some(Cores::Scripted(cores, _)) = &mut app.cores {
+            cores.insert(Side::Wsl("d".into()), distro_core.clone());
+        }
+        core.fail_next(hc_missing_on(Side::Native));
+        distro_core.fail_next(hc_missing_on(Side::Wsl("d".into())));
+        let ctx = Context::default();
+        app.spawn_session(&ctx, None).expect("the native backend opens it");
+        app.install_hc();
+
+        app.spawn_session_with_shell(&ctx, None, None, None, None, Some("d".into()))
+            .expect("the native backend opens it");
+
+        assert!(
+            matches!(&app.modals.hc_install, Some(HcInstall::Running { installer, .. }) if *installer.side() == Side::Native)
+        );
+        let notice = app.modals.error_dialog.clone().unwrap_or_default();
+        assert!(notice.contains("wsl:d"), "{notice}");
     }
 
     /// A core that answers but cannot start this terminal is as unusable as

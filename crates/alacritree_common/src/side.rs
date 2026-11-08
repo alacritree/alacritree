@@ -147,7 +147,7 @@ pub enum Ran {
 }
 
 /// The status a POSIX shell exits with for a command it could not find.
-const NOT_FOUND: i32 = 127;
+pub const NOT_FOUND: i32 = 127;
 
 /// Shell code that sets `$s` to the distro user's own login shell, since
 /// `wsl.exe --exec` sees only the system PATH.
@@ -219,7 +219,9 @@ pub fn run(
 /// hold a pool worker, and a sidebar spinner, until the app quits.
 pub const LIMIT: Duration = Duration::from_secs(300);
 
-fn run_within(
+/// [`run`] with a limit of the caller's own, for a program whose time to
+/// finish is not a hook's.
+pub fn run_within(
     side: &Side,
     program: &Program,
     cwd: Option<&Path>,

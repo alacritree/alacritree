@@ -5,10 +5,14 @@
 
 #[cfg(test)]
 use std::collections::HashMap;
+#[cfg(test)]
+use std::sync::{Arc, Mutex};
+
+use alacritree_common::jobs;
 
 use alacritree_herdr_core::{
     CoreElsewhere, HcConfigError, HerdrCore, HerdrCoreConfig, HerdrCoreHandle, HerdrCores,
-    SessionBackendChoice,
+    InstallError, Installer, SessionBackendChoice,
 };
 use alacritree_native::{Native, NativeHandle};
 use alacritree_session_backend::{
@@ -43,9 +47,10 @@ impl Backend {
 #[derive(Clone)]
 pub(crate) enum Cores {
     HerdrCore(HerdrCores),
-    /// A scripted core per side, and none on a side it does not name.
+    /// A scripted core per side, and none on a side it does not name. The
+    /// list records each side an install ran on, which runs nothing.
     #[cfg(test)]
-    Scripted(HashMap<Side, Scripted>),
+    Scripted(HashMap<Side, Scripted>, Arc<Mutex<Vec<Side>>>),
 }
 
 impl Cores {
@@ -67,7 +72,7 @@ impl Cores {
                 unreachable.elsewhere
             },
             #[cfg(test)]
-            Self::Scripted(_) => {
+            Self::Scripted(..) => {
                 if let Some(Err(error)) =
                     self.on(&Side::Native).map(|core| SessionBackend::<Handle>::ready(&core))
                 {
@@ -84,7 +89,20 @@ impl Cores {
         match self {
             Self::HerdrCore(cores) => cores.on(&Side::Native).use_core(found),
             #[cfg(test)]
-            Self::Scripted(_) => Ok(()),
+            Self::Scripted(..) => Ok(()),
+        }
+    }
+
+    /// Run `installer` on a job, which answers what it printed.
+    pub(crate) fn install(&self, installer: Installer) -> jobs::Job<Result<String, InstallError>> {
+        match self {
+            Self::HerdrCore(_) => jobs::pool()
+                .spawn(jobs::Priority::Interactive, move |blocking| installer.run(blocking)),
+            #[cfg(test)]
+            Self::Scripted(_, installs) => {
+                installs.lock().expect("installs").push(installer.side().clone());
+                jobs::pool().spawn(jobs::Priority::Interactive, |_| Ok("installed".to_string()))
+            },
         }
     }
 
@@ -93,7 +111,7 @@ impl Cores {
         match self {
             Self::HerdrCore(cores) => cores.open_beside_wsl_helpers(),
             #[cfg(test)]
-            Self::Scripted(_) => {},
+            Self::Scripted(..) => {},
         }
     }
 
@@ -106,7 +124,7 @@ impl Cores {
                 .map(|(side, core)| (side, Backend::HerdrCore(core)))
                 .collect(),
             #[cfg(test)]
-            Self::Scripted(cores) => cores
+            Self::Scripted(cores, _) => cores
                 .iter()
                 .map(|(side, core)| (side.clone(), Backend::Scripted(core.clone())))
                 .collect(),
@@ -117,7 +135,7 @@ impl Cores {
         match self {
             Self::HerdrCore(cores) => Some(Backend::HerdrCore(cores.on(side))),
             #[cfg(test)]
-            Self::Scripted(cores) => cores.get(side).cloned().map(Backend::Scripted),
+            Self::Scripted(cores, _) => cores.get(side).cloned().map(Backend::Scripted),
         }
     }
 }

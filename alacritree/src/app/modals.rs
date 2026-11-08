@@ -1,6 +1,8 @@
 //! The modal dialogs: the state only they own, the dialogs that paint over
 //! it, and the background deletes and creations those dialogs start.
 
+use alacritree_herdr_core::{InstallError, Installer};
+
 use super::*;
 
 /// Every dialog's pending state. `None` (or empty) means that dialog is
@@ -37,6 +39,12 @@ pub(super) struct Modals {
     /// A core that hc does not reach, offered until the user uses it or
     /// skips it.
     pub(super) core_elsewhere: Option<CoreElsewhere>,
+    /// hc's installer for a side whose missing `hc` sent a session native:
+    /// offered, running or done.
+    pub(super) hc_install: Option<HcInstall>,
+    /// The sides whose install offer the user turned down this run. A
+    /// session that falls back there gets the plain notice.
+    pub(super) hc_install_declined: HashSet<Side>,
     /// Whether the modal on screen was already in front of the user when
     /// the keys arriving now were pressed.
     pub(super) gate: ModalGate,
@@ -493,6 +501,210 @@ impl AlacritreeApp {
     pub(super) fn skip_core_elsewhere(&mut self, ctx: &Context) {
         self.modals.core_elsewhere = None;
         self.ensure_active_session(ctx);
+    }
+
+    /// Offer hc's installer for `side`, unless the user turned it down this
+    /// run or an install is already on screen. Answers whether it did.
+    pub(super) fn offer_hc_install(&mut self, side: &Side) -> bool {
+        if self.modals.hc_install.is_some() || self.modals.hc_install_declined.contains(side) {
+            return false;
+        }
+        self.modals.hc_install = Some(HcInstall::Offer(Installer::on(side.clone())));
+        true
+    }
+
+    /// Start the offered installer. Nothing else starts it.
+    pub(super) fn install_hc(&mut self) {
+        let Some(HcInstall::Offer(installer)) = self.modals.hc_install.take() else { return };
+        let Some(cores) = &self.cores else { return };
+        let job = cores.install(installer.clone());
+        self.modals.hc_install = Some(HcInstall::Running { installer, job, hidden: false });
+    }
+
+    pub(super) fn decline_hc_install(&mut self) {
+        if let Some(HcInstall::Offer(installer)) = self.modals.hc_install.take() {
+            self.modals.hc_install_declined.insert(installer.side().clone());
+        }
+    }
+
+    /// Take in the installer's result once it lands. A panicked job reads as
+    /// a failure, so the dialog never waits on it forever. An install the
+    /// user sent to the background ends quietly on success, as a minimized
+    /// worktree create does, and a failure goes to the error dialog.
+    pub(super) fn poll_hc_install(&mut self) {
+        let Some(HcInstall::Running { job, .. }) = &self.modals.hc_install else { return };
+        let result = match job.poll() {
+            Some(result) => result,
+            None if job.failed() => Err(InstallError::Lost),
+            None => return,
+        };
+        let Some(HcInstall::Running { installer, hidden, .. }) = self.modals.hc_install.take()
+        else {
+            return;
+        };
+        match (hidden, result) {
+            (true, Ok(_)) => {},
+            (true, Err(error)) => push_error(
+                &mut self.modals.error_dialog,
+                format!("Could not install hc {}.\n\n{error}", hc_place(installer.side())),
+            ),
+            (false, result) => self.modals.hc_install = Some(HcInstall::Done { installer, result }),
+        }
+    }
+
+    pub(super) fn show_hc_install_dialog(&mut self, ctx: &Context) {
+        match &self.modals.hc_install {
+            Some(install) if !install.on_screen() => {},
+            Some(HcInstall::Offer(_)) => self.show_hc_install_offer(ctx),
+            Some(HcInstall::Running { .. }) => self.show_hc_install_running(ctx),
+            Some(HcInstall::Done { .. }) => self.show_hc_install_done(ctx),
+            None => {},
+        }
+    }
+
+    /// The installer runs a script from the network, so the dialog shows
+    /// the exact command before anything runs.
+    fn show_hc_install_offer(&mut self, ctx: &Context) {
+        let theme = self.theme;
+        let Some(HcInstall::Offer(installer)) = &self.modals.hc_install else { return };
+        let place = hc_place(installer.side());
+        let command = installer.command_line();
+
+        let (cancel_via_key, confirm_via_key) =
+            consume_modal_keys(ctx, &self.modals.gate, ModalKind::HcInstallOffer);
+        let frame = modal_frame(&theme);
+        let mut confirmed = false;
+        let mut cancelled = false;
+
+        let s = theme.ui_scale;
+        let modal = egui::Modal::new(egui::Id::new("alacritree_hc_install_dialog"))
+            .frame(frame)
+            .show(ctx, |ui| {
+                ui.set_width(420.0 * s);
+                ui.spacing_mut().item_spacing.y = 6.0 * s;
+                ui.label(RichText::new(format!("Install hc {place}?")).color(theme.text).strong());
+                ui.label(
+                    RichText::new(format!(
+                        "`session_backend` is `herdr_core`, but hc is not installed {place}, so \
+                         this session opened native. Installing runs hc's official installer:"
+                    ))
+                    .color(theme.text_muted)
+                    .small(),
+                );
+                Frame::new()
+                    .fill(theme.row_hover_bg)
+                    .inner_margin(Margin::same((6.0 * s) as i8))
+                    .show(ui, |ui| {
+                        ui.add(
+                            egui::Label::new(RichText::new(command).monospace().color(theme.text))
+                                .selectable(true),
+                        );
+                    });
+                ui.label(
+                    RichText::new("New sessions there run in herdr-core once it is installed.")
+                        .color(theme.text_muted)
+                        .small(),
+                );
+                ui.add_space(4.0 * s);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("Enter to install · Esc to skip")
+                            .color(theme.text_muted)
+                            .small(),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let install = modal_button(ui, &theme, "Install", theme.text);
+                        if install.clicked() {
+                            confirmed = true;
+                        }
+                        if modal_button(ui, &theme, "Not now", theme.text_dim).clicked() {
+                            cancelled = true;
+                        }
+                        focus_default(ui.ctx(), install.id);
+                    });
+                });
+            });
+
+        if confirm_via_key || confirmed {
+            self.install_hc();
+            return;
+        }
+        if cancel_via_key || cancelled || modal.should_close() {
+            self.decline_hc_install();
+        }
+    }
+
+    /// The installer cannot be stopped midway, so every dismiss lets it
+    /// finish in the background, and its result comes back in a dialog.
+    fn show_hc_install_running(&mut self, ctx: &Context) {
+        let theme = self.theme;
+        let Some(HcInstall::Running { installer, .. }) = &self.modals.hc_install else { return };
+        let title = format!("Installing hc {}...", hc_place(installer.side()));
+        let (hide_via_esc, hide_via_enter) =
+            consume_modal_keys(ctx, &self.modals.gate, ModalKind::HcInstallRunning);
+        let frame = modal_frame(&theme);
+        let s = theme.ui_scale;
+        let modal = egui::Modal::new(egui::Id::new("alacritree_hc_install_dialog"))
+            .frame(frame)
+            .show(ctx, |ui| {
+                ui.set_width(420.0 * s);
+                ui.spacing_mut().item_spacing.y = 6.0 * s;
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(RichText::new(title).color(theme.text).strong());
+                });
+                ui.label(
+                    RichText::new("Enter to keep working while it installs in the background")
+                        .color(theme.text_muted)
+                        .small(),
+                );
+            });
+        if (hide_via_esc || hide_via_enter || modal.should_close())
+            && let Some(HcInstall::Running { hidden, .. }) = &mut self.modals.hc_install
+        {
+            *hidden = true;
+        }
+    }
+
+    fn show_hc_install_done(&mut self, ctx: &Context) {
+        let theme = self.theme;
+        let Some(HcInstall::Done { installer, result }) = &self.modals.hc_install else { return };
+        let place = hc_place(installer.side());
+        let (title, color, detail) = match result {
+            Ok(printed) => (
+                format!("Installed hc {place}"),
+                theme.ok,
+                format!("New sessions there run in herdr-core.\n\n{printed}"),
+            ),
+            Err(error) => (format!("Could not install hc {place}"), theme.error, error.to_string()),
+        };
+        let (cancel_via_key, confirm_via_key) =
+            consume_modal_keys(ctx, &self.modals.gate, ModalKind::HcInstallDone);
+        let frame = modal_frame(&theme);
+        let mut close = false;
+        let s = theme.ui_scale;
+        let modal = egui::Modal::new(egui::Id::new("alacritree_hc_install_dialog"))
+            .frame(frame)
+            .show(ctx, |ui| {
+                ui.set_width(420.0 * s);
+                ui.spacing_mut().item_spacing.y = 6.0 * s;
+                ui.label(RichText::new(title).color(color).strong());
+                ScrollArea::vertical().max_height(220.0 * s).show(ui, |ui| {
+                    let detail = RichText::new(detail.trim()).color(theme.text_muted).small();
+                    ui.add(egui::Label::new(detail).selectable(true));
+                });
+                ui.add_space(4.0 * s);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let ok = modal_button(ui, &theme, "OK", theme.text);
+                    if ok.clicked() {
+                        close = true;
+                    }
+                    focus_default(ui.ctx(), ok.id);
+                });
+            });
+        if confirm_via_key || cancel_via_key || close || modal.should_close() {
+            self.modals.hc_install = None;
+        }
     }
 
     pub(super) fn show_remove_project_dialog(&mut self, ctx: &Context) {
@@ -1439,6 +1651,50 @@ pub(super) struct ProjectRemoveState {
     pub(super) root: PathBuf,
     /// Display name, kept for the prompt after `projects` may have shifted.
     pub(super) name: String,
+}
+
+/// hc's installer for one side, from the offer to its result.
+pub(super) enum HcInstall {
+    /// Shown until the user installs or turns it down.
+    Offer(Installer),
+    Running {
+        installer: Installer,
+        job: jobs::Job<Result<String, InstallError>>,
+        /// The user sent the dialog away. The result still comes back.
+        hidden: bool,
+    },
+    Done {
+        installer: Installer,
+        /// What the installer printed, or why it failed.
+        result: Result<String, InstallError>,
+    },
+}
+
+impl HcInstall {
+    fn installer(&self) -> &Installer {
+        match self {
+            Self::Offer(installer)
+            | Self::Running { installer, .. }
+            | Self::Done { installer, .. } => installer,
+        }
+    }
+
+    pub(super) fn side(&self) -> &Side {
+        self.installer().side()
+    }
+
+    /// Whether its dialog is in front of the user.
+    pub(super) fn on_screen(&self) -> bool {
+        !matches!(self, Self::Running { hidden: true, .. })
+    }
+}
+
+/// How a dialog names a side in a sentence about installing there.
+fn hc_place(side: &Side) -> String {
+    match side {
+        Side::Native => "on this machine".to_string(),
+        Side::Wsl(distro) => format!("in {distro}"),
+    }
 }
 
 /// Modal state for choosing a worktree's diff base.

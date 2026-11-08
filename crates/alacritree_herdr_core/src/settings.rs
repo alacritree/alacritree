@@ -45,7 +45,8 @@ impl Default for HerdrCoreConfig {
 #[serde(default)]
 pub struct RawHerdrCore {
     /// The `hc` program to run on Windows or natively. Its own name is looked
-    /// up on PATH; any other value runs as written. hc finds its core's
+    /// up on PATH, then in the folder hc's installer uses; any other value
+    /// runs as written. hc finds its core's
     /// socket in its own order: `HC_SOCKET`, then the `socket` key in its
     /// `config.toml`, then its runtime directory.
     path: String,
@@ -68,8 +69,10 @@ pub struct RawHerdrCore {
     /// alacritree while its core runs. Quitting leaves it running, and the
     /// next launch puts it back in its workspace. When that core cannot be
     /// used, the session opens native and a notice names the cause. When the
-    /// core takes the request and gives no answer, no session opens until
-    /// the core reports the terminal. Diff panes stay native.
+    /// side has no `hc`, the notice instead offers hc's official installer
+    /// and shows its command, which runs only once the user confirms. When
+    /// the core takes the request and gives no answer, no session opens
+    /// until the core reports the terminal. Diff panes stay native.
     session_backend: ClosedSet<SessionBackendChoice>,
     /// List the native core's terminals that alacritree did not create, such
     /// as the ones herdr-app or an agent started, as panes in the sidebar.
