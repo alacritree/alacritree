@@ -3340,7 +3340,7 @@ struct RawUi {
     /// Put the session on screen, its shell and every process that shell
     /// starts, one scheduling class above normal, so a busy machine cannot
     /// starve what the user is typing into. Follows focus. Windows only;
-    /// changing it requires a restart. A session in the herdr-core core
+    /// changing it requires a restart. A session in a herdr-core core
     /// gets no boost.
     focus_priority_boost: bool,
     /// Open a session's PTY on a worker rather than in the frame that asked
