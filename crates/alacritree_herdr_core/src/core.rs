@@ -28,15 +28,9 @@ pub(crate) const RECONNECT_INTERVAL: Duration = Duration::from_secs(1);
 enum Launch {
     /// `socket` replaces the socket hc resolves, once the user chose a core
     /// of another session.
-    Native {
-        program: String,
-        socket: Mutex<Option<PathBuf>>,
-    },
+    Native { program: String, socket: Mutex<Option<PathBuf>> },
     /// `program` is the configured `wsl_path`.
-    Wsl {
-        distro: String,
-        program: Option<String>,
-    },
+    Wsl { distro: String, program: Option<String> },
 }
 
 /// Prints the distro user's home directory from the passwd entry, which
@@ -128,7 +122,9 @@ impl SideCore {
             return None;
         }
         self.open_in(&mut slot)
-            .inspect_err(|error| log::debug!("herdr-core ({}) reconnect: {error}", self.side.name()))
+            .inspect_err(|error| {
+                log::debug!("herdr-core ({}) reconnect: {error}", self.side.name())
+            })
             .ok()
     }
 
