@@ -5,10 +5,9 @@
 //! wakeups and child exit through the app's listener. A change to those in
 //! the native loop must also go here. It sends CREDIT for the bytes it has
 //! parsed, so the core's flow control follows the parser and not the socket.
-//! After a dropped connection it alone takes up the new stream, so nothing
-//! from the earlier one reaches the grid after the reset. A session whose
-//! side had no connection when it opened starts with no stream, and its
-//! first attach goes through the same wait.
+//! After a drop or a loss it alone takes up the new stream, so nothing from
+//! the earlier one reaches the grid after the reset. A session that opened
+//! with no connection waits for its first stream the same way.
 
 use std::process::ExitStatus;
 use std::sync::Arc;
@@ -22,7 +21,7 @@ use alacritty_terminal::term::Term;
 use alacritty_terminal::vte::ansi::{Handler, Processor, StdSyncHandler};
 use serde::Deserialize;
 
-use crate::{Attached, Resumed};
+use crate::{Attached, Ending, Resumed};
 
 /// What the demux thread hands a session's parser.
 pub(crate) enum Chunk {
@@ -35,6 +34,8 @@ pub(crate) enum Chunk {
 /// no exit to report.
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct CloseReason {
+    #[serde(default)]
+    reason: Option<String>,
     #[serde(default)]
     exit_code: Option<i32>,
     #[serde(default)]
@@ -100,26 +101,46 @@ enum End {
 }
 
 impl<L: EventListener> Parser<L> {
-    /// Follow the session's stream, and each one that replaces it after a
-    /// dropped connection. A reattach repaints the whole screen and its
-    /// scrollback, so the grid starts over from a reset. The first attach
-    /// of a session that started without a stream waits the same way.
+    /// Follow the session's stream, its first one once the side is up, and
+    /// each that replaces it after a drop or a loss. A reattach repaints the
+    /// whole screen and its scrollback, so the grid starts over from a reset.
     fn run(self, stream: Option<Receiver<Chunk>>) {
         let mut stream = match stream.map_or_else(|| self.attached.resume(false), Resumed::Stream) {
             Resumed::Stream(first) => first,
-            Resumed::Gone => return self.close(Some(CloseReason::default())),
-            Resumed::Released => return,
+            Resumed::Gone => return self.close(CloseReason::default()),
+            Resumed::Released | Resumed::Dropped => return,
         };
         loop {
-            if let End::Closed(reason) = self.follow(&stream) {
-                return self.close(reason);
+            let (mut next, reason) = match self.follow(&stream) {
+                End::Closed(None) => return,
+                End::Closed(Some(reason)) => {
+                    let next = match self.attached.ending() {
+                        Ending::Final => return self.close(reason),
+                        Ending::Released => return,
+                        Ending::Lost => {
+                            let why = reason.reason.as_deref().unwrap_or_default();
+                            self.show(format!(
+                                "\x1b[0m\r\n[alacritree] herdr-core lost the program ({why}); \
+                                 waiting for a new shell\r\n"
+                            ));
+                            self.attached.restart()
+                        },
+                        Ending::Dropped => Resumed::Dropped,
+                    };
+                    (next, Some(reason))
+                },
+                End::Dropped => (Resumed::Dropped, None),
+            };
+            if let Resumed::Dropped = next {
+                self.show(RECONNECTING);
+                next = self.attached.resume(true);
             }
-            Processor::<StdSyncHandler>::new().advance(&mut *self.term.lock(), RECONNECTING);
-            self.listener.send_event(Event::Wakeup);
-            stream = match self.attached.resume(true) {
+            stream = match next {
                 Resumed::Stream(next) => next,
-                Resumed::Gone => return self.close(Some(CloseReason::default())),
-                Resumed::Released => return,
+                // The reason the core closed the stream with, if it did,
+                // carries the exit code.
+                Resumed::Gone => return self.close(reason.unwrap_or_default()),
+                Resumed::Released | Resumed::Dropped => return,
             };
             self.term.lock().reset_state();
         }
@@ -210,10 +231,14 @@ impl<L: EventListener> Parser<L> {
         closed
     }
 
-    /// The program ended, or this client let go of the stream. Only an end
-    /// the core reports reaches the app as a child exit.
-    fn close(self, reason: Option<CloseReason>) {
-        let Some(reason) = reason else { return };
+    /// Print a line of alacritree's own into the grid.
+    fn show(&self, line: impl AsRef<[u8]>) {
+        Processor::<StdSyncHandler>::new().advance(&mut *self.term.lock(), line.as_ref());
+        self.listener.send_event(Event::Wakeup);
+    }
+
+    /// The program ended, which reaches the app as a child exit.
+    fn close(self, reason: CloseReason) {
         self.listener.send_event(Event::ChildExit(reason.status()));
         self.term.lock().exit();
         self.listener.send_event(Event::Wakeup);

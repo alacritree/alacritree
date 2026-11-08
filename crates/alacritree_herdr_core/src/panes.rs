@@ -20,7 +20,7 @@ use alacritree_multiplexer::{
 };
 use serde_json::{Value, json};
 
-use crate::connection::Facts;
+use crate::connection::{Facts, State};
 use crate::{HerdrCore, HerdrCoreConfig, labels};
 
 /// How long a look for a serving core that found none waits before the
@@ -115,7 +115,7 @@ impl HerdrCorePanes {
 
 /// The pane a terminal is, when it is live and not alacritree's own.
 fn foreign_pane(address: &str, facts: &Facts) -> Option<Pane> {
-    if !facts.live || labels::placement(&facts.labels).is_some() {
+    if facts.state != State::Live || labels::placement(&facts.labels).is_some() {
         return None;
     }
     let foreground = facts.foreground.as_ref();
@@ -311,7 +311,7 @@ mod tests {
 
     fn live(labels: &[(&str, &str)]) -> Facts {
         Facts {
-            live: true,
+            state: State::Live,
             labels: labels.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
             ..Facts::default()
         }
@@ -323,7 +323,7 @@ mod tests {
     fn only_a_live_terminal_without_alacritrees_labels_is_a_pane() {
         assert!(foreign_pane("t1", &live(&[("herdr.tab", "tb1")])).is_some());
         assert!(foreign_pane("t2", &live(&[(labels::WORKSPACE, "~")])).is_none());
-        assert!(foreign_pane("t3", &Facts { live: false, ..live(&[]) }).is_none());
+        assert!(foreign_pane("t3", &Facts { state: State::Finished, ..live(&[]) }).is_none());
     }
 
     /// The name a client gave the terminal wins, then the place `hc ls`
