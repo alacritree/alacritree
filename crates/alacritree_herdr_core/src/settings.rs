@@ -62,9 +62,11 @@ pub struct RawHerdrCore {
     /// session as a terminal in the core of the session's side, through
     /// `hc connect`. A native shell runs in the native core, and a shell in
     /// a WSL distro runs in the distro's core. Such a terminal outlives
-    /// alacritree. Quitting leaves it running, and the next launch puts it
-    /// back in its workspace. When that core cannot be used, the session
-    /// opens native and a notice names the cause. Diff panes stay native.
+    /// alacritree while its core runs. Quitting leaves it running, and the
+    /// next launch puts it back in its workspace. When that core cannot be
+    /// used, the session opens native and a notice names the cause. When the
+    /// core takes the request and gives no answer, no session opens until
+    /// the core reports the terminal. Diff panes stay native.
     session_backend: ClosedSet<SessionBackendChoice>,
 }
 
