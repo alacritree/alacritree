@@ -17,7 +17,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, TryLockError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use alacritree_process_probe::ProbeHandle;
 use alacritree_session_backend::{
@@ -82,9 +82,23 @@ impl From<CoreError> for SessionError {
 #[derive(Clone)]
 pub struct HerdrCore {
     program: Arc<str>,
-    connection: Arc<Mutex<Option<Arc<Connection>>>>,
+    connection: Arc<Mutex<Slot>>,
     claims: Arc<Mutex<Claims>>,
     waker: Waker,
+}
+
+/// The connection that clones share, and when the last attempt to open
+/// one failed.
+#[derive(Default)]
+struct Slot {
+    connection: Option<Arc<Connection>>,
+    failed_at: Option<Instant>,
+}
+
+impl Slot {
+    fn live(&self) -> Option<Arc<Connection>> {
+        self.connection.as_ref().filter(|connection| connection.alive()).cloned()
+    }
 }
 
 /// The terminals this process holds, so none is adopted twice.
@@ -119,12 +133,32 @@ impl HerdrCore {
     /// The live connection, opened first if there is none. Holding the slot
     /// while it opens keeps concurrent opens on one connection.
     fn connection(&self) -> Result<Arc<Connection>, CoreError> {
+        self.open_in(&mut lock(&self.connection))
+    }
+
+    /// The live connection, opened first unless an attempt failed within
+    /// the last [`RECONNECT_INTERVAL`]. Every session that waits out a
+    /// dropped connection asks here, so they share one attempt per interval.
+    fn reconnect(&self) -> Option<Arc<Connection>> {
         let mut slot = lock(&self.connection);
-        if let Some(connection) = slot.as_ref().filter(|connection| connection.alive()) {
-            return Ok(connection.clone());
+        if slot.live().is_none()
+            && slot.failed_at.is_some_and(|at| at.elapsed() < RECONNECT_INTERVAL)
+        {
+            return None;
         }
-        let connection = Connection::open(&self.program, self.waker.clone())?;
-        *slot = Some(connection.clone());
+        self.open_in(&mut slot)
+            .inspect_err(|error| log::debug!("herdr-core reconnect: {error}"))
+            .ok()
+    }
+
+    fn open_in(&self, slot: &mut Slot) -> Result<Arc<Connection>, CoreError> {
+        if let Some(connection) = slot.live() {
+            return Ok(connection);
+        }
+        let opened = Connection::open(&self.program, self.waker.clone());
+        slot.failed_at = opened.is_err().then(Instant::now);
+        let connection = opened?;
+        slot.connection = Some(connection.clone());
         Ok(connection)
     }
 
@@ -137,13 +171,13 @@ impl HerdrCore {
             Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
             Err(TryLockError::WouldBlock) => return None,
         };
-        slot.as_ref().filter(|connection| connection.alive()).cloned()
+        slot.live()
     }
 
     /// Kill the `hc connect` child, as a crash would.
     #[cfg(feature = "test-support")]
     pub fn kill_connection(&self) {
-        if let Some(connection) = lock(&self.connection).as_ref() {
+        if let Some(connection) = lock(&self.connection).connection.as_ref() {
             connection.kill();
         }
     }
@@ -385,25 +419,42 @@ fn unsupported(operation: Operation) -> SessionError {
 }
 
 /// Kill a terminal and remove its finished record, off the caller's thread,
-/// since a kill escalates through signals and can take seconds. It opens a
-/// connection when the last one dropped, so the kill still reaches the core.
+/// since a kill escalates through signals and can take seconds. Through a
+/// dropped connection it tries again every [`RECONNECT_INTERVAL`], so a
+/// closed session never leaves its terminal running.
 fn end(core: HerdrCore, address: String) {
     let ended = std::thread::Builder::new().name("hc-kill".into()).spawn(move || {
-        let connection = match core.connection() {
-            Ok(connection) => connection,
-            Err(error) => return log::warn!("herdr-core could not kill {address}: {error}"),
-        };
         let terminal = json!({ "terminal": address });
-        if let Err(error) = connection.call("terminal.kill", terminal.clone()) {
-            log::debug!("herdr-core kill of {address}: {error}");
-        }
-        if let Err(error) = connection.call("terminal.rm", terminal) {
-            log::warn!("herdr-core could not remove {address}: {error}");
+        loop {
+            if let Some(connection) = core.reconnect()
+                && kill_and_remove(&connection, &terminal)
+            {
+                return;
+            }
+            std::thread::sleep(RECONNECT_INTERVAL);
         }
     });
     if let Err(error) = ended {
         log::warn!("herdr-core kill thread: {error}");
     }
+}
+
+/// Answers whether the core heard both calls. A refusal counts as heard,
+/// such as a kill of a terminal that already finished.
+fn kill_and_remove(connection: &Connection, terminal: &Value) -> bool {
+    for method in ["terminal.kill", "terminal.rm"] {
+        match connection.call(method, terminal.clone()) {
+            Ok(_) => {},
+            Err(error @ CoreError::Rpc { .. }) => {
+                log::debug!("herdr-core {method} {terminal}: {error}")
+            },
+            Err(error) => {
+                log::debug!("herdr-core {method} {terminal}, trying again: {error}");
+                return false;
+            },
+        }
+    }
+    true
 }
 
 /// How long a session waits between attempts to reattach after its
@@ -493,13 +544,7 @@ impl Attached {
                 return Resumed::Released;
             }
             std::thread::sleep(RECONNECT_INTERVAL);
-            let connection = match self.core.connection() {
-                Ok(connection) => connection,
-                Err(error) => {
-                    log::debug!("herdr-core reconnect for {}: {error}", self.address);
-                    continue;
-                },
-            };
+            let Some(connection) = self.core.reconnect() else { continue };
             match self.reattach(connection) {
                 Ok(resumed) => return resumed,
                 // A session that closed while it waited may have killed and
