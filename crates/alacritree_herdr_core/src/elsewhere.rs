@@ -93,23 +93,36 @@ fn answers(socket: &Path) -> bool {
 }
 
 /// The socket path the core wrote into its lock.
-#[cfg(not(windows))]
 fn read_lock(lock: &Path) -> Option<PathBuf> {
-    let socket = std::fs::read_to_string(lock).ok()?;
-    (!socket.is_empty()).then(|| socket.into())
+    match std::fs::read_to_string(lock) {
+        Ok(socket) => (!socket.is_empty()).then(|| socket.into()),
+        Err(error) => read_locked_pipe(lock, &error),
+    }
 }
 
-/// A running core locks the first byte of `core.lock`, and on Windows that
-/// lock fails every read that covers it. That byte is the leading `\` of a
-/// `\\.\pipe\` path, so the read starts past it.
+/// herdr-core v0.1.18's `serve` holds `try_lock` on the first byte of
+/// `core.lock`, and on Windows that lock fails every read that covers it.
+/// That byte is the leading `\` of a `\\.\pipe\` path, so the rest is read
+/// past it and taken only when it reads as the rest of a pipe path.
 #[cfg(windows)]
-fn read_lock(lock: &Path) -> Option<PathBuf> {
+fn read_locked_pipe(lock: &Path, error: &std::io::Error) -> Option<PathBuf> {
     use std::io::{Read, Seek, SeekFrom};
+    const ERROR_LOCK_VIOLATION: i32 = 33;
+    if error.raw_os_error() != Some(ERROR_LOCK_VIOLATION) {
+        return None;
+    }
     let mut file = std::fs::File::open(lock).ok()?;
     file.seek(SeekFrom::Start(1)).ok()?;
     let mut rest = String::new();
     file.read_to_string(&mut rest).ok()?;
-    (!rest.is_empty()).then(|| format!(r"\{rest}").into())
+    rest.starts_with(r"\.\pipe\").then(|| format!(r"\{rest}").into())
+}
+
+/// Only Windows locks are mandatory, so elsewhere a failed read means
+/// there is no lock to read.
+#[cfg(not(windows))]
+fn read_locked_pipe(_lock: &Path, _error: &std::io::Error) -> Option<PathBuf> {
+    None
 }
 
 /// Write `socket` as the `socket` key of hc's `config.toml`, through a
