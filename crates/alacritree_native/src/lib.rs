@@ -6,7 +6,6 @@
 //! detaches nothing.
 
 mod focus_priority;
-mod process_probe;
 #[cfg(windows)]
 mod pty_rearm;
 pub mod wsl_spare;
@@ -26,7 +25,7 @@ use alacritty_terminal::vte::ansi::{Processor, StdSyncHandler};
 
 use self::focus_priority::PriorityJob;
 pub use self::focus_priority::set_self_boosted;
-use self::process_probe::ProbeHandle;
+use alacritree_process_probe::ProbeHandle;
 
 /// Receives each phase of an open and how long it took, for the frame log.
 pub type PhaseLog = fn(session: Option<u64>, phase: &str, elapsed: Duration);
@@ -65,6 +64,11 @@ pub struct NativeHandle {
 }
 
 impl<H: From<NativeHandle>> SessionBackend<H> for Native {
+    /// A PTY needs nothing running first.
+    fn ready(&self) -> Result<(), SessionError> {
+        Ok(())
+    }
+
     fn open<L>(&self, request: OpenRequest<L>) -> Result<H, SessionError>
     where
         L: EventListener + Send + 'static,
@@ -107,6 +111,11 @@ impl SessionHandle for NativeHandle {
         self.notifier.notify(bytes);
     }
 
+    /// A PTY carries no tag, so a reply is written like typing.
+    fn reply(&self, bytes: Vec<u8>) {
+        self.write(bytes);
+    }
+
     fn resize(&mut self, size: WindowSize) {
         let _ = self.notifier.0.send(Msg::Resize(size));
         let cell = (size.cell_width, size.cell_height);
@@ -131,6 +140,10 @@ impl SessionHandle for NativeHandle {
 
     fn detach(&mut self) -> Result<(), SessionError> {
         Err(unsupported(Operation::Detach))
+    }
+
+    fn cwd(&self) -> Option<std::path::PathBuf> {
+        None
     }
 
     fn foreground(&self) -> Option<ForegroundProgram> {
@@ -191,6 +204,7 @@ where
         env,
         wsl_probe,
         process_tree: ProcessTree { boost_on_focus: boost, reap_on_close: reap },
+        colors: _,
         screen: Screen { term, listener, window_size },
     } = request;
 
@@ -228,7 +242,7 @@ where
             // needs its own.
             let pty = tty::new(&pty_options, window_size, next_window_id())?;
             phase_log(Some(id), "pty", started.elapsed());
-            let shell_pid = process_probe::shell_pid_of(&pty);
+            let shell_pid = shell_pid_of(&pty);
 
             // Jobbed here rather than on focus: a process joins a job when it is
             // created, so anything the shell starts before the job exists escapes
@@ -263,6 +277,26 @@ where
         wsl_probe,
         wsl_cell_size: None,
     })
+}
+
+/// The pid of the shell a PTY started, where the platform will say.
+#[cfg(unix)]
+fn shell_pid_of(pty: &tty::Pty) -> Option<u32> {
+    Some(pty.child().id())
+}
+
+/// The pid of the shell a PTY started, where the platform will say.
+#[cfg(windows)]
+fn shell_pid_of(pty: &tty::Pty) -> Option<u32> {
+    // Under ConPTY the PTY child *is* the shell; everything the user runs
+    // is spawned beneath it.
+    pty.child_watcher().pid().map(std::num::NonZeroU32::get)
+}
+
+/// The pid of the shell a PTY started, where the platform will say.
+#[cfg(not(any(unix, windows)))]
+fn shell_pid_of(_pty: &tty::Pty) -> Option<u32> {
+    None
 }
 
 fn next_window_id() -> u64 {
@@ -321,6 +355,7 @@ pub(crate) mod tests {
             env,
             wsl_probe: None,
             process_tree: ProcessTree::default(),
+            colors: Default::default(),
             screen: Screen {
                 term: term.clone(),
                 listener: VoidListener,
@@ -386,6 +421,36 @@ pub(crate) mod tests {
             Some(SessionError::Unsupported { operation: Operation::Attach, .. })
         ));
         assert!(SessionBackend::<NativeHandle>::adoptable(&Native::default()).is_empty());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_job_under_a_real_shell_reads_as_the_foreground() {
+        use std::time::{Duration, Instant};
+
+        // `-f` skips the user's rc files, whose plugins run transient
+        // foreground jobs of their own that would race the probe.
+        let (request, _term) = request("/bin/zsh", &["-f", "-i"]);
+        let session = open(request, None, |_, _, _| {}).unwrap();
+
+        // Absolute path: a `sleep` from PATH may be a differently-named
+        // multi-call binary (uutils coreutils).
+        session.write(b"/bin/sleep 30\n".to_vec());
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let program = loop {
+            let program = session.foreground().filter(|_| session.signals().foreground_job);
+            if let Some(program) = program.filter(|program| program.argv.len() == 2) {
+                break program;
+            }
+            assert!(Instant::now() < deadline, "the job never became the foreground");
+            std::thread::sleep(Duration::from_millis(10));
+        };
+
+        assert_eq!(program.argv, ["/bin/sleep", "30"]);
+        assert_eq!(
+            program.cwd.and_then(|cwd| cwd.canonicalize().ok()),
+            std::env::current_dir().ok().and_then(|cwd| cwd.canonicalize().ok())
+        );
     }
 
     /// A WSL launch opens cold while its distro has no spare ready, so a

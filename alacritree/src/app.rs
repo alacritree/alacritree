@@ -52,7 +52,7 @@ use crate::session::{
     self, AttentionVerdict, LiveState, PendingAttention, Session, SessionActivity, SessionId,
     SessionKind, ShellCommand, ShownState, TermSize, poll_attention_debounce,
 };
-use crate::session_backend::{Backend, Handle};
+use crate::session_backend::{self, Backend, Handle, Opened};
 use crate::shell_decision::{ShellDecision, shell_decision};
 use crate::sidebar_model::{SidebarInputs, SidebarModel, Step};
 use crate::sidebar_nav::{self, SidebarRow, StepTarget};
@@ -550,12 +550,16 @@ pub struct AlacritreeApp {
     /// that refreshes a project to act on the new worktree list would
     /// otherwise race its own request.
     project_refreshes: InFlight<PathBuf, Discovered>,
-    /// What opens every new session's terminal.
+    /// What opens a new session's terminal when no other backend is
+    /// preferred, or when the preferred one is unavailable.
     session_backend: Backend,
+    /// What `[integrations.herdr_core] session_backend` prefers for shells on
+    /// the native side, or `None` when it prefers native.
+    core_backend: Option<Backend>,
     /// Terminals opened on a worker, adopted in `poll_pending_spawns`. A
     /// client that creates a session to write to it is answered once the
     /// terminal is live, or it would race its own shell.
-    pending_spawns: InFlight<SessionId, Result<Handle, SessionError>>,
+    pending_spawns: InFlight<SessionId, Result<Opened, SessionError>>,
     /// Every multiplexer alacritree hosts panes from, each with its own
     /// listing and calls in flight.
     multiplexers: Multiplexers,
@@ -604,6 +608,7 @@ impl AlacritreeApp {
         ipc: (Option<ipc::server::SocketHandle>, Option<Receiver<ipc::server::AppCall>>),
     ) -> Self {
         let (font_chain, face_metrics) = fonts;
+        let core_backend = Backend::for_native_shells(&config.integrations.herdr_core);
         let color_glyph_budget_mb = config.font.color_glyph_cache_mb;
         let grid_snapshot = crate::terminal_view::GridSnapshot::new(&config.palette);
         let (ipc_socket, ipc_rx) = ipc;
@@ -671,6 +676,7 @@ impl AlacritreeApp {
             last_pane_geometry: None,
             project_refreshes: Default::default(),
             session_backend: Backend::native(),
+            core_backend,
             pending_spawns: Default::default(),
             multiplexers,
             liveness: Default::default(),
@@ -817,6 +823,17 @@ impl AlacritreeApp {
         app.detached_jobs.push(jobs::pool().spawn(jobs::Priority::Background, |blocking| {
             wsl::prime_distros_from_cli(blocking);
         }));
+
+        // `hc connect` may start the core. Clones share one connection, so
+        // connecting here keeps that wait off the frame that opens the first
+        // session.
+        if let Some(core) = app.core_backend.clone() {
+            app.detached_jobs.push(jobs::pool().spawn(jobs::Priority::Background, move |_| {
+                if let Err(error) = SessionBackend::<Handle>::ready(&core) {
+                    log::warn!("herdr-core: {error}");
+                }
+            }));
+        }
 
         let wsl_indices: Vec<usize> = app
             .projects
@@ -1086,19 +1103,27 @@ impl AlacritreeApp {
     /// off, on the job pool when it is on.  The record exists before this
     /// returns either way, so a caller can activate the tab without waiting
     /// for a shell.  Callers decide whether it becomes the active session.
+    ///
+    /// `preferred` opens the terminal instead of the native backend while it
+    /// is ready.
     fn open_session(
         &mut self,
         session: AppSession,
         request: session::OpenRequest<Context>,
+        preferred: Option<Backend>,
     ) -> Result<SessionId, SessionError> {
         let id = session.id;
         self.sessions.push(session);
 
         if !self.config.ui.async_session_spawn {
-            match self.session_backend.open(request) {
-                Ok(handle) => {
+            match session_backend::open_preferring(
+                preferred.as_ref(),
+                &self.session_backend,
+                request,
+            ) {
+                Ok(opened) => {
                     let idx = self.sessions.iter().position(|s| s.id == id).expect("just pushed");
-                    self.sessions[idx].attach(handle);
+                    self.adopt_opened(idx, opened);
                     return Ok(id);
                 },
                 Err(e) => {
@@ -1119,11 +1144,22 @@ impl AlacritreeApp {
         // repaints once the job returns, so nothing here has to. Without that
         // the result would wait for whatever wakes the loop next, which under
         // load is the shell's own first output seconds later.
-        let backend = self.session_backend.clone();
-        let job =
-            jobs::pool().spawn(jobs::Priority::Interactive, move |_blocking| backend.open(request));
+        let native = self.session_backend.clone();
+        let job = jobs::pool().spawn(jobs::Priority::Interactive, move |_blocking| {
+            session_backend::open_preferring(preferred.as_ref(), &native, request)
+        });
         self.pending_spawns.start(id, || job);
         Ok(id)
+    }
+
+    /// Give the session at `idx` its terminal, and say why it opened native
+    /// when the preferred backend was unavailable.
+    fn adopt_opened(&mut self, idx: usize, Opened { handle, fell_back }: Opened) {
+        self.sessions[idx].attach(handle);
+        if let Some(cause) = fell_back {
+            self.modals.error_dialog =
+                Some(format!("{cause}. This session opened native instead."));
+        }
     }
 
     /// Adopt every terminal that finished opening. A session whose record is
@@ -1135,14 +1171,15 @@ impl AlacritreeApp {
                 Err(std::io::Error::other("the session's PTY worker panicked").into())
             });
             match opened {
-                Ok(mut handle) => match self.sessions.iter().position(|s| s.id == id) {
+                Ok(opened) => match self.sessions.iter().position(|s| s.id == id) {
                     Some(idx) => {
                         let started = Instant::now();
-                        self.sessions[idx].attach(handle);
+                        self.adopt_opened(idx, opened);
                         crate::frame_log::spawn_phase(Some(id), "attach", started.elapsed());
                         waiters.answer(Ok(json!({ "session_id": id })));
                     },
                     None => {
+                        let mut handle = opened.handle;
                         handle.kill();
                         waiters.answer(Err(
                             "the session was closed while its shell was starting".into()
@@ -1195,9 +1232,8 @@ impl AlacritreeApp {
     }
 
     fn sibling_spawn_directory(&self) -> Option<PathBuf> {
-        let reported =
-            self.active_session_index().and_then(|idx| self.sessions[idx].reported_cwd.as_ref());
-        session::spawn_directory(reported, self.current_workspace.as_ref())
+        let reported = self.active_session_index().and_then(|idx| self.sessions[idx].cwd());
+        session::spawn_directory(reported.as_ref(), self.current_workspace.as_ref())
     }
 
     /// The geometry to open a PTY at, so it is born at the size it will keep.
@@ -1256,6 +1292,8 @@ impl AlacritreeApp {
             // start before they land.
             self.sync_checkout_hooks(dir.clone());
         }
+        let native_side = wsl_distro.is_none() && wsl_probe.is_none();
+        let preferred = self.core_backend.clone().filter(|_| native_side);
         let (size, cell_size) = self.next_spawn_geometry();
         let (mut session, request) = Session::pending_shell(
             ctx.clone(),
@@ -1268,7 +1306,7 @@ impl AlacritreeApp {
             wsl_probe,
         );
         session.working_directory = workspace.clone();
-        let id = self.open_session(session, request)?;
+        let id = self.open_session(session, request, preferred)?;
         self.sessions.set_active(workspace, id);
         Ok(id)
     }
@@ -2997,7 +3035,7 @@ impl AlacritreeApp {
             if focused && Some(idx) == visible_idx {
                 for (target, format) in &outcome.clipboard_reads {
                     if let Some(text) = clipboard::read(*target) {
-                        self.sessions[idx].write(format(&text).into_bytes());
+                        self.sessions[idx].reply(format(&text).into_bytes());
                     }
                 }
             }
@@ -3264,7 +3302,7 @@ impl AlacritreeApp {
                     Some(WorkspaceRowData::Session(SessionRowData {
                         id: s.id,
                         name: session_row_name(&s.title, activity, self.session_pane(s)),
-                        reported_cwd: s.reported_cwd.clone(),
+                        cwd: s.cwd(),
                         last_notification: s.last_notification.clone(),
                         progress: s.progress,
                         needs_attention: s.needs_attention,
@@ -4485,7 +4523,9 @@ mod tests {
     use super::*;
     use crate::config::{SidebarFocus, UiTheme};
     use alacritree_multiplexer::{CreatedPane, Launch};
-    use alacritree_session_backend::{Scripted as ScriptedSessions, Signals};
+    use alacritree_session_backend::{
+        ForegroundProgram, Scripted as ScriptedSessions, Side, Signals,
+    };
 
     use super::focus::search_reveal_root;
     use super::git_panel::{
@@ -5011,6 +5051,75 @@ mod tests {
         assert_eq!(record.env.get(crate::session::SESSION_ID_ENV), Some(&id.to_string()));
         assert_eq!(record.opened_at, Some((80, 24)));
         assert!(app.sessions.iter().any(|session| session.id == id && !session.is_pending()));
+    }
+
+    /// `app_on_scripted_backend` with a scripted core preferred for shells
+    /// on the native side.
+    fn app_preferring_a_scripted_core() -> (AlacritreeApp, ScriptedSessions, ScriptedSessions) {
+        let (mut app, native) = app_on_scripted_backend();
+        let core = ScriptedSessions::default();
+        app.core_backend = Some(Backend::Scripted(core.clone()));
+        (app, native, core)
+    }
+
+    #[test]
+    fn a_shell_opens_in_the_core_while_the_core_is_ready() {
+        let (mut app, native, core) = app_preferring_a_scripted_core();
+
+        let id = app.spawn_session(&Context::default(), None).expect("a scripted open");
+
+        assert!(core.session(id).is_some());
+        assert!(native.session(id).is_none());
+        assert_eq!(app.modals.error_dialog, None);
+    }
+
+    /// A core that cannot be used still gives the user a terminal, and the
+    /// notice names why it is a native one.
+    #[test]
+    fn with_no_usable_core_a_shell_opens_native_with_a_notice() {
+        let (mut app, native, core) = app_preferring_a_scripted_core();
+        core.set_unready(SessionError::Scripted("no hc on PATH".into()));
+
+        let id = app.spawn_session(&Context::default(), None).expect("the native backend opens it");
+
+        assert!(native.session(id).is_some());
+        assert!(core.records().is_empty());
+        let notice = app.modals.error_dialog.clone().unwrap_or_default();
+        assert!(notice.contains("no hc on PATH") && notice.contains("native"), "{notice}");
+    }
+
+    /// A core that answers but cannot start this terminal is as unusable as
+    /// one that does not answer.
+    #[test]
+    fn a_core_that_fails_to_open_the_terminal_leaves_a_native_shell_with_a_notice() {
+        let (mut app, native, core) = app_preferring_a_scripted_core();
+        core.fail_next(SessionError::Scripted("terminal.run refused".into()));
+
+        let id = app.spawn_session(&Context::default(), None).expect("the native backend opens it");
+
+        assert!(native.session(id).is_some());
+        let notice = app.modals.error_dialog.clone().unwrap_or_default();
+        assert!(notice.contains("terminal.run refused") && notice.contains("native"), "{notice}");
+    }
+
+    /// A backend that tracks the program's cwd fills the sidebar's until the
+    /// shell reports its own through OSC 7.
+    #[test]
+    fn a_session_shows_its_backends_cwd_until_its_shell_reports_one() {
+        let (mut app, _native, core) = app_preferring_a_scripted_core();
+        let id = app.spawn_session(&Context::default(), None).expect("a scripted open");
+        let program = ForegroundProgram {
+            side: Side::Native,
+            pid: Some(7),
+            argv: vec!["claude".into()],
+            cwd: Some(PathBuf::from("/from/core")),
+        };
+        core.set_foreground(id, Some(program));
+        let idx = app.sessions.iter().position(|session| session.id == id).unwrap();
+
+        assert_eq!(app.sessions[idx].cwd(), Some(PathBuf::from("/from/core")));
+        app.sessions[idx].reported_cwd = Some(PathBuf::from("/from/osc7"));
+        assert_eq!(app.sessions[idx].cwd(), Some(PathBuf::from("/from/osc7")));
     }
 
     /// With the open inline, a caller that gets the error sees no trace of
@@ -9706,7 +9815,7 @@ mod tests {
             let row = SessionRowData {
                 id: 1,
                 name: RowName::plain("zsh".to_owned()),
-                reported_cwd: None,
+                cwd: None,
                 last_notification: None,
                 progress: None,
                 needs_attention: false,
@@ -9853,7 +9962,7 @@ mod tests {
             let mut row = SessionRowData {
                 id: 1,
                 name: RowName::plain(name.to_owned()),
-                reported_cwd: Some(cwd.clone()),
+                cwd: Some(cwd.clone()),
                 last_notification: Some("build failed".to_owned()),
                 progress: None,
                 needs_attention: false,
@@ -10055,7 +10164,7 @@ mod tests {
         let session = |attention, activity| SessionRowData {
             id: 1,
             name: RowName::plain("zsh".to_owned()),
-            reported_cwd: None,
+            cwd: None,
             last_notification: None,
             progress: None,
             needs_attention: attention,
@@ -10293,7 +10402,7 @@ mod tests {
         let row = SessionRowData {
             id: 1,
             name: RowName::plain("cargo test --workspace --all-features -- --nocapture".to_owned()),
-            reported_cwd: None,
+            cwd: None,
             last_notification: None,
             progress: None,
             needs_attention: false,

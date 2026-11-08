@@ -21,7 +21,9 @@ pub use alacritree_common::wsl_helper::WslProbe;
 pub use alacritree_multiplexer::PaneKey;
 use strum::Display;
 
-pub use self::model::{ForegroundProgram, OpenRequest, ProcessTree, Screen, ShellCommand, Signals};
+pub use self::model::{
+    ForegroundProgram, OpenRequest, ProcessTree, Screen, ShellCommand, Signals, TerminalColors,
+};
 #[cfg(any(test, feature = "test-support"))]
 pub use self::scripted::{Call, Record, Scripted, ScriptedHandle};
 
@@ -34,6 +36,7 @@ pub const SESSION_ID_ENV: &str = "ALACRITREE_SESSION_ID";
 #[strum(serialize_all = "snake_case")]
 pub enum SessionBackendKind {
     Native,
+    HerdrCore,
     /// Answers from a script instead of a terminal, so app behavior can be
     /// tested at the trait.
     #[cfg(any(test, feature = "test-support"))]
@@ -60,6 +63,10 @@ pub enum SessionError {
     Io(#[from] std::io::Error),
     #[error("the {backend} session backend cannot {operation} a terminal")]
     Unsupported { backend: SessionBackendKind, operation: Operation },
+    /// The backend has nothing to open a terminal on, such as a core that
+    /// does not answer.
+    #[error("the {backend} session backend is unavailable: {source}")]
+    Unavailable { backend: SessionBackendKind, source: Box<dyn std::error::Error + Send + Sync> },
     #[cfg(any(test, feature = "test-support"))]
     #[error("{0}")]
     Scripted(String),
@@ -70,6 +77,11 @@ pub enum SessionError {
 /// milliseconds.
 #[ambassador::delegatable_trait]
 pub trait SessionBackend<H> {
+    /// Whether this backend can open a terminal now, connecting to whatever
+    /// runs its terminals if it must. The app asks before [`Self::open`], so
+    /// a session that cannot open here can open on another backend.
+    fn ready(&self) -> ::std::result::Result<(), ::alacritree_session_backend::SessionError>;
+
     /// Start a new terminal for a session.
     fn open<L>(
         &self,
@@ -111,6 +123,10 @@ pub trait SessionHandle {
     /// sends nothing, because a zero-byte write hangs the terminal.
     fn write(&self, bytes: ::std::vec::Vec<u8>);
 
+    /// Send bytes the terminal generated to answer the program's own query,
+    /// which a backend may tell apart from typing.
+    fn reply(&self, bytes: ::std::vec::Vec<u8>);
+
     /// Tell the program the pane's new size.
     fn resize(&mut self, size: ::alacritty_terminal::event::WindowSize);
 
@@ -124,6 +140,11 @@ pub trait SessionHandle {
     /// Let go of the terminal and leave its program running. A detach never
     /// kills a terminal, so a backend that cannot keep one alive refuses.
     fn detach(&mut self) -> ::std::result::Result<(), ::alacritree_session_backend::SessionError>;
+
+    /// The program's working directory as the backend tracks it on its own,
+    /// cheap enough to read every frame. `None` for a backend that tracks
+    /// none, such as a PTY, whose cwd arrives through the shell's OSC 7.
+    fn cwd(&self) -> ::std::option::Option<::std::path::PathBuf>;
 
     /// The program that holds the terminal, when the backend can name it.
     fn foreground(&self) -> ::std::option::Option<::alacritree_session_backend::ForegroundProgram>;

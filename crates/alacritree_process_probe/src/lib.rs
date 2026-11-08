@@ -1,4 +1,4 @@
-//! What process is running inside a PTY.
+//! What runs under a shell process on this machine.
 //!
 //! One question, four operating systems, and a cache that keeps the answer
 //! for a beat so a frame does not walk the process table. [`ProbeHandle`] is
@@ -18,6 +18,26 @@ use alacritree_common::side::Side;
 use alacritree_common::wsl_helper::{self, WslProbe};
 use alacritree_session_backend::{ForegroundProgram, Signals};
 
+/// Foreground process names recognized as agents. `comm` is kernel-truncated
+/// (15 bytes on Linux, 16 on macOS, which `cursor-agent` would otherwise
+/// miss) and Windows names carry an `.exe` suffix, so matching uses
+/// `starts_with`.
+const AGENT_PROCESS_NAMES: &[&str] =
+    &["claude", "codex", "gemini", "aider", "cursor-agent", "continue"];
+
+/// TUIs that manage their own splits and cooperate with FocusLeft/
+/// FocusRight (vim, nvim, tmux, zellij, herdr): the key is forwarded while
+/// one runs, and the TUI calls `alacritree action FocusLeft` or `FocusRight`
+/// over IPC once it has no split left in that direction. Matches Linux
+/// `comm` values (`tmux: client`) and Windows image names (`nvim.exe`)
+/// alike. gvim stays out because it owns its own window. The WSL helper's
+/// `PROBE` script carries the same list.
+#[cfg(any(test, target_os = "linux", target_os = "macos", windows))]
+fn is_nav_tui_name(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    ["nvim", "vim", "tmux", "zellij", "herdr"].iter().any(|tui| n.starts_with(tui))
+}
+
 /// The process that holds a native terminal: on Unix the foreground group's
 /// leader, on Windows the shell's newest child.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -32,24 +52,18 @@ struct Program {
 ///
 /// Answers are cached for [`AGENT_CACHE_TTL`], so a frame that asks three
 /// times walks the process table once.
-pub(crate) struct ProbeHandle {
+pub struct ProbeHandle {
     shell_pid: Option<u32>,
     wsl: Option<WslProbe>,
     cache: Cell<AgentCache>,
 }
 
 impl ProbeHandle {
-    pub(crate) fn new(shell_pid: Option<u32>, wsl: Option<WslProbe>) -> Self {
+    pub fn new(shell_pid: Option<u32>, wsl: Option<WslProbe>) -> Self {
         Self { shell_pid, wsl, cache: Cell::new(AgentCache::default()) }
     }
 
-    /// The shell the probe reads, for a test that drives a real one.
-    #[cfg(all(test, target_os = "macos"))]
-    pub(crate) fn shell_pid(&self) -> Option<u32> {
-        self.shell_pid
-    }
-
-    pub(crate) fn signals(&self) -> Signals {
+    pub fn signals(&self) -> Signals {
         let cached = self.cache.get();
         if cached.polled_at.is_some_and(|at| at.elapsed() < AGENT_CACHE_TTL) {
             return Signals {
@@ -84,7 +98,7 @@ impl ProbeHandle {
 
     /// Uncached: nothing asks for it every frame. A WSL session's helper
     /// reports only the foreground `comm`, so it has no pid and no cwd.
-    pub(crate) fn foreground(&self) -> Option<ForegroundProgram> {
+    pub fn foreground(&self) -> Option<ForegroundProgram> {
         if let Some(probe) = &self.wsl {
             let comm = wsl_helper::foreground_comm(&probe.distro, &probe.key)?;
             return Some(ForegroundProgram {
@@ -97,11 +111,6 @@ impl ProbeHandle {
         let Program { pid, argv, cwd } = foreground_program(self.shell_pid?)?;
         Some(ForegroundProgram { side: Side::Native, pid: Some(pid), argv, cwd })
     }
-}
-
-/// The pid of the shell a PTY started, where the platform will say.
-pub(crate) fn shell_pid_of(pty: &alacritty_terminal::tty::Pty) -> Option<u32> {
-    pty_shell_pid(pty)
 }
 
 #[derive(Clone, Copy, Default)]
@@ -118,12 +127,6 @@ struct AgentCache {
 }
 
 const AGENT_CACHE_TTL: Duration = Duration::from_millis(1000);
-
-/// Foreground process names recognized as agents. `comm` is kernel-truncated
-/// — 15 bytes on Linux, 16 on macOS (`cursor-agent` would otherwise miss) —
-/// and Windows names carry an `.exe` suffix, so matching uses `starts_with`.
-const AGENT_PROCESS_NAMES: &[&str] =
-    &["claude", "codex", "gemini", "aider", "cursor-agent", "continue"];
 
 /// Pids in the tree rooted at `root` (inclusive), from a `(pid, parent)`
 /// snapshot.  Root-inclusive so a session whose spawned program *is* the
@@ -156,19 +159,6 @@ fn agent_name_by_name(names: impl IntoIterator<Item = impl AsRef<str>>) -> Optio
         let n = n.as_ref().to_ascii_lowercase();
         AGENT_PROCESS_NAMES.iter().find(|name| n.starts_with(*name)).copied()
     })
-}
-
-/// TUIs that manage their own splits and cooperate with FocusLeft/
-/// FocusRight (vim, nvim, tmux, zellij, herdr): the key is forwarded while
-/// one runs, and the TUI calls `alacritree action FocusLeft` or `FocusRight`
-/// over IPC once it has no split left in that direction.  Matches Linux
-/// `comm` values (`tmux: client`) and Windows image names (`nvim.exe`)
-/// alike.  gvim stays out because it owns its own window.  The WSL helper's
-/// `PROBE` script carries the same list.
-#[cfg(any(test, target_os = "linux", target_os = "macos", windows))]
-fn is_nav_tui_name(name: &str) -> bool {
-    let n = name.to_ascii_lowercase();
-    ["nvim", "vim", "tmux", "zellij", "herdr"].iter().any(|tui| n.starts_with(tui))
 }
 
 /// FocusLeft/FocusRight passthrough decision for a shimmed WSL session: the
@@ -206,23 +196,6 @@ fn agent_name_by_cmdline(cmds: impl IntoIterator<Item = impl AsRef<str>>) -> Opt
         let c = c.as_ref().to_ascii_lowercase();
         AGENT_PROCESS_NAMES.iter().find(|name| c.contains(*name)).copied()
     })
-}
-
-#[cfg(unix)]
-fn pty_shell_pid(pty: &alacritty_terminal::tty::Pty) -> Option<u32> {
-    Some(pty.child().id())
-}
-
-#[cfg(windows)]
-fn pty_shell_pid(pty: &alacritty_terminal::tty::Pty) -> Option<u32> {
-    // Under ConPTY the PTY child *is* the shell; everything the user runs
-    // is spawned beneath it.
-    pty.child_watcher().pid().map(std::num::NonZeroU32::get)
-}
-
-#[cfg(not(any(unix, windows)))]
-fn pty_shell_pid(_pty: &alacritty_terminal::tty::Pty) -> Option<u32> {
-    None
 }
 
 /// Match a foreground process against the agent list: `comm` first (cheap),
@@ -1084,51 +1057,6 @@ mod tests {
         assert_eq!(comm.as_deref(), Some("sleep"));
         let own_pgid = unsafe { libc::getpgrp() };
         assert_eq!(groups.map(|(pgid, _)| pgid), Some(own_pgid as u32));
-    }
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn a_real_shells_foreground_job_flips_the_probe() {
-        use alacritree_session_backend::SessionHandle;
-
-        // `-f` skips the user's rc files, whose plugins run transient
-        // foreground jobs of their own that would race the probe.
-        let (request, _term) = crate::tests::request("/bin/zsh", &["-f", "-i"]);
-        let session = crate::open(request, None, |_, _, _| {}).unwrap();
-        let shell_pid = session.probe.shell_pid().expect("unix PTYs always report the child pid");
-
-        // The shell owning its terminal (tpgid == pgid) is exactly the state
-        // the probe reads as "not busy".
-        let start = Instant::now();
-        while pgid_tpgid(shell_pid).is_none_or(|(pgid, tpgid)| tpgid != pgid) {
-            assert!(start.elapsed() < Duration::from_secs(10), "shell never took the terminal");
-            std::thread::sleep(Duration::from_millis(10));
-        }
-
-        // Absolute path: a `sleep` from PATH may be a differently-named
-        // multi-call binary (uutils coreutils).
-        session.write(b"/bin/sleep 30\n".to_vec());
-        let start = Instant::now();
-        loop {
-            let foreground_comm = pgid_tpgid(shell_pid)
-                .and_then(|(_, tpgid)| foreground_group(tpgid))
-                .and_then(comm_for_pid);
-            if shell_has_foreground_job(shell_pid) && foreground_comm.as_deref() == Some("sleep") {
-                break;
-            }
-            assert!(
-                start.elapsed() < Duration::from_secs(10),
-                "the running job never flipped the foreground probe (last foreground comm: \
-                 {foreground_comm:?})"
-            );
-            std::thread::sleep(Duration::from_millis(10));
-        }
-
-        let program = session.foreground().expect("the job holds the terminal");
-        assert_eq!(program.argv, ["/bin/sleep", "30"]);
-        assert_eq!(
-            program.cwd.and_then(|cwd| cwd.canonicalize().ok()),
-            std::env::current_dir().ok().and_then(|cwd| cwd.canonicalize().ok())
-        );
     }
     #[cfg(target_os = "macos")]
     #[test]

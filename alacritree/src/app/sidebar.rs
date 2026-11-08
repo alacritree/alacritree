@@ -2030,7 +2030,7 @@ fn session_name_tooltip(
     elided: bool,
     mode: SidebarTooltips,
 ) -> egui::Response {
-    let cwd = row.reported_cwd.as_ref().map(|path| path.display().to_string());
+    let cwd = row.cwd.as_ref().map(|path| path.display().to_string());
     let lines: Vec<&str> = std::iter::once(row.name.text.as_str())
         .chain(cwd.as_deref())
         .chain(row.program_msg.as_deref())
@@ -2604,7 +2604,7 @@ pub(super) struct DraggedSession(pub(super) SessionId);
 pub(super) struct SessionRowData {
     pub(super) id: SessionId,
     pub(super) name: RowName,
-    pub(super) reported_cwd: Option<PathBuf>,
+    pub(super) cwd: Option<PathBuf>,
     pub(super) last_notification: Option<String>,
     pub(super) progress: Option<OscProgress>,
     pub(super) needs_attention: bool,

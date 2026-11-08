@@ -25,6 +25,7 @@ alacritree_graphics.workspace = true
 alacritree_gh.workspace = true
 alacritree_git.workspace = true
 alacritree_herdr.workspace = true
+alacritree_herdr_core.workspace = true
 alacritree_multiplexer.workspace = true
 alacritree_native.workspace = true
 alacritree_session_backend.workspace = true
