@@ -1327,9 +1327,15 @@ impl AlacritreeApp {
 
     /// Let go of every terminal that can outlive the app, so quitting leaves
     /// it running for the next launch. Every other session ends as it drops.
+    /// A distro's core gets a keeper in case the one its connection started
+    /// is gone, since WSL would stop the distro once the app's `wsl.exe`
+    /// clients exit.
     fn detach_for_quit(&mut self) {
         for session in self.sessions.iter_mut() {
             session.detach();
+        }
+        if let Some(cores) = &self.cores {
+            cores.leave_keepers();
         }
     }
 

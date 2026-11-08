@@ -388,6 +388,47 @@ fn parse_distro_list(stdout: &[u8]) -> Vec<WslDistro> {
         .collect()
 }
 
+/// When WSL stops a distro that has no `wsl.exe` client left.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdleShutdown {
+    After(Duration),
+    Never,
+}
+
+impl IdleShutdown {
+    /// WSL's own choice when `.wslconfig` does not set one.
+    pub const DEFAULT: Self = Self::After(Duration::from_millis(15_000));
+
+    /// `instanceIdleTimeout` in milliseconds, where a negative value turns
+    /// the shutdown off.
+    fn from_millis(ms: i64) -> Self {
+        u64::try_from(ms).map_or(Self::Never, |ms| Self::After(Duration::from_millis(ms)))
+    }
+}
+
+/// `[general] instanceIdleTimeout` from `%UserProfile%\.wslconfig`. `None`
+/// when the file does not set it, or sets it to something WSL cannot read.
+pub fn idle_shutdown() -> Option<IdleShutdown> {
+    let profile = std::env::var_os("USERPROFILE")?;
+    let wslconfig = std::fs::read_to_string(Path::new(&profile).join(".wslconfig")).ok()?;
+    idle_shutdown_in(&wslconfig)
+}
+
+fn idle_shutdown_in(wslconfig: &str) -> Option<IdleShutdown> {
+    let mut general = false;
+    for line in wslconfig.lines().map(str::trim) {
+        if let Some(section) = line.strip_prefix('[').and_then(|line| line.strip_suffix(']')) {
+            general = section.trim().eq_ignore_ascii_case("general");
+        } else if general
+            && let Some((key, value)) = line.split_once('=')
+            && key.trim().eq_ignore_ascii_case("instanceIdleTimeout")
+        {
+            return value.split('#').next()?.trim().parse().ok().map(IdleShutdown::from_millis);
+        }
+    }
+    None
+}
+
 /// `wsl.exe -d <distro> [--cd <dir>] --exec` with the console window
 /// suppressed and wsl.exe's own messages forced to UTF-8. They are UTF-16LE
 /// otherwise, and the relayed Linux byte stream is unaffected. Callers append
@@ -818,6 +859,21 @@ mod tests {
 
     fn distro(name: &str) -> WslDistro {
         WslDistro { name: name.to_string(), is_default: true }
+    }
+
+    /// WSL reads the idle timeout only under `[general]`, with keys in any
+    /// case, and a comment may follow the value.
+    #[test]
+    fn the_idle_timeout_is_read_from_the_general_section() {
+        let wslconfig =
+            "[wsl2]\ninstanceIdleTimeout=5\n\n[General]\nInstanceIdleTimeout = -1 # never\n";
+        assert_eq!(idle_shutdown_in(wslconfig), Some(IdleShutdown::Never));
+        assert_eq!(idle_shutdown_in("[wsl2]\ninstanceIdleTimeout=5\n"), None);
+        assert_eq!(idle_shutdown_in("[general]\nmemory=4GB\n"), None);
+        assert_eq!(
+            idle_shutdown_in("[general]\ninstanceIdleTimeout=60000\n"),
+            Some(IdleShutdown::After(Duration::from_secs(60)))
+        );
     }
 
     #[test]

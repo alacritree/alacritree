@@ -847,8 +847,9 @@ impl Launches {
 }
 
 /// A distro's sessions run in the distro's own core, start where they were
-/// asked to, and launch no process once the helper and the resident
-/// connection are up.
+/// asked to, and launch no process once the helper, the resident
+/// connection and the distro's keeper are up. A foreign terminal starts the
+/// keeper first, since the core's first running terminal does.
 #[cfg(windows)]
 #[test]
 #[ignore = "needs a WSL distro with hc"]
@@ -871,19 +872,82 @@ fn distro_sessions_share_one_resident_connection() {
     wait_until("the resident connection beside the helper", Duration::from_secs(30), || {
         wsl_launches() == 2
     });
+    let foreign = core.hc(&["run", "--bg", "--keep", "--no-parent", "--json"]);
+    assert!(foreign.status.success(), "a terminal that starts the distro's keeper: {foreign:?}");
+    let foreign: Value = serde_json::from_slice(&foreign.stdout).expect("run answers JSON");
+    wait_until("the distro's keeper", PATIENCE, || backend.keeper_runs());
     let before = launches.total();
 
-    let first = open(&backend, shell(), &core.windows_dir());
+    let mut first = open(&backend, shell(), &core.windows_dir());
     first.handle.write(b"echo first-in-distro\r".to_vec());
     shows(&first, "first-in-distro");
-    let second = open(&backend, shell(), &core.windows_dir());
+    let mut second = open(&backend, shell(), &core.windows_dir());
     second.handle.write(b"echo second-in-distro\r".to_vec());
     shows(&second, "second-in-distro");
 
     assert_eq!(launches.total(), before, "a session launched a process");
     wait_until("the core's cwd", PATIENCE, || first.handle.cwd().is_some());
     assert_eq!(first.handle.cwd(), Some(core.windows_dir()));
-    assert_eq!(core.live_terminals(), 2, "both sessions run in the distro's core");
+    assert_eq!(core.live_terminals(), 3, "both sessions run beside the foreign terminal");
+
+    first.handle.kill();
+    second.handle.kill();
+    let ended = core.hc(&["kill", foreign["address"].as_str().expect("an address")]);
+    assert!(ended.status.success(), "the foreign terminal ends: {ended:?}");
+    wait_until("the keeper to exit after the last terminal", Duration::from_secs(30), || {
+        !backend.keeper_runs()
+    });
+}
+
+#[cfg(windows)]
+fn running(pid: u32) -> bool {
+    let probe = format!("[bool](Get-Process -Id {pid} -ErrorAction SilentlyContinue)");
+    let out = Command::new("powershell.exe")
+        .args(["-NoProfile", "-Command", &probe])
+        .output()
+        .expect("powershell runs");
+    String::from_utf8_lossy(&out.stdout).trim() == "True"
+}
+
+/// A distro core gets one keeper while it runs a terminal, with no quit.
+/// The keeper outlasts its status polls, a quit's keeper for the same core
+/// exits at once, and the keeper exits once the last terminal ends. The
+/// next terminal gets a new one.
+#[cfg(windows)]
+#[test]
+#[ignore = "needs a WSL distro with hc"]
+fn a_distro_core_keeps_one_keeper_while_it_runs_a_terminal() {
+    use alacritree_herdr_core::HerdrCores;
+    use alacritree_session_backend::Side;
+
+    let Some(core) = DistroCore::start() else {
+        eprintln!("skip: this machine has no WSL distro");
+        return;
+    };
+    let cores = HerdrCores::new(&HerdrCoreConfig::default());
+    let backend = cores.on(&Side::Wsl(core.distro.clone()));
+    let mut opened = open(&backend, shell(), &core.windows_dir());
+    opened.handle.write(b"echo kept-in-distro\r".to_vec());
+    shows(&opened, "kept-in-distro");
+    let terminal = opened.handle.terminal().to_string();
+    opened.handle.detach().expect("a detach");
+    wait_until("a keeper with no quit", PATIENCE, || backend.keeper_runs());
+
+    let [quit] = cores.leave_keepers()[..] else { panic!("a quit's keeper to turn away") };
+    wait_until("the quit's keeper to find the lock held", PATIENCE, || !running(quit));
+    std::thread::sleep(Duration::from_secs(15));
+    assert!(backend.keeper_runs(), "the keeper outlasts a status poll while a terminal lives");
+
+    let killed = core.hc(&["kill", &terminal]);
+    assert!(killed.status.success(), "the terminal ends: {killed:?}");
+    wait_until("the keeper to exit after the last terminal", Duration::from_secs(30), || {
+        !backend.keeper_runs()
+    });
+
+    let mut next = open(&backend, shell(), &core.windows_dir());
+    wait_until("a keeper for the next terminal", PATIENCE, || backend.keeper_runs());
+    next.handle.kill();
+    wait_until("the next keeper to exit", Duration::from_secs(30), || !backend.keeper_runs());
 }
 
 /// Start `argv` the way another client does: kept, and with no alacritree

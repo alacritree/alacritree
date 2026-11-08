@@ -67,12 +67,15 @@ pub struct RawHerdrCore {
     /// `hc connect`. A native shell runs in the native core, and a shell in
     /// a WSL distro runs in the distro's core. Such a terminal outlives
     /// alacritree while its core runs. Quitting leaves it running, and the
-    /// next launch puts it back in its workspace. When that core cannot be
-    /// used, the session opens native and a notice names the cause. When the
-    /// side has no `hc`, the notice instead offers hc's official installer
-    /// and shows its command, which runs only once the user confirms. When
-    /// the core takes the request and gives no answer, no session opens
-    /// until the core reports the terminal. Diff panes stay native.
+    /// next launch puts it back in its workspace. So that WSL does not stop
+    /// an idle distro after alacritree ends, a distro whose core runs a
+    /// terminal gets a hidden `wsl.exe` keeper, and the keeper exits with
+    /// the last terminal. When that core cannot be used, the session opens
+    /// native and a notice names the cause. When the side has no `hc`, the
+    /// notice instead offers hc's official installer and shows its command,
+    /// which runs only once the user confirms. When the core takes the
+    /// request and gives no answer, no session opens until the core reports
+    /// the terminal. Diff panes stay native.
     session_backend: ClosedSet<SessionBackendChoice>,
     /// List the native core's terminals that alacritree did not create, such
     /// as the ones herdr-app or an agent started, as panes in the sidebar.
