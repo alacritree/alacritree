@@ -1388,6 +1388,24 @@ impl AlacritreeApp {
         wsl_probe: Option<WslProbe>,
         wsl_distro: Option<String>,
     ) -> Result<SessionId, SessionError> {
+        let native_side = wsl_distro.is_none() && wsl_probe.is_none();
+        let preferred = self.core_backend.clone().filter(|_| native_side);
+        self.spawn_shell_on(preferred, ctx, workspace, directory, shell, wsl_probe, wsl_distro)
+    }
+
+    /// [`Self::spawn_session_with_shell`] on `preferred`, or native when it
+    /// is `None` or cannot open the shell.
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_shell_on(
+        &mut self,
+        preferred: Option<Backend>,
+        ctx: &Context,
+        workspace: WorkspaceKey,
+        directory: Option<PathBuf>,
+        shell: Option<ShellCommand>,
+        wsl_probe: Option<WslProbe>,
+        wsl_distro: Option<String>,
+    ) -> Result<SessionId, SessionError> {
         if let Some(dir) = &workspace {
             // A checkout git has forgotten is refused here rather than in
             // the backend's open, which can only see whether the directory
@@ -1405,8 +1423,6 @@ impl AlacritreeApp {
             // start before they land.
             self.sync_checkout_hooks(dir.clone());
         }
-        let native_side = wsl_distro.is_none() && wsl_probe.is_none();
-        let preferred = self.core_backend.clone().filter(|_| native_side);
         let (size, cell_size) = self.next_spawn_geometry();
         let (mut session, mut request) = Session::pending_shell(
             ctx.clone(),
@@ -5283,6 +5299,23 @@ mod tests {
         let kept = core.session(in_core).expect("the core terminal");
         assert!(kept.detached && !kept.killed);
         assert!(native.session(in_pty).expect("the native terminal").dropped);
+    }
+
+    /// A multiplexer keeps its own panes, so the client that shows one opens
+    /// native. A core would keep the client past a quit, and the next launch
+    /// would adopt it with no pane bound.
+    #[test]
+    fn a_multiplexer_client_opens_native_while_the_core_is_ready() {
+        let (mut app, native, core) = app_preferring_a_scripted_core();
+        let key = Scripted::key(&Side::Native, "t1");
+        let launch = Launch { program: "scripted".into(), argv: Vec::new() };
+
+        let id = app
+            .open_pane_session(&Context::default(), key, None, launch, false, AttachFocus::Take)
+            .expect("the client opens");
+
+        assert!(native.session(id).is_some());
+        assert!(core.session(id).is_none());
     }
 
     /// An app that goes without a clean exit, as in a panic, kills nothing.

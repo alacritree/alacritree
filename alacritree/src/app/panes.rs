@@ -322,7 +322,10 @@ impl AlacritreeApp {
             .sessions
             .active(&workspace)
             .filter(|id| !focus.takes() && self.sessions.iter().any(|s| s.id == *id));
-        match self.spawn_session_with_shell(
+        // Native, since the multiplexer keeps the pane. A client the core
+        // kept past a quit would come back with no pane bound.
+        match self.spawn_shell_on(
+            None,
             ctx,
             workspace.clone(),
             workspace.clone(),
