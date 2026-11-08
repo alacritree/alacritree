@@ -1199,6 +1199,12 @@ impl<R: Repaint> Session<R> {
         self.placed = Some((workspace, position));
     }
 
+    /// Place the session again on the next [`Self::place`], as when its
+    /// workspace's title changes.
+    pub(crate) fn forget_placement(&mut self) {
+        self.placed = None;
+    }
+
     /// End the program and its terminal. A session that closes calls this,
     /// since dropping one leaves a terminal its backend keeps running.
     pub(crate) fn kill(&mut self) {

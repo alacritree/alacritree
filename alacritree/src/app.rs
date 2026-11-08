@@ -931,6 +931,9 @@ impl AlacritreeApp {
             .ok_or_else(|| NotAProject(root.to_path_buf()))?;
         self.projects[idx].label = crate::projects::normalize_label(label);
         self.persist_project_label(root);
+        for session in self.sessions.iter_mut() {
+            session.forget_placement();
+        }
         Ok(idx)
     }
 
@@ -4023,16 +4026,11 @@ fn workspace_label_for(projects: &[Project], ws: &WorkspaceKey) -> String {
     let Some(path) = ws else {
         return "Home".to_string();
     };
-    for project in projects {
-        for wt in &project.checkouts {
-            if &wt.path == path {
-                return format!("{} / {}", project.display_name(), wt.name);
-            }
-        }
-    }
-    path.file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| wsl::display_path(path))
+    workspace_title(projects, ws).unwrap_or_else(|| {
+        path.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| wsl::display_path(path))
+    })
 }
 
 /// What the session on screen contributes to a spawn's geometry.
@@ -5433,7 +5431,19 @@ mod tests {
         app.close_session(&ctx, first);
         app.place_sessions();
 
-        assert_eq!(placement(second), Some(Placement { workspace: checkout, position: 0, title }));
+        assert_eq!(
+            placement(second),
+            Some(Placement { workspace: checkout.clone(), position: 0, title })
+        );
+
+        app.rename_project(dir.path(), Some("renamed".into())).expect("the project");
+        app.place_sessions();
+
+        let renamed = Some(format!("renamed / {name}"));
+        assert_eq!(
+            placement(second),
+            Some(Placement { workspace: checkout, position: 0, title: renamed })
+        );
     }
 
     /// With the open inline, a caller that gets the error sees no trace of
