@@ -8,7 +8,7 @@
 #![allow(clippy::disallowed_methods)]
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -31,6 +31,8 @@ const PATIENCE: Duration = Duration::from_secs(20);
 /// A core of this test's own, stopped when the test ends.
 struct Core {
     home: tempfile::TempDir,
+    /// Where it listens, which a test may hide from hc.
+    socket: String,
 }
 
 impl Core {
@@ -42,7 +44,7 @@ impl Core {
             home.path().join("hc.sock").display().to_string()
         };
         let vars = [
-            ("HC_SOCKET", socket),
+            ("HC_SOCKET", socket.clone()),
             ("HC_SESSION", format!("alacritree-e2e-{}", std::process::id())),
             ("XDG_STATE_HOME", home.path().join("state").display().to_string()),
             ("XDG_CONFIG_HOME", home.path().join("config").display().to_string()),
@@ -55,7 +57,7 @@ impl Core {
         }
         // SAFETY: as above.
         unsafe { std::env::remove_var("HC_TERMINAL_ID") };
-        let core = Self { home };
+        let core = Self { home, socket };
         let started = hc(&["server", "start"]);
         assert!(started.status.success(), "the throwaway core starts: {started:?}");
         core
@@ -79,11 +81,18 @@ impl Core {
     fn dir(&self) -> &Path {
         self.home.path()
     }
+
+    /// The process that serves, which a restart replaces.
+    fn pid(&self) -> u64 {
+        let status: Value = serde_json::from_slice(&hc(&["server", "status", "--json"]).stdout)
+            .expect("server status answers JSON");
+        status["pid"].as_u64().expect("a serving core names its pid")
+    }
 }
 
 impl Drop for Core {
     fn drop(&mut self) {
-        let _ = hc(&["server", "stop"]);
+        let _ = Command::new("hc").args(["server", "stop"]).env("HC_SOCKET", &self.socket).output();
     }
 }
 
@@ -470,6 +479,36 @@ fn a_terminal_an_agent_labels_with_a_workspace_is_adoptable_once() {
     assert_eq!(found[0].terminal, address);
     assert_eq!(found[0].placement.workspace.as_deref(), Some(core.dir()));
     assert!(SessionBackend::<HerdrCoreHandle>::adoptable(&backend).is_empty());
+}
+
+/// A core that listens where hc no longer looks is found through its lock.
+/// Pointing hc there reaches that same core, its terminal still live, from
+/// alacritree and from `hc` alike.
+#[test]
+#[ignore = "needs hc on PATH"]
+fn a_core_hc_does_not_resolve_is_found_and_reached_without_a_restart() {
+    let core = Core::start();
+    let terminal = {
+        let before = HerdrCore::new("hc");
+        let mut opened = open(&before, shell(), core.dir());
+        opened.handle.detach().expect("a core terminal detaches");
+        opened.handle.terminal().to_string()
+    };
+    let pid = core.pid();
+    // SAFETY: as in `Core::start`; no thread reads the environment here.
+    unsafe { std::env::remove_var("HC_SOCKET") };
+
+    let backend = HerdrCore::new("hc");
+    let refused = backend.connect().expect_err("hc does not reach the core");
+    let socket = refused.elsewhere.expect("the core's lock names where it listens");
+    assert_eq!(socket, PathBuf::from(&core.socket));
+
+    backend.point_hc_at(&socket).expect("hc's config takes the socket");
+
+    backend.connect().expect("alacritree reaches the core");
+    assert!(hc(&["ls", "--json"]).status.success(), "hc ls reaches the core");
+    assert_eq!(core.pid(), pid, "the same core answers");
+    assert_eq!(core.get(&terminal)["state"], "live");
 }
 
 /// alacritree's terminals carry no `herdr.*` label, so herdr-app neither

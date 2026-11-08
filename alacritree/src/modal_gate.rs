@@ -22,6 +22,7 @@ pub(crate) enum ModalKind {
     Delete,
     CloseSession,
     DetachAll,
+    CoreElsewhere,
     RemoveProject,
     Error,
     Palette,

@@ -8,6 +8,7 @@
 //! connection drops, each parser reattaches its session on a new one.
 
 mod connection;
+mod elsewhere;
 mod labels;
 mod parser;
 mod settings;
@@ -29,6 +30,8 @@ use alacritty_terminal::vte::ansi::Rgb;
 use serde_json::{Value, json};
 
 use self::connection::{Answer, Connection, Facts, Waker};
+pub use self::elsewhere::HcConfigError;
+use self::elsewhere::HcPaths;
 use self::parser::Chunk;
 pub use self::settings::{HerdrCoreConfig, RawHerdrCore, SessionBackendChoice};
 
@@ -66,6 +69,16 @@ impl CoreError {
     fn unavailable(self) -> SessionError {
         SessionError::Unavailable { backend: SessionBackendKind::HerdrCore, source: Box::new(self) }
     }
+}
+
+/// Why [`HerdrCore::connect`] did not reach the core.
+#[derive(Debug, thiserror::Error)]
+#[error("{error}")]
+pub struct Unreachable {
+    pub error: CoreError,
+    /// The socket of a core that serves hc's state where hc does not look,
+    /// when one answers there.
+    pub elsewhere: Option<PathBuf>,
 }
 
 impl From<CoreError> for SessionError {
@@ -128,6 +141,22 @@ impl HerdrCore {
     /// Only the first call counts.
     pub fn set_waker(&self, wake: impl Fn() + Send + Sync + 'static) {
         let _ = self.waker.set(Box::new(wake));
+    }
+
+    /// Connect, as `ready` does. When hc refuses, also look for a core that
+    /// serves hc's state on a socket hc does not resolve.
+    pub fn connect(&self) -> Result<(), Unreachable> {
+        self.connection().map(drop).map_err(|error| {
+            let refused = matches!(error, CoreError::Refused(_));
+            let elsewhere = refused.then(|| elsewhere::socket(&HcPaths::from_env())).flatten();
+            Unreachable { error, elsewhere }
+        })
+    }
+
+    /// Point hc at `socket` through the `socket` key of its `config.toml`.
+    /// The core and its terminals run on untouched.
+    pub fn point_hc_at(&self, socket: &Path) -> Result<(), HcConfigError> {
+        elsewhere::point_hc_at(&HcPaths::from_env(), socket)
     }
 
     /// The live connection, opened first if there is none. Holding the slot

@@ -32,6 +32,9 @@ pub(super) struct Modals {
     /// it counted rather than whatever is attached by the time it is
     /// answered.
     pub(super) pending_detach_all: Option<Vec<SessionId>>,
+    /// The socket of a core that hc does not reach, offered until the user
+    /// points hc at it or skips it.
+    pub(super) core_elsewhere: Option<PathBuf>,
     /// Whether the modal on screen was already in front of the user when
     /// the keys arriving now were pressed.
     pub(super) gate: ModalGate,
@@ -337,6 +340,87 @@ impl AlacritreeApp {
         if cancel_via_key || cancelled || modal.should_close() {
             self.modals.pending_detach_all = None;
         }
+    }
+
+    /// Offer the core that hc does not reach. Using it never restarts the
+    /// core, since a restart would lose every terminal it holds.
+    pub(super) fn show_core_elsewhere_dialog(&mut self, ctx: &Context) {
+        let theme = self.theme;
+        let Some(socket) = self.modals.core_elsewhere.as_ref() else {
+            return;
+        };
+        let title = format!("Use the herdr-core core at `{}`?", socket.display());
+
+        let (cancel_via_key, confirm_via_key) =
+            consume_modal_keys(ctx, &self.modals.gate, ModalKind::CoreElsewhere);
+        let frame = modal_frame(&theme);
+        let mut confirmed = false;
+        let mut cancelled = false;
+
+        let s = theme.ui_scale;
+        let modal = egui::Modal::new(egui::Id::new("alacritree_core_elsewhere_dialog"))
+            .frame(frame)
+            .show(ctx, |ui| {
+                ui.set_width(380.0 * s);
+                ui.spacing_mut().item_spacing.y = 6.0 * s;
+                ui.label(RichText::new(title).color(theme.text).strong());
+                ui.label(
+                    RichText::new(
+                        "hc looks for its core at another path, so neither alacritree nor `hc` \
+                         reaches this one. Using it writes the path as `socket` in hc's \
+                         config.toml. The core and its terminals keep running.",
+                    )
+                    .color(theme.text_muted)
+                    .small(),
+                );
+                ui.add_space(4.0 * s);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("Enter to use · Esc to skip").color(theme.text_muted).small(),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let use_btn = modal_button(ui, &theme, "Use", theme.text);
+                        if use_btn.clicked() {
+                            confirmed = true;
+                        }
+                        if modal_button(ui, &theme, "Skip", theme.text_dim).clicked() {
+                            cancelled = true;
+                        }
+                        focus_default(ui.ctx(), use_btn.id);
+                    });
+                });
+            });
+
+        if confirm_via_key || confirmed {
+            self.use_core_elsewhere(ctx);
+            return;
+        }
+        if cancel_via_key || cancelled || modal.should_close() {
+            self.skip_core_elsewhere(ctx);
+        }
+    }
+
+    /// Point hc at the offered core and connect again, so its terminals
+    /// come back and the startup shell opens in it.
+    pub(super) fn use_core_elsewhere(&mut self, ctx: &Context) {
+        let Some(socket) = self.modals.core_elsewhere.take() else {
+            return;
+        };
+        let pointed = self.core_backend.as_ref().map_or(Ok(()), |core| core.point_hc_at(&socket));
+        match pointed {
+            Ok(()) => self.start_core_connect(),
+            Err(error) => {
+                self.modals.error_dialog = Some(error.to_string());
+                self.ensure_active_session(ctx);
+            },
+        }
+    }
+
+    /// Leave hc's config alone. The startup shell opens native, with the
+    /// notice that says why.
+    pub(super) fn skip_core_elsewhere(&mut self, ctx: &Context) {
+        self.modals.core_elsewhere = None;
+        self.ensure_active_session(ctx);
     }
 
     pub(super) fn show_remove_project_dialog(&mut self, ctx: &Context) {
