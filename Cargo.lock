@@ -270,6 +270,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.17",
  "toml_edit 0.24.0+spec-1.1.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

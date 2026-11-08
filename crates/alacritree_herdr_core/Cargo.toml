@@ -27,3 +27,7 @@ toml_edit.workspace = true
 [dev-dependencies]
 alacritree_herdr_core = { path = ".", features = ["test-support"] }
 tempfile = "3"
+
+# The job object that counts every process the WSL e2e test starts.
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_JobObjects", "Win32_System_Threading"] }

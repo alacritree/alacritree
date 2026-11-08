@@ -672,16 +672,63 @@ fn wsl_launches() -> usize {
     String::from_utf8_lossy(&out.stdout).trim().parse().expect("a count")
 }
 
-/// A distro's sessions run in the distro's own core, and every one after the
-/// helper and the resident connection are up costs no `wsl.exe` launch.
+/// Every process this test process starts from [`Launches::track`] on,
+/// counted by a job object, so one that already exited counts too.
+#[cfg(windows)]
+struct Launches(windows_sys::Win32::Foundation::HANDLE);
+
+#[cfg(windows)]
+impl Launches {
+    fn track() -> Self {
+        use windows_sys::Win32::System::JobObjects::{AssignProcessToJobObject, CreateJobObjectW};
+        use windows_sys::Win32::System::Threading::GetCurrentProcess;
+
+        // SAFETY: a null name and attributes ask for an unnamed job with
+        // default security, and the pseudo handle needs no closing.
+        let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+        assert!(!job.is_null(), "a job object");
+        let assigned = unsafe { AssignProcessToJobObject(job, GetCurrentProcess()) };
+        assert_ne!(assigned, 0, "the test process joins the job");
+        Self(job)
+    }
+
+    /// Processes the job held since it was made, this test process included.
+    fn total(&self) -> u32 {
+        use windows_sys::Win32::System::JobObjects::{
+            JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JobObjectBasicAccountingInformation,
+            QueryInformationJobObject,
+        };
+
+        // SAFETY: the struct is plain integers, for which zero is valid.
+        let mut info: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { std::mem::zeroed() };
+        // SAFETY: the buffer is the struct this information class fills, at
+        // its own size.
+        let read = unsafe {
+            QueryInformationJobObject(
+                self.0,
+                JobObjectBasicAccountingInformation,
+                (&raw mut info).cast(),
+                size_of_val(&info) as u32,
+                std::ptr::null_mut(),
+            )
+        };
+        assert_ne!(read, 0, "the job's accounting");
+        info.TotalProcesses
+    }
+}
+
+/// A distro's sessions run in the distro's own core, start where they were
+/// asked to, and launch no process once the helper and the resident
+/// connection are up.
 #[cfg(windows)]
 #[test]
 #[ignore = "needs a WSL distro with hc"]
 fn distro_sessions_share_one_resident_connection() {
     use alacritree_common::wsl_helper;
     use alacritree_herdr_core::{HerdrCoreConfig, HerdrCores};
-    use alacritree_session_backend::Side;
+    use alacritree_session_backend::{SessionHandle, Side};
 
+    let launches = Launches::track();
     let Some(core) = DistroCore::start() else {
         eprintln!("skip: this machine has no WSL distro");
         return;
@@ -695,17 +742,17 @@ fn distro_sessions_share_one_resident_connection() {
     wait_until("the resident connection beside the helper", Duration::from_secs(30), || {
         wsl_launches() == 2
     });
+    let before = launches.total();
 
     let first = open(&backend, shell(), &core.windows_dir());
     first.handle.write(b"echo first-in-distro\r".to_vec());
     shows(&first, "first-in-distro");
-    let launched = wsl_launches();
-
     let second = open(&backend, shell(), &core.windows_dir());
     second.handle.write(b"echo second-in-distro\r".to_vec());
     shows(&second, "second-in-distro");
 
-    assert_eq!(wsl_launches(), launched, "the second session launched wsl.exe");
-    assert_eq!(launched, 2, "one helper and one resident connection");
+    assert_eq!(launches.total(), before, "a session launched a process");
+    wait_until("the core's cwd", PATIENCE, || first.handle.cwd().is_some());
+    assert_eq!(first.handle.cwd(), Some(core.windows_dir()));
     assert_eq!(core.live_terminals(), 2, "both sessions run in the distro's core");
 }
