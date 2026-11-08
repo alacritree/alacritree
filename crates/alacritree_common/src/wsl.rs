@@ -827,10 +827,18 @@ mod tests {
         assert_eq!(linux_dir(Some("/srv/app"), home), Some("/srv/app".into()));
         assert_eq!(linux_dir(Some("~"), home), Some("/home/me".into()));
         assert_eq!(linux_dir(Some("~/src"), home), Some("/home/me/src".into()));
+        assert_eq!(linux_dir(None, home), Some("/home/me".into()));
+    }
+
+    /// Only Windows parses a UNC path, as for every `windows_to_linux` case.
+    #[cfg(windows)]
+    #[test]
+    fn a_windows_launch_dir_maps_to_its_linux_path_or_home() {
+        let home = || Some("/home/me".to_string());
         let unc = r"\\wsl.localhost\kali-linux\home\me\x";
+
         assert_eq!(linux_dir(Some(unc), home), Some("/home/me/x".into()));
         assert_eq!(linux_dir(Some(r"\\server\share"), home), Some("/home/me".into()));
-        assert_eq!(linux_dir(None, home), Some("/home/me".into()));
     }
 
     #[test]
