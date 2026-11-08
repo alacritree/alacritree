@@ -118,7 +118,11 @@ fn report(
     checks.extend(gh_auth_check());
     checks.extend(diff_viewer_check(&config.integrations.diff_viewer.viewer));
     checks.push(shell_check(config.shell.as_ref()));
-    checks.extend(wsl_checks(&wsl::distros(), wsl::idle_shutdown()));
+    let leaves_keepers = matches!(
+        config.integrations.herdr_core.session_backend,
+        alacritree_herdr_core::SessionBackendChoice::HerdrCore
+    );
+    checks.extend(wsl_checks(&wsl::distros(), wsl::idle_shutdown(), leaves_keepers));
     if config.integrations.taskwarrior.enabled {
         checks.extend(taskwarrior_checks(&wsl::distros()));
     }
@@ -260,7 +264,11 @@ enum ProbeError {
 /// silently, and their absence looks exactly like a repository with nothing
 /// to say. Empty when WSL is not installed, which is also every non-Windows
 /// machine.
-fn wsl_checks(distros: &[wsl::WslDistro], idle_shutdown: Option<wsl::IdleShutdown>) -> Vec<Check> {
+fn wsl_checks(
+    distros: &[wsl::WslDistro],
+    idle_shutdown: Option<wsl::IdleShutdown>,
+    leaves_keepers: bool,
+) -> Vec<Check> {
     if distros.is_empty() {
         return Vec::new();
     }
@@ -272,15 +280,16 @@ fn wsl_checks(distros: &[wsl::WslDistro], idle_shutdown: Option<wsl::IdleShutdow
     let probes = probe_distros(distros);
     let mut checks = vec![check("wsl", "distros", Status::Ok, names.join(", "))];
     checks.extend(probes.iter().map(|(name, probe)| wsl_distro_check(name, probe)));
-    checks.push(idle_shutdown_check(idle_shutdown));
+    checks.push(idle_shutdown_check(idle_shutdown, leaves_keepers));
     checks
 }
 
 /// WSL stops an idle distro, and every terminal its herdr-core core runs
 /// with it. Nothing in the app shows when that happens or why its terminals
 /// outlive a quit. The setting is global and the user's choice, so the row
-/// explains and never warns.
-fn idle_shutdown_check(idle_shutdown: Option<wsl::IdleShutdown>) -> Check {
+/// explains and never warns. `leaves_keepers` is whether a quit leaves a
+/// keeper, which only the herdr-core session backend does.
+fn idle_shutdown_check(idle_shutdown: Option<wsl::IdleShutdown>, leaves_keepers: bool) -> Check {
     let setting = "`[general] instanceIdleTimeout` in %UserProfile%\\.wslconfig";
     let detail = match idle_shutdown.unwrap_or(wsl::IdleShutdown::DEFAULT) {
         wsl::IdleShutdown::Never => {
@@ -288,11 +297,16 @@ fn idle_shutdown_check(idle_shutdown: Option<wsl::IdleShutdown>) -> Check {
         },
         wsl::IdleShutdown::After(timeout) => {
             let source = if idle_shutdown.is_some() { "as set by" } else { "the default of" };
+            let keeper = if leaves_keepers {
+                "On quit, alacritree leaves a hidden wsl.exe keeper for each distro whose \
+                 herdr-core terminals are live, and the keeper exits with the last one"
+            } else {
+                "A quit leaves a keeper that holds a distro up only with \
+                 `[integrations.herdr_core] session_backend = \"herdr_core\"`"
+            };
             format!(
                 "WSL stops a distro {} s after its last wsl.exe client exits, {source} {setting} \
-                 (-1 never stops it). On quit, alacritree leaves a hidden wsl.exe keeper for each \
-                 distro whose herdr-core terminals are live, and the keeper exits with the last \
-                 one",
+                 (-1 never stops it). {keeper}",
                 timeout.as_secs_f64()
             )
         },
@@ -826,23 +840,34 @@ mod tests {
     /// in the report that has to stay readable.
     #[test]
     fn no_distros_means_no_wsl_section() {
-        assert!(wsl_checks(&[], None).is_empty());
+        assert!(wsl_checks(&[], None, true).is_empty());
     }
 
     /// WSL stops an idle distro and every terminal in it. The note says
     /// when, by which setting, and what alacritree does about it, and never
     /// warns, since the setting is the user's choice.
+    /// Only the herdr-core backend leaves a keeper on quit, so under the
+    /// native backend the row says what would.
+    #[test]
+    fn the_idle_shutdown_note_promises_a_keeper_only_where_quit_leaves_one() {
+        let native = idle_shutdown_check(None, false).detail;
+        assert!(!native.contains("On quit, alacritree leaves"), "{native:?}");
+        assert!(native.contains("session_backend"), "{native:?}");
+        assert!(idle_shutdown_check(None, true).detail.contains("On quit, alacritree leaves"));
+    }
+
     #[test]
     fn the_idle_shutdown_note_names_the_setting_and_its_value() {
-        let unset = idle_shutdown_check(None);
+        let unset = idle_shutdown_check(None, true);
         assert_eq!(unset.status, Status::Ok);
         for said in ["15 s", "instanceIdleTimeout", "keeper"] {
             assert!(unset.detail.contains(said), "{:?} does not say {said:?}", unset.detail);
         }
         let set =
-            idle_shutdown_check(Some(wsl::IdleShutdown::After(Duration::from_secs(60)))).detail;
+            idle_shutdown_check(Some(wsl::IdleShutdown::After(Duration::from_secs(60))), true)
+                .detail;
         assert!(set.contains("60 s"), "{set:?}");
-        let never = idle_shutdown_check(Some(wsl::IdleShutdown::Never));
+        let never = idle_shutdown_check(Some(wsl::IdleShutdown::Never), true);
         assert_eq!(never.status, Status::Ok);
         assert!(never.detail.contains("never stops"), "{:?}", never.detail);
     }
