@@ -32,9 +32,9 @@ pub(super) struct Modals {
     /// it counted rather than whatever is attached by the time it is
     /// answered.
     pub(super) pending_detach_all: Option<Vec<SessionId>>,
-    /// The socket of a core that hc does not reach, offered until the user
-    /// points hc at it or skips it.
-    pub(super) core_elsewhere: Option<PathBuf>,
+    /// A core that hc does not reach, offered until the user uses it or
+    /// skips it.
+    pub(super) core_elsewhere: Option<CoreElsewhere>,
     /// Whether the modal on screen was already in front of the user when
     /// the keys arriving now were pressed.
     pub(super) gate: ModalGate,
@@ -346,10 +346,21 @@ impl AlacritreeApp {
     /// core, since a restart would lose every terminal it holds.
     pub(super) fn show_core_elsewhere_dialog(&mut self, ctx: &Context) {
         let theme = self.theme;
-        let Some(socket) = self.modals.core_elsewhere.as_ref() else {
+        let Some(found) = self.modals.core_elsewhere.as_ref() else {
             return;
         };
-        let title = format!("Use the herdr-core core at `{}`?", socket.display());
+        let title = format!("Use the herdr-core core at `{}`?", found.socket.display());
+        let how = match found.remedy {
+            Remedy::WriteConfig => {
+                "Using it writes the path as `socket` in hc's config.toml, so alacritree and `hc` \
+                 both reach it."
+            },
+            Remedy::SetEnv => {
+                "hc's `socket` setting serves every session, so using it points only alacritree's \
+                 own hc at the core, for this run. Set HC_SOCKET to the path to make it permanent \
+                 for `hc` too."
+            },
+        };
 
         let (cancel_via_key, confirm_via_key) =
             consume_modal_keys(ctx, &self.modals.gate, ModalKind::CoreElsewhere);
@@ -365,11 +376,10 @@ impl AlacritreeApp {
                 ui.spacing_mut().item_spacing.y = 6.0 * s;
                 ui.label(RichText::new(title).color(theme.text).strong());
                 ui.label(
-                    RichText::new(
+                    RichText::new(format!(
                         "hc looks for its core at another path, so neither alacritree nor `hc` \
-                         reaches this one. Using it writes the path as `socket` in hc's \
-                         config.toml. The core and its terminals keep running.",
-                    )
+                         reaches this one. {how} The core and its terminals keep running."
+                    ))
                     .color(theme.text_muted)
                     .small(),
                 );
@@ -400,13 +410,13 @@ impl AlacritreeApp {
         }
     }
 
-    /// Point hc at the offered core and connect again, so its terminals
-    /// come back and the startup shell opens in it.
+    /// Reach the offered core and connect again, so its terminals come back
+    /// and the startup shell opens in it.
     pub(super) fn use_core_elsewhere(&mut self, ctx: &Context) {
-        let Some(socket) = self.modals.core_elsewhere.take() else {
+        let Some(found) = self.modals.core_elsewhere.take() else {
             return;
         };
-        let pointed = self.core_backend.as_ref().map_or(Ok(()), |core| core.point_hc_at(&socket));
+        let pointed = self.core_backend.as_ref().map_or(Ok(()), |core| core.use_core(&found));
         match pointed {
             Ok(()) => self.start_core_connect(),
             Err(error) => {

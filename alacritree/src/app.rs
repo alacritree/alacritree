@@ -64,6 +64,7 @@ use crate::{
     clipboard_image, file_drop, ipc, mouse_hide, notify, paste, path_style, scratchpad,
     sidebar_focus, temporary, terminal_view, worktree_liveness,
 };
+use alacritree_herdr_core::{CoreElsewhere, Remedy};
 use alacritree_session_backend::{
     Adoptable, Placement, SessionBackend, SessionError, SessionHandle,
 };
@@ -560,9 +561,9 @@ pub struct AlacritreeApp {
     core_backend: Option<Backend>,
     /// The startup connect to `core_backend`. The home tab's first shell
     /// waits for it, so a home tab whose terminals the core kept gets them
-    /// back rather than one more. It answers the socket of a core that hc
-    /// does not reach, when one listens elsewhere.
-    core_connect: Option<jobs::Job<Option<PathBuf>>>,
+    /// back rather than one more. It answers a core that hc does not reach,
+    /// when one listens elsewhere.
+    core_connect: Option<jobs::Job<Option<CoreElsewhere>>>,
     /// Terminals opened on a worker, adopted in `poll_pending_spawns`. A
     /// client that creates a session to write to it is answered once the
     /// terminal is live, or it would race its own shell.
@@ -1203,8 +1204,8 @@ impl AlacritreeApp {
             return;
         }
         self.core_connect = None;
-        if let Some(Some(socket)) = finished {
-            self.modals.core_elsewhere = Some(socket);
+        if let Some(Some(found)) = finished {
+            self.modals.core_elsewhere = Some(found);
             return;
         }
         self.adopt_core_terminals(ctx);
@@ -5440,13 +5441,16 @@ mod tests {
         for used in [true, false] {
             let (mut app, native, core) = app_preferring_a_scripted_core();
             let ctx = Context::default();
-            let socket = PathBuf::from("/run/user/1000/herdr-core/default.sock");
-            let found = socket.clone();
+            let offered = CoreElsewhere {
+                socket: PathBuf::from("/run/user/1000/herdr-core/default.sock"),
+                remedy: Remedy::WriteConfig,
+            };
+            let found = offered.clone();
             app.core_connect =
                 Some(jobs::pool().spawn(jobs::Priority::Interactive, move |_| Some(found)));
             finish_core_connect(&mut app, &ctx);
 
-            assert_eq!(app.modals.core_elsewhere, Some(socket), "used: {used}");
+            assert_eq!(app.modals.core_elsewhere, Some(offered), "used: {used}");
             assert!(ids_in(&app, &None).is_empty(), "used: {used}");
 
             if used {

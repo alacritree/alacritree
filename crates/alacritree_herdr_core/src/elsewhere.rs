@@ -1,11 +1,30 @@
-//! A core that hc does not reach because it listens on a socket other than
-//! the one hc resolves, such as a WSL core started before `/run/user/<uid>`
-//! existed. Its `core.lock` names where it listens. Writing that path as
-//! `socket` in hc's `config.toml` points hc there and leaves the core
-//! running. A restart would lose every terminal, since the holder socket
-//! moves with the core socket.
+//! A core that listens where hc does not look, such as a WSL core started
+//! before `/run/user/<uid>` existed. Its `core.lock` names the socket, and
+//! alacritree points hc there instead of restarting the core, since the
+//! holder socket moves with the core socket and a restart loses every
+//! terminal. hc has no call for this, so the module copies the path rules
+//! of herdr-core v0.1.18 `paths.rs`, and `hc_e2e` guards that copy.
 
 use std::path::{Path, PathBuf};
+
+/// A core that answers where hc does not look.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoreElsewhere {
+    pub socket: PathBuf,
+    pub remedy: Remedy,
+}
+
+/// How alacritree reaches a core elsewhere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Remedy {
+    /// Write the socket as `socket` in hc's `config.toml`, which alacritree
+    /// and the user's `hc` both read.
+    WriteConfig,
+    /// Set `HC_SOCKET` on alacritree's own hc for this run. Every session
+    /// reads the one `socket` key, so a core of a session other than
+    /// `default` gets no config write.
+    SetEnv,
+}
 
 /// Why hc's `config.toml` could not take a new `socket`.
 #[derive(Debug, thiserror::Error)]
@@ -25,6 +44,9 @@ pub(crate) struct HcPaths {
     config: PathBuf,
     /// `HC_SOCKET` is set, and it wins over the `socket` key.
     env_socket: bool,
+    /// `HC_SESSION` names the `default` session, which is the only one the
+    /// `socket` key may point elsewhere for.
+    default_session: bool,
 }
 
 impl HcPaths {
@@ -39,6 +61,7 @@ impl HcPaths {
             lock: state_home.join("herdr-core").join(session).join("core.lock"),
             config: config_home.join("herdr-core").join("config.toml"),
             env_socket: var("HC_SOCKET").is_some(),
+            default_session: session == "default",
         }
     }
 }
@@ -60,18 +83,20 @@ fn data_dirs() -> (PathBuf, PathBuf) {
     (home.join(".local/state"), home.join(".config"))
 }
 
-/// The socket of a core that serves hc's state where hc does not look.
-/// `HC_SOCKET` overrides the config, so with it set there is nothing a
-/// config write could fix. A socket the config already names is where hc
-/// looks, so hc refused it for another reason.
-pub(crate) fn socket(paths: &HcPaths) -> Option<PathBuf> {
+/// A core that serves hc's state where hc does not look. `HC_SOCKET`
+/// overrides the config, so with it set there is nothing a config write
+/// could fix. A socket the config already names is where hc looks, so hc
+/// refused it for another reason.
+pub(crate) fn find(paths: &HcPaths) -> Option<CoreElsewhere> {
     if paths.env_socket {
         return None;
     }
     let configured = configured_socket(&paths.config);
-    read_lock(&paths.lock)
+    let socket = read_lock(&paths.lock)
         .filter(|socket| configured.as_ref() != Some(socket))
-        .filter(|socket| answers(socket))
+        .filter(|socket| answers(socket))?;
+    let remedy = if paths.default_session { Remedy::WriteConfig } else { Remedy::SetEnv };
+    Some(CoreElsewhere { socket, remedy })
 }
 
 /// The socket that the `socket` key of hc's `config.toml` names.
@@ -158,6 +183,7 @@ mod tests {
             lock: dir.join("state").join("core.lock"),
             config: dir.join("config").join("config.toml"),
             env_socket: false,
+            default_session: true,
         }
     }
 
@@ -175,12 +201,13 @@ mod tests {
         std::fs::create_dir_all(paths.lock.parent().unwrap()).unwrap();
         std::fs::write(&paths.lock, nobody).unwrap();
 
-        assert_eq!(socket(&paths), None);
+        assert_eq!(find(&paths), None);
     }
 
-    /// A core that answers where hc does not look is offered. Once hc's
-    /// config names that socket, hc refusing again has another cause, so
-    /// offering the same write again would only repeat the question.
+    /// A core that answers where hc does not look is offered, through hc's
+    /// config for the default session only. Once the config names that
+    /// socket, hc refusing again has another cause, so offering the same
+    /// write again would only repeat the question.
     #[cfg(unix)]
     #[test]
     fn a_core_is_offered_until_hcs_config_names_its_socket() {
@@ -191,10 +218,13 @@ mod tests {
         std::fs::create_dir_all(paths.lock.parent().unwrap()).unwrap();
         std::fs::write(&paths.lock, listening.display().to_string()).unwrap();
 
-        assert_eq!(socket(&paths), Some(listening.clone()));
+        let found = |remedy| Some(CoreElsewhere { socket: listening.clone(), remedy });
+        assert_eq!(find(&paths), found(Remedy::WriteConfig));
+        let other_session = HcPaths { default_session: false, ..paths_in(dir.path()) };
+        assert_eq!(find(&other_session), found(Remedy::SetEnv));
 
         point_hc_at(&paths, &listening).unwrap();
-        assert_eq!(socket(&paths), None);
+        assert_eq!(find(&paths), None);
     }
 
     /// Only `socket` changes, so the user's other settings and comments

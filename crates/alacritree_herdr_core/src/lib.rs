@@ -30,8 +30,8 @@ use alacritty_terminal::vte::ansi::Rgb;
 use serde_json::{Value, json};
 
 use self::connection::{Answer, Connection, Facts, Waker};
-pub use self::elsewhere::HcConfigError;
 use self::elsewhere::HcPaths;
+pub use self::elsewhere::{CoreElsewhere, HcConfigError, Remedy};
 use self::parser::Chunk;
 pub use self::settings::{HerdrCoreConfig, RawHerdrCore, SessionBackendChoice};
 
@@ -76,9 +76,9 @@ impl CoreError {
 #[error("{error}")]
 pub struct Unreachable {
     pub error: CoreError,
-    /// The socket of a core that serves hc's state where hc does not look,
-    /// when one answers there.
-    pub elsewhere: Option<PathBuf>,
+    /// A core that serves hc's state where hc does not look, when one
+    /// answers there.
+    pub elsewhere: Option<CoreElsewhere>,
 }
 
 impl From<CoreError> for SessionError {
@@ -98,6 +98,9 @@ pub struct HerdrCore {
     connection: Arc<Mutex<Slot>>,
     claims: Arc<Mutex<Claims>>,
     waker: Waker,
+    /// The socket alacritree's own hc uses in place of the one hc resolves,
+    /// once the user chose a core of another session.
+    socket: Arc<Mutex<Option<PathBuf>>>,
 }
 
 /// The connection that clones share, and when the last attempt to open
@@ -133,6 +136,7 @@ impl HerdrCore {
             connection: Default::default(),
             claims: Default::default(),
             waker: Default::default(),
+            socket: Default::default(),
         }
     }
 
@@ -144,19 +148,26 @@ impl HerdrCore {
     }
 
     /// Connect, as `ready` does. When hc refuses, also look for a core that
-    /// serves hc's state on a socket hc does not resolve.
+    /// serves hc's state on a socket hc does not resolve. A socket the user
+    /// already chose is not looked past.
     pub fn connect(&self) -> Result<(), Unreachable> {
         self.connection().map(drop).map_err(|error| {
-            let refused = matches!(error, CoreError::Refused(_));
-            let elsewhere = refused.then(|| elsewhere::socket(&HcPaths::from_env())).flatten();
+            let refused = matches!(error, CoreError::Refused(_)) && lock(&self.socket).is_none();
+            let elsewhere = refused.then(|| elsewhere::find(&HcPaths::from_env())).flatten();
             Unreachable { error, elsewhere }
         })
     }
 
-    /// Point hc at `socket` through the `socket` key of its `config.toml`.
-    /// The core and its terminals run on untouched.
-    pub fn point_hc_at(&self, socket: &Path) -> Result<(), HcConfigError> {
-        elsewhere::point_hc_at(&HcPaths::from_env(), socket)
+    /// Reach the core that `found` names the way its remedy says. The core
+    /// and its terminals run on untouched.
+    pub fn use_core(&self, found: &CoreElsewhere) -> Result<(), HcConfigError> {
+        match found.remedy {
+            Remedy::WriteConfig => elsewhere::point_hc_at(&HcPaths::from_env(), &found.socket),
+            Remedy::SetEnv => {
+                *lock(&self.socket) = Some(found.socket.clone());
+                Ok(())
+            },
+        }
     }
 
     /// The live connection, opened first if there is none. Holding the slot
@@ -184,7 +195,8 @@ impl HerdrCore {
         if let Some(connection) = slot.live() {
             return Ok(connection);
         }
-        let opened = Connection::open(&self.program, self.waker.clone());
+        let socket = lock(&self.socket).clone();
+        let opened = Connection::open(&self.program, socket.as_deref(), self.waker.clone());
         slot.failed_at = opened.is_err().then(Instant::now);
         let connection = opened?;
         slot.connection = Some(connection.clone());

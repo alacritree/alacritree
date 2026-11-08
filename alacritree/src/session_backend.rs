@@ -3,10 +3,8 @@
 //! `alacritree_session_backend`; this module decides which ones exist and
 //! wires them to the window.
 
-use std::path::{Path, PathBuf};
-
 use alacritree_herdr_core::{
-    HcConfigError, HerdrCore, HerdrCoreConfig, HerdrCoreHandle, SessionBackendChoice,
+    CoreElsewhere, HcConfigError, HerdrCore, HerdrCoreConfig, HerdrCoreHandle, SessionBackendChoice,
 };
 use alacritree_native::{Native, NativeHandle};
 use alacritree_session_backend::{
@@ -45,8 +43,8 @@ impl Backend {
     }
 
     /// Connect ahead of the first session. When hc does not reach the core,
-    /// answer the socket of a core that listens where hc does not look.
-    pub(crate) fn connect(&self) -> Option<PathBuf> {
+    /// answer a core that listens where hc does not look.
+    pub(crate) fn connect(&self) -> Option<CoreElsewhere> {
         let Self::HerdrCore(core) = self else {
             if let Err(error) = SessionBackend::<Handle>::ready(self) {
                 log::warn!("herdr-core: {error}");
@@ -58,11 +56,11 @@ impl Backend {
         unreachable.elsewhere
     }
 
-    /// Point hc at the core that listens at `socket`. Only a herdr-core
-    /// backend has an hc to point.
-    pub(crate) fn point_hc_at(&self, socket: &Path) -> Result<(), HcConfigError> {
+    /// Reach the core that `found` names. Only a herdr-core backend has an
+    /// hc to point.
+    pub(crate) fn use_core(&self, found: &CoreElsewhere) -> Result<(), HcConfigError> {
         match self {
-            Self::HerdrCore(core) => core.point_hc_at(socket),
+            Self::HerdrCore(core) => core.use_core(found),
             _ => Ok(()),
         }
     }
