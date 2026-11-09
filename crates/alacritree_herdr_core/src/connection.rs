@@ -592,7 +592,14 @@ fn answer(routes: &mut Routes, frames: &Sender<Vec<u8>>, waker: &Waker, payload:
 
 fn snapshot(terminals: &Value) -> HashMap<String, Facts> {
     let records: Vec<Record> = serde_json::from_value(terminals.clone()).unwrap_or_default();
-    records.into_iter().map(Record::facts).collect()
+    records.into_iter().map(Record::facts).filter(|(address, _)| on_this_machine(address)).collect()
+}
+
+/// Answers whether `address` is a terminal of this side's own core. The core
+/// also reports the terminals of each machine that `hc machine add` connected,
+/// with the machine's name in front, as in `box/t3`.
+pub(crate) fn on_this_machine(address: &str) -> bool {
+    !address.contains('/')
 }
 
 /// Apply every whole event line buffered so far. Answers whether one may
@@ -621,6 +628,9 @@ fn apply_event(terminals: &mut HashMap<String, Facts>, message: &Value) -> bool 
         return false;
     }
     let Some(address) = params["terminal"].as_str() else { return false };
+    if !on_this_machine(address) {
+        return false;
+    }
     let data = &params["data"];
     match params["type"].as_str() {
         Some("created" | "restarted") => {
@@ -684,6 +694,28 @@ mod tests {
         assert_eq!(terminals["t1"].foreground, None);
         apply_event(&mut terminals, &event("removed", "t1", json!({})));
         assert!(terminals.is_empty());
+    }
+
+    /// A terminal on a machine that `hc machine add` connected never enters
+    /// the facts, through the subscribe snapshot or through any event.
+    #[test]
+    fn terminals_on_other_machines_never_enter_the_facts() {
+        let live = |address: &str| json!({ "address": address, "pid": 10, "foreground": null, "state": "live" });
+        let mut routes = Routes::default();
+        let (reply, _answer) = mpsc::channel();
+        routes.calls.insert(1, Pending { opens: Opens::Events, reply });
+        let (frames, _sent) = mpsc::channel();
+        let subscribed = json!({ "jsonrpc": "2.0", "id": 1,
+                                 "result": { "channel": 5, "terminals": [live("t1"), live("box/t1")] } });
+
+        answer(&mut routes, &frames, &Waker::default(), subscribed.to_string().as_bytes());
+        let mut terminals = routes.terminals;
+        let created = event("created", "box/t2", live("box/t2"));
+        let moved = event("foreground", "box/t3", foreground(11, "vim"));
+
+        assert!(!apply_event(&mut terminals, &created));
+        assert!(!apply_event(&mut terminals, &moved));
+        assert_eq!(terminals.keys().collect::<Vec<_>>(), ["t1"]);
     }
 
     /// A command that exits with `code` before it answers anything.

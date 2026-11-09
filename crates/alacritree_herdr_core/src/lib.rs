@@ -7,6 +7,7 @@
 //! whose core runs a terminal gets a keeper, so WSL does not stop it after
 //! the app ends. A session's parser attaches its stream once the side's
 //! connection is up, and again after a drop or a loss.
+//! Terminals on machines that `hc machine add` connected are ignored.
 
 mod connection;
 mod core;
@@ -662,7 +663,8 @@ struct Terminal {
 
 /// Each terminal record of a `terminal.list` answer, by address.
 fn records(terminals: &Value) -> HashMap<String, Facts> {
-    terminals.as_array().into_iter().flatten().map(record_facts).collect()
+    let all = terminals.as_array().into_iter().flatten().map(record_facts);
+    all.filter(|(address, _)| connection::on_this_machine(address)).collect()
 }
 
 /// A terminal record's address and facts. A record without a foreground
@@ -1238,6 +1240,15 @@ mod tests {
 
     fn size(num_cols: u16, num_lines: u16) -> WindowSize {
         WindowSize { num_lines, num_cols, cell_width: 9, cell_height: 18 }
+    }
+
+    #[test]
+    fn a_helper_listing_keeps_only_this_machines_terminals() {
+        let live = |address: &str| json!({ "address": address, "pid": 10, "state": "live" });
+
+        let listed = records(&json!([live("t1"), live("box/t1")]));
+
+        assert_eq!(listed.keys().collect::<Vec<_>>(), ["t1"]);
     }
 
     #[test]
