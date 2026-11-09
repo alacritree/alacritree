@@ -1427,8 +1427,9 @@ impl AlacritreeApp {
     }
 
     fn sibling_spawn_directory(&self) -> Option<PathBuf> {
-        let reported = self.active_session_index().and_then(|idx| self.sessions[idx].cwd());
-        session::spawn_directory(reported.as_ref(), self.current_workspace.as_ref())
+        let reported =
+            self.active_session_index().and_then(|idx| self.sessions[idx].reported_cwd.as_ref());
+        session::spawn_directory(reported, self.current_workspace.as_ref())
     }
 
     /// The geometry to open a PTY at, so it is born at the size it will keep.
@@ -11202,6 +11203,33 @@ mod tests {
         assert_eq!(app.sibling_spawn_directory(), app.current_workspace);
         app.current_workspace = None;
         assert_eq!(app.sibling_spawn_directory(), None);
+    }
+
+    /// The directory a backend tracks follows every `cd`, with or without
+    /// `report_cwd`, so only a shell's own report moves a sibling away from
+    /// the workspace root.
+    #[test]
+    fn a_sibling_session_ignores_the_directory_the_backend_tracks() {
+        let (mut app, _native, core) = app_preferring_a_scripted_core();
+        let workspace = tempfile::tempdir().unwrap();
+        let tracked = tempfile::tempdir().unwrap();
+        let reported = tempfile::tempdir().unwrap();
+        app.current_workspace = Some(workspace.path().to_path_buf());
+        let id = app.spawn_session(&Context::default(), app.current_workspace.clone()).unwrap();
+        app.set_active_in_current_workspace(id);
+        let program = ForegroundProgram {
+            side: Side::Native,
+            pid: Some(7),
+            argv: vec!["sh".into()],
+            cwd: Some(tracked.path().to_path_buf()),
+        };
+        core.set_foreground(id, Some(program));
+        let idx = app.sessions.iter().position(|session| session.id == id).unwrap();
+
+        assert_eq!(app.sessions[idx].cwd(), Some(tracked.path().to_path_buf()));
+        assert_eq!(app.sibling_spawn_directory(), app.current_workspace);
+        app.sessions[idx].reported_cwd = Some(reported.path().to_path_buf());
+        assert_eq!(app.sibling_spawn_directory(), Some(reported.path().to_path_buf()));
     }
 
     fn ubuntu_profile() -> crate::config::Profile {

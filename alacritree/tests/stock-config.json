@@ -134,6 +134,7 @@
       },
       "path": "hc",
       "session_backend": "native",
+      "share_with_herdr_app": false,
       "wsl_path": null
     },
     "tasks": {

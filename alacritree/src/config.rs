@@ -4077,6 +4077,14 @@ mod tests {
         assert!(!config.integrations.herdr.enabled);
     }
 
+    #[test]
+    fn sessions_are_shared_with_herdr_app_only_when_asked() {
+        assert!(!config_from("").integrations.herdr_core.share_with_herdr_app);
+
+        let config = config_from("[integrations.herdr_core]\nshare_with_herdr_app = true\n");
+        assert!(config.integrations.herdr_core.share_with_herdr_app);
+    }
+
     /// herdr's changes arrive on an event stream, so the interval the poll
     /// once ran on means nothing, and a config that still sets it loads as
     /// if it did not.

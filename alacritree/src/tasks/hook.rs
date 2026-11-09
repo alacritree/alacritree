@@ -6,12 +6,12 @@
 
 use std::path::{Path, PathBuf};
 
+use alacritree_common::digest::stable_digest;
 use alacritree_common::jobs;
 use alacritree_tasks::scope::{GLOBAL, Harness, Place, SessionRef, node, sanitize};
 use alacritree_tasks::{Filter, NodeMatch, Status, Task, TaskBackend, tree};
 use pabal::{AddContext, AnyPayload, AnyView, Fields};
 
-use crate::digest::stable_digest;
 use crate::tasks::facts;
 use crate::temporary;
 
