@@ -785,8 +785,10 @@ impl DistroCore {
     /// Stop passing `HC_SOCKET` to the `wsl.exe` launches the backend makes,
     /// as a shell rc file's export never reaches them.
     fn hide_socket(&self) {
+        let shared =
+            Self::SHARED.strip_prefix("HC_SOCKET:").expect("`SHARED` leads with HC_SOCKET");
         // SAFETY: as in `start`, before the backend starts a thread.
-        unsafe { std::env::set_var("WSLENV", "HC_SESSION:XDG_STATE_HOME:XDG_CONFIG_HOME") };
+        unsafe { std::env::set_var("WSLENV", shared) };
     }
 
     /// `hc` inside the distro, found the way the resident connection finds

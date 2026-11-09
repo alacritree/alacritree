@@ -13,7 +13,7 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, TryLockError};
 use std::time::{Duration, Instant};
 
-use alacritree_common::side::{self, Side};
+use alacritree_common::side::Side;
 use alacritree_common::tools::{self, Tool};
 use alacritree_common::wsl_helper::{self, HelperClient, TransportError};
 use alacritree_common::{command_ext, wsl};
@@ -21,7 +21,7 @@ use serde_json::Value;
 
 use crate::connection::{Connection, OnRunning, Waker};
 use crate::elsewhere::{self, HcPaths};
-use crate::{CoreError, keeper, one_shot};
+use crate::{CoreError, keeper, one_shot, pinned};
 
 /// How long a session waits between attempts to attach while its side has
 /// no connection.
@@ -33,7 +33,7 @@ enum Launch {
     Native { program: String, socket: Mutex<Option<PathBuf>> },
     /// `program` is the configured `wsl_path`. `socket` is where the core
     /// listens, once hc refused because it looked for the core elsewhere.
-    Wsl { distro: String, program: Option<String>, socket: Arc<Mutex<Option<String>>> },
+    Wsl { distro: String, program: Option<String>, socket: Mutex<Option<String>> },
 }
 
 /// Prints the distro user's home directory from the passwd entry, which
@@ -84,8 +84,7 @@ impl SideCore {
     }
 
     pub(crate) fn wsl(distro: &str, program: Option<String>, waker: Waker) -> Self {
-        let launch =
-            Launch::Wsl { distro: distro.to_string(), program, socket: Default::default() };
+        let launch = Launch::Wsl { distro: distro.to_string(), program, socket: Mutex::new(None) };
         Self::new(Side::Wsl(distro.to_string()), launch, waker)
     }
 
@@ -149,7 +148,7 @@ impl SideCore {
             return Ok(connection);
         }
         let opened = self
-            .following(|| {
+            .retry_where_core_listens(|| {
                 let (command, label) = self.command()?;
                 log::info!("herdr-core ({}): starting `{label}`", self.side.name());
                 Connection::open(command, &label, self.waker.clone(), self.keep_up())
@@ -163,13 +162,21 @@ impl SideCore {
 
     /// `attempt`, and once more when it failed only because a distro's hc
     /// looked for the core at another socket than the one it listens at.
-    fn following<T>(&self, attempt: impl Fn() -> Result<T, CoreError>) -> Result<T, CoreError> {
-        attempt().or_else(|error| if self.follow(&error) { attempt() } else { Err(error) })
+    fn retry_where_core_listens<T>(
+        &self,
+        attempt: impl Fn() -> Result<T, CoreError>,
+    ) -> Result<T, CoreError> {
+        match attempt() {
+            Err(error) if self.pin_where_core_listens(&error) => attempt(),
+            attempted => attempted,
+        }
     }
 
-    /// Reach a distro's core at the socket that `error` names, from now on.
-    /// Answers whether that changed where hc looks.
-    fn follow(&self, error: &CoreError) -> bool {
+    /// Pin a distro's hc to the socket that `error` names, for the rest of
+    /// the run. Answers whether that changed where hc looks. The native side
+    /// asks the user first, but a distro pins at once, since hc found the
+    /// socket in its own `core.lock` in the same distro.
+    fn pin_where_core_listens(&self, error: &CoreError) -> bool {
         let (Launch::Wsl { distro, socket, .. }, Some(at)) = (&self.launch, error.listening_at())
         else {
             return false;
@@ -187,11 +194,11 @@ impl SideCore {
         true
     }
 
-    /// The socket a distro's scripts pin, or empty to leave it to hc.
-    fn pinned(&self) -> String {
+    /// The socket a distro's scripts pin. `None` leaves it to hc.
+    fn pinned(&self) -> Option<String> {
         match &self.launch {
-            Launch::Wsl { socket, .. } => lock(socket).clone().unwrap_or_default(),
-            Launch::Native { .. } => String::new(),
+            Launch::Wsl { socket, .. } => lock(socket).clone(),
+            Launch::Native { .. } => None,
         }
     }
 
@@ -233,9 +240,9 @@ impl SideCore {
             },
             Launch::Wsl { distro, program, .. } => {
                 let hc = distro_hc(program.as_deref());
-                let script = concat!(pin_socket!(), r#"exec "$p" connect"#);
-                let mut command = side::wsl_script_with_program(distro, hc, script);
-                command.arg(self.pinned());
+                let socket = self.pinned();
+                let command =
+                    pinned::command(distro, hc, socket.as_deref(), r#"exec "$p" connect"#);
                 Ok((command, format!("wsl.exe -d {distro} -- {hc} connect")))
             },
         }
@@ -243,14 +250,14 @@ impl SideCore {
 
     /// What a distro's connection runs when its core starts to run a
     /// terminal: a keeper, so the distro stays up however the app ends. The
-    /// native core needs none.
+    /// keeper pins the socket the connection pins. The native core needs
+    /// none.
     fn keep_up(&self) -> OnRunning {
-        let Launch::Wsl { distro, program, socket } = &self.launch else { return None };
+        let Launch::Wsl { distro, program, .. } = &self.launch else { return None };
         let (distro, hc) = (distro.clone(), distro_hc(program.as_deref()).to_string());
-        let socket = socket.clone();
+        let socket = self.pinned();
         Some(Box::new(move || {
-            let socket = lock(&socket).clone().unwrap_or_default();
-            keeper::start_in_background(distro.clone(), hc.clone(), socket);
+            keeper::start_in_background(distro.clone(), hc.clone(), socket.clone())
         }))
     }
 
@@ -266,7 +273,7 @@ impl SideCore {
         if self.live().is_some_and(|connection| !connection.has_running_terminal()) {
             return None;
         }
-        keeper::start(distro, distro_hc(program.as_deref()), &self.pinned())
+        keeper::start(distro, distro_hc(program.as_deref()), self.pinned().as_deref())
     }
 
     /// Answers whether a keeper holds this distro's lock. The native core
@@ -274,7 +281,7 @@ impl SideCore {
     #[cfg(feature = "test-support")]
     pub(crate) fn keeper_runs(&self) -> bool {
         let Launch::Wsl { distro, program, .. } = &self.launch else { return false };
-        keeper::holds_lock(distro, distro_hc(program.as_deref()), &self.pinned())
+        keeper::holds_lock(distro, distro_hc(program.as_deref()), self.pinned().as_deref())
     }
 
     /// Answers whether the native core already serves, without starting one.
@@ -350,10 +357,11 @@ impl SideCore {
         }
         if let Some((client, program)) = self.helper() {
             let [hello, request] = one_shot::lines(method, params.clone());
-            let answered = self.following(|| {
+            let answered = self.retry_where_core_listens(|| {
                 let socket = self.pinned();
-                let args = [socket.as_str(), &program, &hello, &request];
-                let (_, output) = client.run(one_shot::SCRIPT, &args).map_err(CoreError::Helper)?;
+                let args = [program.as_str(), &hello, &request];
+                let (_, output) = pinned::run(&client, socket.as_deref(), one_shot::SCRIPT, &args)
+                    .map_err(CoreError::Helper)?;
                 one_shot::answer(&output)
             });
             match answered {
