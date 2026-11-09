@@ -54,7 +54,7 @@ pub(crate) fn encode_png(image: &ImageData<'_>) -> Result<Vec<u8>, EncodeError> 
 /// than the scratchpad's truncated one, since here a collision would paste the
 /// wrong image instead of merely colliding a label.
 pub(crate) fn file_name(png: &[u8]) -> String {
-    format!("clipboard-{:016x}.png", crate::digest::stable_digest(png))
+    format!("clipboard-{:016x}.png", alacritree_common::digest::stable_digest(png))
 }
 
 /// Write `png` into `dir` under its content-addressed name and return the path.

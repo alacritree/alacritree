@@ -22,7 +22,6 @@ pub mod config;
 pub mod crash_log;
 pub(crate) mod cursor;
 pub(crate) mod decoration_sprites;
-pub(crate) mod digest;
 pub(crate) mod file_drop;
 pub(crate) mod fonts;
 pub(crate) mod forge;

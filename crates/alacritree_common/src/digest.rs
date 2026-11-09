@@ -1,10 +1,10 @@
-//! A stable content digest, shared by anything that names a file after what is
-//! in it.
+//! A stable content digest, shared by anything that names a file or an id
+//! after what is in it.
 
-/// FNV-1a is small, deterministic across Rust versions, and sufficient here:
-/// the digest disambiguates file names rather than protecting an adversarial
-/// namespace.
-pub(crate) fn stable_digest(bytes: &[u8]) -> u64 {
+/// FNV-1a is small, deterministic across Rust versions and platforms, and
+/// sufficient here: the digest disambiguates names rather than protecting an
+/// adversarial namespace.
+pub fn stable_digest(bytes: &[u8]) -> u64 {
     let mut hash = 0xcbf29ce484222325_u64;
     for byte in bytes {
         hash ^= u64::from(*byte);

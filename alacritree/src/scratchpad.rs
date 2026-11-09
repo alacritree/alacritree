@@ -9,13 +9,13 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
+use alacritree_common::digest::stable_digest;
 use egui::text::{CCursor, CCursorRange};
 use egui::{
     Color32, FontId, Frame, Id, Margin, Response, RichText, ScrollArea, TextBuffer, TextEdit,
 };
 use serde_json::{Value, json};
 
-use crate::digest::stable_digest;
 use crate::state;
 use crate::workspace::WorkspaceKey;
 
