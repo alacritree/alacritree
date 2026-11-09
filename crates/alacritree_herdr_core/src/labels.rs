@@ -21,6 +21,9 @@ pub(crate) const POSITION: &str = "alacritree.position";
 pub(crate) const WHERE: &str = "where";
 /// The [`WORKSPACE`] value of the home tab.
 pub(crate) const HOME: &str = "~";
+/// The herdr-app space that holds the terminal. herdr-app sets it, and
+/// clears it to park the terminal in no space. alacritree only reads it.
+pub(crate) const HERDR_SPACE: &str = "herdr.space";
 
 /// The labels that record `placement`. A placement with no title clears
 /// `where`, since the core removes a label set to the empty string.

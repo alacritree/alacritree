@@ -125,6 +125,10 @@ fn foreign_pane(address: &str, facts: &Facts) -> Option<Pane> {
         .or_else(|| facts.labels.get(labels::WHERE).cloned())
         .or_else(|| facts.title.clone())
         .filter(|title| !title.trim().is_empty());
+    let cwd = facts.cwd.as_ref().map(|cwd| cwd.display().to_string());
+    // herdr-app keeps a terminal in its space however the shell moves, and
+    // names a new space after the folder its first terminal started in.
+    let in_herdr_space = facts.labels.get(labels::HERDR_SPACE).is_some_and(|s| !s.is_empty());
     Some(Pane {
         terminal_id: address.to_string(),
         pane_id: address.to_string(),
@@ -133,7 +137,8 @@ fn foreign_pane(address: &str, facts: &Facts) -> Option<Pane> {
         title,
         status: None,
         focused: false,
-        cwd: facts.cwd.as_ref().map(|cwd| cwd.display().to_string()),
+        workspace_cwd: cwd.clone().filter(|_| in_herdr_space),
+        cwd,
         foreground_cwd: foreground.map(|foreground| foreground.cwd.display().to_string()),
     })
 }
@@ -308,6 +313,7 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
+    use crate::connection::Foreground;
 
     fn live(labels: &[(&str, &str)]) -> Facts {
         Facts {
@@ -337,5 +343,52 @@ mod tests {
         assert_eq!(foreign_pane("t1", &titled).and_then(|p| p.title).as_deref(), Some("app / 1"));
         let bare = Facts { labels: HashMap::new(), ..titled };
         assert_eq!(foreign_pane("t1", &bare).and_then(|p| p.title).as_deref(), Some("vim"));
+    }
+
+    const CHECKOUT_A: &str = "/src/app";
+    const CHECKOUT_B: &str = "/src/app-feature";
+
+    /// A terminal that started in checkout A and whose shell then moved to
+    /// checkout B.
+    fn moved_from_a_to_b(labels: &[(&str, &str)]) -> Pane {
+        let shell = Foreground {
+            pid: 10,
+            name: "nu".into(),
+            argv: vec!["nu".into()],
+            cwd: format!("{CHECKOUT_B}/src").into(),
+        };
+        let facts = Facts { foreground: Some(shell), cwd: Some(CHECKOUT_A.into()), ..live(labels) };
+        foreign_pane("t1", &facts).expect("a live foreign terminal is a pane")
+    }
+
+    fn workspace(pane: &Pane) -> Option<PathBuf> {
+        pane.workspace(&Side::Native, &[PathBuf::from(CHECKOUT_A), PathBuf::from(CHECKOUT_B)])
+    }
+
+    /// herdr-app keeps a terminal in its space after the shell moves, so the
+    /// row stays under the checkout the terminal started in.
+    #[test]
+    fn a_terminal_in_a_herdr_app_space_lists_where_it_started() {
+        let pane = moved_from_a_to_b(&[(labels::HERDR_SPACE, "sp1")]);
+
+        assert_eq!(workspace(&pane), Some(PathBuf::from(CHECKOUT_A)));
+    }
+
+    #[test]
+    fn a_terminal_in_no_herdr_app_space_lists_where_its_shell_is() {
+        let unlabelled = moved_from_a_to_b(&[]);
+        let parked = moved_from_a_to_b(&[(labels::HERDR_SPACE, "")]);
+
+        assert_eq!(workspace(&unlabelled), Some(PathBuf::from(CHECKOUT_B)));
+        assert_eq!(workspace(&parked), Some(PathBuf::from(CHECKOUT_B)));
+    }
+
+    /// Only the row's group stays put. Anything that works in the terminal's
+    /// directory, such as the palette, still gets the shell's.
+    #[test]
+    fn a_terminal_in_a_herdr_app_space_works_where_its_shell_is() {
+        let pane = moved_from_a_to_b(&[(labels::HERDR_SPACE, "sp1")]);
+
+        assert_eq!(pane.working_directory(), Some(format!("{CHECKOUT_B}/src").as_str()));
     }
 }

@@ -48,8 +48,8 @@ pub(crate) enum PaletteAction {
     CreateWorktree(PathBuf),
     /// Spawn a `[[ui.profiles]]` entry by name into the current workspace.
     SpawnProfile(String),
-    /// Attach to a multiplexer's pane no session holds, in the workspace its
-    /// working directory matched.
+    /// Attach to a multiplexer's pane no session holds, in the workspace it
+    /// lists under.
     AttachPane(PaneAttach),
 }
 

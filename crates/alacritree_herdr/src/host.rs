@@ -539,6 +539,7 @@ mod tests {
             focused: false,
             cwd: None,
             foreground_cwd: None,
+            workspace_cwd: None,
         }
     }
 

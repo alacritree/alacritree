@@ -6925,6 +6925,7 @@ mod tests {
             focused: true,
             cwd: Some("/repo".into()),
             foreground_cwd: None,
+            workspace_cwd: None,
         };
         app.multiplexers.zellij_mut_for_test().adopt_for_test(vec![
             alacritree_zellij::SideListing {

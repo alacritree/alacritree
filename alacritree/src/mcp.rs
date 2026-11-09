@@ -156,7 +156,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "list_multiplexer_panes",
-            "description": "List every pane of the terminal multiplexers alacritree has detected (herdr, zellij, herdr_core), on every side they reach, whether or not a session is attached to one. Each entry carries the multiplexer block naming the pane (the multiplexer's name, side and terminal_id), the pane's agent kind, title and live status, whether the multiplexer's own window is showing it, the workspace its working directory matches, and the id of the alacritree session holding it (null when none is). Unattached panes appear here and nowhere else.",
+            "description": "List every pane of the terminal multiplexers alacritree has detected (herdr, zellij, herdr_core), on every side they reach, whether or not a session is attached to one. Each entry carries the multiplexer block naming the pane (the multiplexer's name, side and terminal_id), the pane's agent kind, title and live status, whether the multiplexer's own window is showing it, the workspace it lists under, and the id of the alacritree session holding it (null when none is). Unattached panes appear here and nowhere else.",
             "inputSchema": { "type": "object", "properties": {} },
         },
         {

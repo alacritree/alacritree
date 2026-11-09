@@ -442,6 +442,7 @@ mod tests {
             focused: false,
             cwd: Some(cwd.into()),
             foreground_cwd: None,
+            workspace_cwd: None,
         }
     }
 

@@ -46,6 +46,9 @@ pub struct Pane {
     pub focused: bool,
     pub cwd: Option<String>,
     pub foreground_cwd: Option<String>,
+    /// The directory [`Pane::workspace`] matches in place of the working
+    /// directory, for a pane its multiplexer keeps where it was placed.
+    pub workspace_cwd: Option<String>,
 }
 
 impl Pane {
@@ -68,10 +71,14 @@ impl Pane {
             .or_else(|| self.cwd.as_deref().filter(|cwd| !cwd.trim().is_empty()))
     }
 
-    /// The sidebar workspace this pane is working in, by longest path prefix.
-    /// `None` means it belongs under Home.
+    /// The sidebar workspace this pane lists under, by longest path prefix of
+    /// `workspace_cwd`, else of its working directory. `None` means Home.
     pub fn workspace(&self, side: &Side, workspaces: &[PathBuf]) -> Option<PathBuf> {
-        let reported = self.foreground_cwd.as_deref().or(self.cwd.as_deref())?;
+        let reported = self
+            .workspace_cwd
+            .as_deref()
+            .or(self.foreground_cwd.as_deref())
+            .or(self.cwd.as_deref())?;
         let cwd = match side {
             Side::Native => PathBuf::from(reported),
             Side::Wsl(distro) => wsl::linux_to_windows(reported, distro),
@@ -252,6 +259,7 @@ mod tests {
             focused: false,
             cwd: Some(cwd.into()),
             foreground_cwd: foreground.map(str::to_string),
+            workspace_cwd: None,
         }
     }
 

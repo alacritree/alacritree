@@ -111,6 +111,7 @@ impl RawPane {
             focused: self.focused.unwrap_or(false),
             cwd: self.cwd,
             foreground_cwd: self.foreground_cwd,
+            workspace_cwd: None,
         })
     }
 }
