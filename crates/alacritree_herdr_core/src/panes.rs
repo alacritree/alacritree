@@ -114,7 +114,7 @@ impl HerdrCorePanes {
 }
 
 /// The pane a terminal is, when it is live and not alacritree's own.
-fn foreign_pane(address: &str, facts: &Facts) -> Option<Pane> {
+pub(crate) fn foreign_pane(address: &str, facts: &Facts) -> Option<Pane> {
     if facts.state != State::Live || labels::placement(&facts.labels).is_some() {
         return None;
     }
@@ -133,7 +133,7 @@ fn foreign_pane(address: &str, facts: &Facts) -> Option<Pane> {
         terminal_id: address.to_string(),
         pane_id: address.to_string(),
         tab_id: None,
-        kind: foreground.map(|foreground| foreground.name.clone()),
+        kind: facts.app.clone().or_else(|| foreground.map(|foreground| foreground.name.clone())),
         title,
         status: None,
         focused: false,

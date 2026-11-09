@@ -46,6 +46,10 @@ pub(crate) struct Facts {
     pub(crate) title: Option<String>,
     /// The directory the terminal started in.
     pub(crate) cwd: Option<PathBuf>,
+    /// The app the program reports itself as, such as `claude-code`. On
+    /// Windows the foreground is always the shell, so only this names an
+    /// agent there.
+    pub(crate) app: Option<String>,
 }
 
 /// Where a terminal's program stands. Only the core knows whether it keeps a
@@ -102,6 +106,15 @@ struct Record {
     title: Option<String>,
     #[serde(default)]
     cwd: Option<PathBuf>,
+    /// Null until the program reports a status, and again after it ends.
+    #[serde(default)]
+    status: Option<Status>,
+}
+
+/// The part of a program's status report this client reads.
+#[derive(Debug, Deserialize)]
+struct Status {
+    app: Option<String>,
 }
 
 impl Record {
@@ -114,6 +127,7 @@ impl Record {
             name: self.name,
             title: self.title,
             cwd: self.cwd,
+            app: self.status.and_then(|status| status.app),
         };
         (self.address, facts)
     }
@@ -618,6 +632,7 @@ fn apply_events(routes: &mut Routes) -> bool {
 /// Fold one notification from the event stream into the terminals' facts.
 /// Answers whether it may have made a terminal adoptable or changed the pane
 /// listing. A foreground change does neither, and it is the most frequent.
+/// A status change wakes only when it names another app.
 fn apply_event(terminals: &mut HashMap<String, Facts>, message: &Value) -> bool {
     let params = &message["params"];
     if message["method"] == "missed" {
@@ -648,6 +663,15 @@ fn apply_event(terminals: &mut HashMap<String, Facts>, message: &Value) -> bool 
             let facts = terminals.entry(address.to_string()).or_default();
             facts.foreground = serde_json::from_value(data.clone()).ok();
             false
+        },
+        Some("status") => {
+            let Some(facts) = terminals.get_mut(address) else { return false };
+            let status: Option<Status> =
+                serde_json::from_value(data["status"].clone()).unwrap_or_default();
+            let app = status.and_then(|status| status.app);
+            let changed = facts.app != app;
+            facts.app = app;
+            changed
         },
         Some(kind @ ("lost" | "finished")) => {
             let Some(facts) = terminals.get_mut(address) else { return false };
@@ -880,6 +904,77 @@ mod tests {
         route(&shared, &frames, events(&all_finish));
         route(&shared, &frames, events(&[event("created", "t3", live("t3"))]));
         assert_eq!(starts.load(Ordering::Relaxed), 2);
+    }
+
+    /// The facts after the subscribe reply listed `terminals`.
+    fn subscribed(terminals: Value) -> Routes {
+        let mut routes = Routes::default();
+        let (reply, _answer) = mpsc::channel();
+        routes.calls.insert(1, Pending { opens: Opens::Events, reply });
+        let (frames, _sent) = mpsc::channel();
+        let reply = json!({ "jsonrpc": "2.0", "id": 1,
+                            "result": { "channel": 5, "terminals": terminals } });
+        answer(&mut routes, &frames, &Waker::default(), reply.to_string().as_bytes());
+        routes
+    }
+
+    fn listed_kind(routes: &Routes, address: &str) -> Option<String> {
+        crate::panes::foreign_pane(address, &routes.terminals[address]).and_then(|pane| pane.kind)
+    }
+
+    /// On Windows the core's foreground is always the shell, so `t1` runs
+    /// `nu.exe` whatever program the shell started.
+    fn shell(status: Option<Value>) -> Value {
+        let mut record = json!({ "address": "t1", "pid": 10, "state": "live",
+                                 "foreground": foreground(10, "nu.exe") });
+        if let Some(status) = status {
+            record["status"] = status;
+        }
+        record
+    }
+
+    /// An agent that reports itself to the core lists by the app it names,
+    /// not by the shell in the foreground.
+    #[test]
+    fn a_terminal_lists_by_the_app_its_status_names() {
+        let status = json!({ "state": "working", "app": "claude-code" });
+
+        let routes = subscribed(json!([shell(Some(status))]));
+
+        assert_eq!(listed_kind(&routes, "t1").as_deref(), Some("claude-code"));
+    }
+
+    #[test]
+    fn a_terminal_without_a_status_lists_by_its_foreground() {
+        let routes = subscribed(json!([shell(None)]));
+
+        assert_eq!(listed_kind(&routes, "t1").as_deref(), Some("nu.exe"));
+    }
+
+    /// An agent that starts after the subscribe reply names itself in a
+    /// status event, and its end resets the status to null.
+    #[test]
+    fn status_events_keep_the_listed_kind_current() {
+        let mut routes = subscribed(json!([shell(None)]));
+        let status = |status: Value| {
+            let data = json!({ "status": status, "records": {}, "reported": true });
+            format!("{}\n", event("status", "t1", data))
+        };
+
+        routes
+            .partial_event
+            .extend_from_slice(status(json!({ "state": "idle", "app": "claude-code" })).as_bytes());
+        assert!(apply_events(&mut routes), "a new app changes the listing");
+        assert_eq!(listed_kind(&routes, "t1").as_deref(), Some("claude-code"));
+
+        routes.partial_event.extend_from_slice(
+            status(json!({ "state": "working", "app": "claude-code" })).as_bytes(),
+        );
+        assert!(!apply_events(&mut routes), "the same app leaves the listing as it is");
+
+        routes.partial_event.extend_from_slice(status(Value::Null).as_bytes());
+        apply_events(&mut routes);
+        assert_eq!(listed_kind(&routes, "t1").as_deref(), Some("nu.exe"));
     }
 
     /// The core may cut an event line across frames.
