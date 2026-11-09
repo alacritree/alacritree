@@ -71,8 +71,8 @@ impl Pane {
             .or_else(|| self.cwd.as_deref().filter(|cwd| !cwd.trim().is_empty()))
     }
 
-    /// The sidebar workspace this pane is working in, by longest path prefix.
-    /// `None` means it belongs under Home.
+    /// The sidebar workspace this pane lists under, by longest path prefix of
+    /// `workspace_cwd`, else of its working directory. `None` means Home.
     pub fn workspace(&self, side: &Side, workspaces: &[PathBuf]) -> Option<PathBuf> {
         let reported = self
             .workspace_cwd
