@@ -18,6 +18,7 @@ mod labels;
 mod one_shot;
 mod panes;
 mod parser;
+mod pinned;
 mod settings;
 mod wire;
 
@@ -88,6 +89,23 @@ impl CoreError {
             kind: field("kind").unwrap_or("unknown").to_string(),
             message: error["message"].as_str().unwrap_or_default().to_string(),
             hint: field("hint").map(str::to_string),
+        }
+    }
+
+    /// Where the core listens, when hc refused because it looked for the
+    /// core at another socket. hc sends no field for the socket, so this
+    /// reads it from the wording of hc's message.
+    fn listening_at(&self) -> Option<String> {
+        match self {
+            Self::Rpc { kind, message, .. } if kind == "unavailable" => {
+                let at = message.strip_prefix("the core listens at ")?;
+                Some(at.split_once(", but this shell looks at ")?.0.to_string())
+            },
+            Self::Refused(text) => text.lines().find_map(|line| {
+                let refusal: Value = serde_json::from_str(line).ok()?;
+                Self::rpc(refusal.get("error")?).listening_at()
+            }),
+            _ => None,
         }
     }
 
@@ -1249,6 +1267,29 @@ mod tests {
         let listed = records(&json!([live("t1"), live("box/t1")]));
 
         assert_eq!(listed.keys().collect::<Vec<_>>(), ["t1"]);
+    }
+
+    /// hc names where the core listens, in an RPC error from a call and in
+    /// the line `hc connect` prints before it exits.
+    #[test]
+    fn a_refusal_names_where_the_core_listens() {
+        let message = "the core listens at /tmp/hc.sock, but this shell looks at \
+                       /run/user/1000/herdr-core/default.sock";
+        let rpc =
+            CoreError::Rpc { kind: "unavailable".into(), message: message.into(), hint: None };
+        let refusal = json!({ "error": { "kind": "unavailable", "message": message } });
+        let refused = CoreError::Refused(refusal.to_string());
+        let after_a_warning = CoreError::Refused(format!(
+            "wsl: Failed to translate 'C:\\tools'\n{refusal}\nsh: 1: trailing noise"
+        ));
+        let other =
+            CoreError::Rpc { kind: "not_found".into(), message: message.into(), hint: None };
+
+        assert_eq!(rpc.listening_at().as_deref(), Some("/tmp/hc.sock"));
+        assert_eq!(refused.listening_at().as_deref(), Some("/tmp/hc.sock"));
+        assert_eq!(after_a_warning.listening_at().as_deref(), Some("/tmp/hc.sock"));
+        assert_eq!(other.listening_at(), None);
+        assert_eq!(CoreError::Refused("sh: 1: hc: not found".into()).listening_at(), None);
     }
 
     #[test]

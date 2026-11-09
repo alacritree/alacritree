@@ -5,13 +5,15 @@
 //! `wsl.exe` for the whole run. Until it is up, the distro's one-shot calls
 //! go through its WSL helper, so neither costs a `wsl.exe` launch per
 //! session.
+//! A distro whose hc looked for its core at the wrong socket pins the one
+//! the refusal names.
 
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, TryLockError};
 use std::time::{Duration, Instant};
 
-use alacritree_common::side::{self, Side};
+use alacritree_common::side::Side;
 use alacritree_common::tools::{self, Tool};
 use alacritree_common::wsl_helper::{self, HelperClient, TransportError};
 use alacritree_common::{command_ext, wsl};
@@ -19,7 +21,7 @@ use serde_json::Value;
 
 use crate::connection::{Connection, OnRunning, Waker};
 use crate::elsewhere::{self, HcPaths};
-use crate::{CoreError, keeper, one_shot};
+use crate::{CoreError, keeper, one_shot, pinned};
 
 /// How long a session waits between attempts to attach while its side has
 /// no connection.
@@ -29,8 +31,9 @@ enum Launch {
     /// `socket` replaces the socket hc resolves, once the user chose a core
     /// of another session.
     Native { program: String, socket: Mutex<Option<PathBuf>> },
-    /// `program` is the configured `wsl_path`.
-    Wsl { distro: String, program: Option<String> },
+    /// `program` is the configured `wsl_path`. `socket` is where the core
+    /// listens, once hc refused because it looked for the core elsewhere.
+    Wsl { distro: String, program: Option<String>, socket: Mutex<Option<String>> },
 }
 
 /// Prints the distro user's home directory from the passwd entry, which
@@ -81,7 +84,7 @@ impl SideCore {
     }
 
     pub(crate) fn wsl(distro: &str, program: Option<String>, waker: Waker) -> Self {
-        let launch = Launch::Wsl { distro: distro.to_string(), program };
+        let launch = Launch::Wsl { distro: distro.to_string(), program, socket: Mutex::new(None) };
         Self::new(Side::Wsl(distro.to_string()), launch, waker)
     }
 
@@ -145,8 +148,8 @@ impl SideCore {
             return Ok(connection);
         }
         let opened = self
-            .command()
-            .and_then(|(command, label)| {
+            .retry_where_core_listens(|| {
+                let (command, label) = self.command()?;
                 log::info!("herdr-core ({}): starting `{label}`", self.side.name());
                 Connection::open(command, &label, self.waker.clone(), self.keep_up())
             })
@@ -155,6 +158,49 @@ impl SideCore {
         let connection = opened?;
         slot.connection = Some(connection.clone());
         Ok(connection)
+    }
+
+    /// `attempt`, and once more when it failed only because a distro's hc
+    /// looked for the core at another socket than the one it listens at.
+    fn retry_where_core_listens<T>(
+        &self,
+        attempt: impl Fn() -> Result<T, CoreError>,
+    ) -> Result<T, CoreError> {
+        match attempt() {
+            Err(error) if self.pin_where_core_listens(&error) => attempt(),
+            attempted => attempted,
+        }
+    }
+
+    /// Pin a distro's hc to the socket that `error` names, for the rest of
+    /// the run. Answers whether that changed where hc looks. The native side
+    /// asks the user first, but a distro pins at once, since hc found the
+    /// socket in its own `core.lock` in the same distro.
+    fn pin_where_core_listens(&self, error: &CoreError) -> bool {
+        let (Launch::Wsl { distro, socket, .. }, Some(at)) = (&self.launch, error.listening_at())
+        else {
+            return false;
+        };
+        let mut socket = lock(socket);
+        if socket.as_deref() == Some(at.as_str()) {
+            return false;
+        }
+        log::warn!(
+            "herdr-core ({distro}): the core listens at {at}, where hc run from wsl.exe does not \
+             look. Reaching it there for this run. To make it permanent, set `socket` in the \
+             distro's herdr-core config.toml, or export `HC_SOCKET` when the core's session is \
+             not `default`."
+        );
+        *socket = Some(at);
+        true
+    }
+
+    /// The socket a distro's scripts pin. `None` leaves it to hc.
+    fn pinned(&self) -> Option<String> {
+        match &self.launch {
+            Launch::Wsl { socket, .. } => lock(socket).clone(),
+            Launch::Native { .. } => None,
+        }
     }
 
     /// A spawn that found no `hc` is [`CoreError::Missing`] when hc's
@@ -193,9 +239,11 @@ impl SideCore {
                 }
                 Ok((command, format!("{program} connect")))
             },
-            Launch::Wsl { distro, program } => {
+            Launch::Wsl { distro, program, .. } => {
                 let hc = distro_hc(program.as_deref());
-                let command = side::wsl_command_with_clean_stdout(distro, hc, &["connect"]);
+                let socket = self.pinned();
+                let command =
+                    pinned::command(distro, hc, socket.as_deref(), r#"exec "$p" connect"#);
                 Ok((command, format!("wsl.exe -d {distro} -- {hc} connect")))
             },
         }
@@ -203,11 +251,15 @@ impl SideCore {
 
     /// What a distro's connection runs when its core starts to run a
     /// terminal: a keeper, so the distro stays up however the app ends. The
-    /// native core needs none.
+    /// keeper pins the socket the connection pins. The native core needs
+    /// none.
     fn keep_up(&self) -> OnRunning {
-        let Launch::Wsl { distro, program } = &self.launch else { return None };
+        let Launch::Wsl { distro, program, .. } = &self.launch else { return None };
         let (distro, hc) = (distro.clone(), distro_hc(program.as_deref()).to_string());
-        Some(Box::new(move || keeper::start_in_background(distro.clone(), hc.clone())))
+        let socket = self.pinned();
+        Some(Box::new(move || {
+            keeper::start_in_background(distro.clone(), hc.clone(), socket.clone())
+        }))
     }
 
     /// Leave a keeper that holds the distro up after alacritree quits, and
@@ -218,19 +270,19 @@ impl SideCore {
     /// core, get none. A core with no connection up may still have
     /// terminals, so its keeper looks for itself.
     pub(crate) fn leave_keeper(&self) -> Option<u32> {
-        let Launch::Wsl { distro, program } = &self.launch else { return None };
+        let Launch::Wsl { distro, program, .. } = &self.launch else { return None };
         if self.live().is_some_and(|connection| !connection.has_running_terminal()) {
             return None;
         }
-        keeper::start(distro, distro_hc(program.as_deref()))
+        keeper::start(distro, distro_hc(program.as_deref()), self.pinned().as_deref())
     }
 
     /// Answers whether a keeper holds this distro's lock. The native core
     /// has no keeper.
     #[cfg(feature = "test-support")]
     pub(crate) fn keeper_runs(&self) -> bool {
-        let Launch::Wsl { distro, program } = &self.launch else { return false };
-        keeper::holds_lock(distro, distro_hc(program.as_deref()))
+        let Launch::Wsl { distro, program, .. } = &self.launch else { return false };
+        keeper::holds_lock(distro, distro_hc(program.as_deref()), self.pinned().as_deref())
     }
 
     /// Answers whether the native core already serves, without starting one.
@@ -263,7 +315,7 @@ impl SideCore {
     /// missing `hc`. The lookup keeps no miss, so an install made after the
     /// helper started brings the helper's route back.
     fn helper(&self) -> Option<(Arc<HelperClient>, String)> {
-        let Launch::Wsl { distro, program } = &self.launch else { return None };
+        let Launch::Wsl { distro, program, .. } = &self.launch else { return None };
         let client = wsl_helper::client(distro)?;
         let program = program
             .clone()
@@ -306,12 +358,18 @@ impl SideCore {
         }
         if let Some((client, program)) = self.helper() {
             let [hello, request] = one_shot::lines(method, params.clone());
-            match client.run(one_shot::SCRIPT, &[&program, &hello, &request]) {
-                Ok((_, output)) => return one_shot::answer(&output),
-                Err(TransportError::NotWritten(error)) => {
+            let answered = self.retry_where_core_listens(|| {
+                let socket = self.pinned();
+                let args = [program.as_str(), &hello, &request];
+                let (_, output) = pinned::run(&client, socket.as_deref(), one_shot::SCRIPT, &args)
+                    .map_err(CoreError::Helper)?;
+                one_shot::answer(&output)
+            });
+            match answered {
+                Err(CoreError::Helper(TransportError::NotWritten(error))) => {
                     log::debug!("herdr-core ({}): helper unusable: {error}", self.side.name());
                 },
-                Err(error) => return Err(CoreError::Helper(error)),
+                answered => return answered,
             }
         }
         self.connection()?.call(method, params)

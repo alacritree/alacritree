@@ -753,6 +753,9 @@ struct DistroCore {
 
 #[cfg(windows)]
 impl DistroCore {
+    /// The variables every `wsl.exe` of this test passes into the distro.
+    const SHARED: &str = "HC_SOCKET:HC_SESSION:XDG_STATE_HOME:XDG_CONFIG_HOME";
+
     /// `None` when this machine has no distro.
     fn start() -> Option<Self> {
         let distro = std::env::var("ALACRITREE_E2E_DISTRO")
@@ -764,7 +767,7 @@ impl DistroCore {
             ("HC_SESSION", format!("alacritree-e2e-{}", std::process::id())),
             ("XDG_STATE_HOME", format!("{dir}/state")),
             ("XDG_CONFIG_HOME", format!("{dir}/config")),
-            ("WSLENV", "HC_SOCKET:HC_SESSION:XDG_STATE_HOME:XDG_CONFIG_HOME".to_string()),
+            ("WSLENV", Self::SHARED.to_string()),
         ];
         for (name, value) in vars {
             // SAFETY: nextest gives each test a process of its own, and this
@@ -779,9 +782,20 @@ impl DistroCore {
         Some(core)
     }
 
-    /// `hc` inside the distro, found the way the resident connection finds it.
+    /// Stop passing `HC_SOCKET` to the `wsl.exe` launches the backend makes,
+    /// as a shell rc file's export never reaches them.
+    fn hide_socket(&self) {
+        let shared =
+            Self::SHARED.strip_prefix("HC_SOCKET:").expect("`SHARED` leads with HC_SOCKET");
+        // SAFETY: as in `start`, before the backend starts a thread.
+        unsafe { std::env::set_var("WSLENV", shared) };
+    }
+
+    /// `hc` inside the distro, found the way the resident connection finds
+    /// it. It always reaches the core, even after [`Self::hide_socket`].
     fn hc(&self, args: &[&str]) -> std::process::Output {
         side::wsl_command_with_clean_stdout(&self.distro, "hc", args)
+            .env("WSLENV", Self::SHARED)
             .output()
             .expect("wsl.exe runs")
     }
@@ -964,6 +978,36 @@ fn a_distro_core_keeps_one_keeper_while_it_runs_a_terminal() {
     wait_until("a keeper for the next terminal", PATIENCE, || backend.keeper_runs());
     next.handle.kill();
     wait_until("the next keeper to exit", Duration::from_secs(30), || !backend.keeper_runs());
+}
+
+/// A distro core that listens at a socket the `wsl.exe` environment does not
+/// name, as one started from a shell that exports `HC_SOCKET`, still runs
+/// the distro's sessions, and its keeper holds it up.
+#[cfg(windows)]
+#[test]
+#[ignore = "needs a WSL distro with hc"]
+fn a_distro_core_on_a_socket_hc_does_not_resolve_runs_its_sessions() {
+    use alacritree_herdr_core::HerdrCores;
+    use alacritree_session_backend::Side;
+
+    let Some(core) = DistroCore::start() else {
+        eprintln!("skip: this machine has no WSL distro");
+        return;
+    };
+    core.hide_socket();
+    let cores = HerdrCores::new(&HerdrCoreConfig::default());
+    let backend = cores.on(&Side::Wsl(core.distro.clone()));
+
+    let mut opened = open(&backend, shell(), &core.windows_dir());
+    opened.handle.write(b"echo found-where-hc-did-not-look\r".to_vec());
+    shows(&opened, "found-where-hc-did-not-look");
+    assert_eq!(core.live_terminals(), 1, "the session runs in the core that listens elsewhere");
+    wait_until("a keeper for that core", PATIENCE, || backend.keeper_runs());
+
+    opened.handle.kill();
+    wait_until("the keeper to exit after the last terminal", Duration::from_secs(30), || {
+        !backend.keeper_runs()
+    });
 }
 
 /// Start `argv` the way another client does: kept, and with no alacritree
