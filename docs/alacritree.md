@@ -200,6 +200,7 @@ The native herdr-core core also runs terminals that alacritree did not create, s
 - **Opening.** Enter or a click takes the terminal over. The session types into it and sizes it, the same as a terminal alacritree created. Closing the session lets go of the terminal and leaves its program running, so its row comes back.
 - **Watching.** The row's menu offers `Watch`, a session that shows the terminal and follows its output, and never types into it or resizes it.
 - **Killing.** The row's menu offers `Kill terminal`, and `KillTerminal` does the same from the command palette or a key binding. Both ask first, since the program ends for every client attached to it. The terminal's record stays in the core after its program ends, for the client that created it to read and remove.
+- **Other machines.** The core also reports the terminals of each machine that `hc machine add` connected. alacritree does not list or adopt them, and it opens every session on this machine.
 - **Opt-out.** `[integrations.herdr_core] enabled = false` hides these panes.
 
 ### Sub-agents
