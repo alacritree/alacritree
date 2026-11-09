@@ -9,6 +9,15 @@
 //! connection is up, and again after a drop or a loss.
 //! Terminals on machines that `hc machine add` connected are ignored.
 
+/// `sh` code that exports its first argument as `HC_SOCKET` unless it is
+/// empty, then shifts it off. Every script that runs a distro's `hc` starts
+/// with it, so all of them reach the same core.
+macro_rules! pin_socket {
+    () => {
+        r#"[ -z "$1" ] || export HC_SOCKET="$1"; shift; "#
+    };
+}
+
 mod connection;
 mod core;
 mod elsewhere;
@@ -88,6 +97,22 @@ impl CoreError {
             kind: field("kind").unwrap_or("unknown").to_string(),
             message: error["message"].as_str().unwrap_or_default().to_string(),
             hint: field("hint").map(str::to_string),
+        }
+    }
+
+    /// Where the core listens, when hc refused because it looked for the
+    /// core at another socket.
+    fn listening_at(&self) -> Option<String> {
+        match self {
+            Self::Rpc { kind, message, .. } if kind == "unavailable" => {
+                let at = message.strip_prefix("the core listens at ")?;
+                Some(at.split_once(", but this shell looks at ")?.0.to_string())
+            },
+            Self::Refused(text) => {
+                let refusal: Value = serde_json::from_str(text.trim()).ok()?;
+                Self::rpc(refusal.get("error")?).listening_at()
+            },
+            _ => None,
         }
     }
 
@@ -1249,6 +1274,26 @@ mod tests {
         let listed = records(&json!([live("t1"), live("box/t1")]));
 
         assert_eq!(listed.keys().collect::<Vec<_>>(), ["t1"]);
+    }
+
+    /// hc names where the core listens, in an RPC error from a call and in
+    /// the line `hc connect` prints before it exits.
+    #[test]
+    fn a_refusal_names_where_the_core_listens() {
+        let message = "the core listens at /tmp/hc.sock, but this shell looks at \
+                       /run/user/1000/herdr-core/default.sock";
+        let rpc =
+            CoreError::Rpc { kind: "unavailable".into(), message: message.into(), hint: None };
+        let refused = CoreError::Refused(
+            json!({ "error": { "kind": "unavailable", "message": message } }).to_string(),
+        );
+        let other =
+            CoreError::Rpc { kind: "not_found".into(), message: message.into(), hint: None };
+
+        assert_eq!(rpc.listening_at().as_deref(), Some("/tmp/hc.sock"));
+        assert_eq!(refused.listening_at().as_deref(), Some("/tmp/hc.sock"));
+        assert_eq!(other.listening_at(), None);
+        assert_eq!(CoreError::Refused("sh: 1: hc: not found".into()).listening_at(), None);
     }
 
     #[test]

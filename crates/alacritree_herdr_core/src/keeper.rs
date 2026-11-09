@@ -19,14 +19,17 @@ macro_rules! find_lock {
 
 /// The keeper, with `$p` the distro's `hc`.
 const SCRIPT: &str = concat!(
+    pin_socket!(),
     find_lock!(),
     r#"mkdir -m 700 -p "$dir" 2>/dev/null; if command -v flock >/dev/null 2>&1 && command exec 9>"$lock"; then flock -n 9 || exit 0; fi; while "$p" server status --json 2>/dev/null | grep -Eq '"live": *[1-9]'; do sleep 10; done"#
 );
 
-/// Start the keeper of `distro`'s core, which `hc` reaches, and answer its
-/// pid. Blocks for the spawn.
-pub(crate) fn start(distro: &str, hc: &str) -> Option<u32> {
+/// Start the keeper of `distro`'s core, which `hc` reaches at `socket`, and
+/// answer its pid. An empty `socket` leaves the choice to hc. Blocks for the
+/// spawn.
+pub(crate) fn start(distro: &str, hc: &str, socket: &str) -> Option<u32> {
     let mut keeper = side::wsl_script_with_program(distro, hc, SCRIPT);
+    keeper.arg(socket);
     match command_ext::spawn_detached(&mut keeper) {
         Ok(keeper) => {
             log::info!("herdr-core ({distro}): started keeper {}", keeper.id());
@@ -41,9 +44,9 @@ pub(crate) fn start(distro: &str, hc: &str) -> Option<u32> {
 
 /// [`start`] on a thread of its own, for a caller that must not wait for
 /// the spawn.
-pub(crate) fn start_in_background(distro: String, hc: String) {
+pub(crate) fn start_in_background(distro: String, hc: String, socket: String) {
     let spawned = std::thread::Builder::new().name("hc-keeper".into()).spawn(move || {
-        start(&distro, &hc);
+        start(&distro, &hc, &socket);
     });
     if let Err(error) = spawned {
         log::warn!("herdr-core: could not start a keeper thread: {error}");
@@ -52,9 +55,11 @@ pub(crate) fn start_in_background(distro: String, hc: String) {
 
 /// Answers whether a keeper holds the lock of `distro`'s core.
 #[cfg(feature = "test-support")]
-pub(crate) fn holds_lock(distro: &str, hc: &str) -> bool {
-    const PROBE: &str = concat!(find_lock!(), r#"[ -e "$lock" ] && ! flock -n "$lock" true"#);
+pub(crate) fn holds_lock(distro: &str, hc: &str, socket: &str) -> bool {
+    const PROBE: &str =
+        concat!(pin_socket!(), find_lock!(), r#"[ -e "$lock" ] && ! flock -n "$lock" true"#);
     let mut probe = side::wsl_script_with_program(distro, hc, PROBE);
+    probe.arg(socket);
     // Only the end-to-end tests ask, from the test thread.
     #[allow(clippy::disallowed_methods)]
     probe.output().is_ok_and(|probed| probed.status.success())

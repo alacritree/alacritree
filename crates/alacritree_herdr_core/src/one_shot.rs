@@ -11,10 +11,11 @@ use serde_json::{Value, json};
 use crate::CoreError;
 use crate::connection::GENERATION;
 
-/// `$1` is the `hc` program, `$2` the hello and `$3` the request. stderr
-/// joins stdout, because the helper keeps only stdout and a shell that
-/// cannot find `hc` says so on stderr.
-pub(crate) const SCRIPT: &str = r#"printf '%s\n%s\n' "$2" "$3" | "$1" connect 2>&1"#;
+/// The arguments are the socket for `pin_socket!`, the `hc` program, the
+/// hello and the request. stderr joins stdout, because the helper keeps only
+/// stdout and a shell that cannot find `hc` says so on stderr.
+pub(crate) const SCRIPT: &str =
+    concat!(pin_socket!(), r#"printf '%s\n%s\n' "$2" "$3" | "$1" connect 2>&1"#);
 
 /// The request's id, which picks its answer out of the output.
 const ID: u64 = 1;
