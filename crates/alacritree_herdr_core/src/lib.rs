@@ -709,6 +709,7 @@ fn record_facts(record: &Value) -> (String, Facts) {
         name: text("name"),
         title: text("title"),
         cwd: text("cwd").map(PathBuf::from),
+        app: record["status"]["app"].as_str().map(str::to_string),
     };
     (address, facts)
 }
