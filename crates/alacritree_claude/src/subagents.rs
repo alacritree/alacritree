@@ -9,14 +9,14 @@
 //! is a published format, so a file that does not parse is skipped.
 //!
 //! A sub-agent runs until it hands its report back (`toolEndsTurn`) or the
-//! user interrupts it. After a plain reply it still runs while background
-//! work it started has not reported back in a `<task-notification>`. That
-//! takes the whole history, so each transcript is folded line by line, and a
-//! scan reads only what was appended since the last.
+//! user interrupts it, and dies with its process. After a plain reply it
+//! still runs while background work it started has not reported back in a
+//! `<task-notification>`. Each transcript is folded line by line, and a scan
+//! reads only what was appended since the last.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 use std::{fs, io};
 
 use alacritree_subagents::follow::Follow;
@@ -40,6 +40,10 @@ struct Registration {
     session_id: String,
     /// The directory it started in, which names its transcripts' folder.
     cwd: PathBuf,
+    /// When the process started. A resumed conversation keeps the transcripts
+    /// of agents that died with an earlier process, and none written before
+    /// this is still running.
+    started_at: Option<SystemTime>,
 }
 
 /// How Claude Code process `pid` registered itself, or `None` when it has
@@ -48,7 +52,11 @@ struct Registration {
 fn registration(config_dir: &Path, pid: u32) -> Option<Registration> {
     let path = config_dir.join("sessions").join(format!("{pid}.json"));
     let raw: RawRegistration = serde_json::from_str(&fs::read_to_string(path).ok()?).ok()?;
-    (raw.pid == pid).then_some(Registration { session_id: raw.session_id, cwd: raw.cwd })
+    (raw.pid == pid).then(|| Registration {
+        session_id: raw.session_id,
+        cwd: raw.cwd,
+        started_at: raw.started_at.map(|ms| SystemTime::UNIX_EPOCH + Duration::from_millis(ms)),
+    })
 }
 
 #[derive(Deserialize)]
@@ -57,6 +65,9 @@ struct RawRegistration {
     pid: u32,
     session_id: String,
     cwd: PathBuf,
+    /// Epoch milliseconds.
+    #[serde(default)]
+    started_at: Option<u64>,
 }
 
 /// What an agent's meta file says about it.
@@ -141,7 +152,8 @@ impl ClaudeSubagents {
         let conversation = folder.join(&session.session_id);
         let root = conversation.join("subagents");
         let mut found = Vec::new();
-        self.collect(&root, None, &mut found)?;
+        let since = session.started_at;
+        self.collect(&root, None, since, &mut found)?;
         if let Some(runs) = list(&root.join("workflows"))? {
             let scripts = list(&conversation.join("workflows").join("scripts"))?
                 .unwrap_or_default()
@@ -153,7 +165,7 @@ impl ClaudeSubagents {
                     continue;
                 };
                 let workflow = workflow_name(&scripts, id);
-                self.collect(&run, workflow.as_deref(), &mut found)?;
+                self.collect(&run, workflow.as_deref(), since, &mut found)?;
             }
         }
         found.sort_by(|(a_at, a), (b_at, b)| (a_at, &a.id).cmp(&(b_at, &b.id)));
@@ -185,10 +197,13 @@ impl ClaudeSubagents {
         Some(folder)
     }
 
+    /// The running agents in `dir`, passing over any transcript last written
+    /// before `since`.
     fn collect(
         &mut self,
         dir: &Path,
         workflow: Option<&str>,
+        since: Option<SystemTime>,
         found: &mut Vec<Found>,
     ) -> Result<(), SubagentError> {
         for path in list(dir)?.unwrap_or_default() {
@@ -199,6 +214,10 @@ impl ClaudeSubagents {
             else {
                 continue;
             };
+            let written = fs::metadata(&path).and_then(|stat| stat.modified()).ok();
+            if since.is_some_and(|since| written.is_some_and(|written| written < since)) {
+                continue;
+            }
             let running = self.progress.read(&path, Progress::fold).is_some_and(Progress::running);
             if !running {
                 continue;
@@ -295,9 +314,7 @@ impl Progress {
             },
             "user" => {
                 for text in message.texts() {
-                    for id in notified_tasks(text) {
-                        self.pending.remove(id);
-                    }
+                    self.settle(text);
                 }
                 if let Some(id) = entry.tool_use_result.and_then(Launched::id) {
                     self.pending.insert(id);
@@ -309,7 +326,23 @@ impl Progress {
                     Turn::Open
                 };
             },
+            // The reply that answers a queued notification is its own entry,
+            // so the notification leaves the turn as it was.
+            "attachment" => {
+                if let Some(Attachment { kind, prompt: Some(prompt) }) = &entry.attachment {
+                    if kind == "queued_command" {
+                        self.settle(prompt);
+                    }
+                }
+            },
             _ => {},
+        }
+    }
+
+    /// Drop the background work a `<task-notification>` in `text` reports.
+    fn settle(&mut self, text: &str) {
+        for id in notified_tasks(text) {
+            self.pending.remove(id);
         }
     }
 }
@@ -332,6 +365,27 @@ struct Entry {
     tool_ends_turn: Option<bool>,
     #[serde(default, rename = "toolUseResult", deserialize_with = "launched")]
     tool_use_result: Option<Launched>,
+    #[serde(default, deserialize_with = "attachment_or_none")]
+    attachment: Option<Attachment>,
+}
+
+/// Something Claude Code adds to a transcript between turns. A
+/// `queued_command` carries input queued for the agent, such as a
+/// `<task-notification>`, in `prompt`.
+#[derive(Deserialize)]
+struct Attachment {
+    #[serde(default, rename = "type")]
+    kind: String,
+    #[serde(default, deserialize_with = "text_or_none")]
+    prompt: Option<String>,
+}
+
+/// An `attachment`, or `None` for one of another shape, so a change to it
+/// costs the entry its attachment rather than the whole line.
+fn attachment_or_none<'de, D: serde::Deserializer<'de>>(
+    de: D,
+) -> Result<Option<Attachment>, D::Error> {
+    Ok(serde_json::from_value(serde_json::Value::deserialize(de)?).ok())
 }
 
 /// What a tool's result says it left running: a background command, or an
@@ -483,6 +537,14 @@ mod tests {
     fn notified(id: &str) -> String {
         format!(
             r#"{{"type":"user","message":{{"role":"user","content":"[SYSTEM NOTIFICATION - NOT USER INPUT]\n\n<task-notification>\n<task-id>{id}</task-id>\n<status>completed</status>\n</task-notification>"}}}}"#
+        )
+    }
+
+    /// A notification as current Claude Code queues it into the agent's
+    /// transcript, while a turn is open or after it parked.
+    fn queued_notification(id: &str) -> String {
+        format!(
+            r#"{{"parentUuid":"p","isSidechain":true,"agentId":"a1","attachment":{{"type":"queued_command","prompt":"<task-notification>\n<task-id>{id}</task-id>\n<tool-use-id>toolu_01</tool-use-id>\n<status>completed</status>\n</task-notification>","commandMode":"task-notification","origin":{{"kind":"task-notification","producer":"session-task"}}}},"type":"attachment","uuid":"u"}}"#
         )
     }
 
@@ -659,7 +721,11 @@ mod tests {
         home.write("sessions/8.json", &format!(r#"{{"pid":9,"sessionId":"{SESSION}","cwd":"/"}}"#));
         assert_eq!(
             registration(home.path(), 42),
-            Some(Registration { session_id: SESSION.into(), cwd: PathBuf::from("/work/app") })
+            Some(Registration {
+                session_id: SESSION.into(),
+                cwd: PathBuf::from("/work/app"),
+                started_at: None,
+            })
         );
         assert_eq!(registration(home.path(), 7), None);
         assert_eq!(registration(home.path(), 8), None, "a file under another pid's name");
@@ -750,6 +816,62 @@ mod tests {
         assert_eq!(names(&home.scan(&mut source, &[42])), [["a1"]]);
         home.append(&transcript, &assistant(Some("end_turn"), TEXT));
         assert_eq!(names(&home.scan(&mut source, &[42])), [Vec::<&str>::new()]);
+    }
+
+    /// Current Claude Code reports background work in a `queued_command`
+    /// attachment rather than a user turn. The report lands mid-turn or after
+    /// the agent parked, and either way the agent has finished once it parks
+    /// with nothing out.
+    #[test]
+    fn a_report_queued_as_an_attachment_settles_a_parked_agent() {
+        let home = Dir::new();
+        let dir = home.conversation();
+        let bash = assistant(Some("tool_use"), TOOL_USE);
+        let mid_turn = [
+            PROMPT.to_owned(),
+            bash.clone(),
+            launched_in_background("b1"),
+            bash.clone(),
+            tool_result(false),
+            queued_notification("b1"),
+            assistant(Some("end_turn"), TEXT),
+        ];
+        let after_parking = [
+            PROMPT.to_owned(),
+            bash,
+            launched_in_background("b2"),
+            assistant(Some("end_turn"), TEXT),
+            queued_notification("b2"),
+        ];
+        home.write(&format!("{dir}/subagents/agent-a1.jsonl"), &(mid_turn.join("\n") + "\n"));
+        home.write(&format!("{dir}/subagents/agent-a2.jsonl"), &(after_parking.join("\n") + "\n"));
+        assert_eq!(names(&home.scan(&mut home.source(), &[42])), [Vec::<&str>::new()]);
+    }
+
+    /// Sub-agents die with their Claude Code process, so a transcript last
+    /// written before the live process started is over, however it ends.
+    #[test]
+    fn an_agent_last_written_before_its_process_started_is_not_listed() {
+        let home = Dir::new();
+        let dir = home.conversation();
+        let started = SystemTime::now() - Duration::from_secs(60);
+        let started_ms = started.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_millis();
+        home.write(
+            "sessions/42.json",
+            &format!(
+                r#"{{"pid":42,"sessionId":"{SESSION}","cwd":"/work/app","startedAt":{started_ms}}}"#
+            ),
+        );
+        let cut_off = format!("{PROMPT}\n{}\n", assistant(None, TEXT));
+        home.write(&format!("{dir}/subagents/agent-old.jsonl"), &cut_off);
+        home.write(&format!("{dir}/subagents/agent-new.jsonl"), &cut_off);
+        fs::File::options()
+            .write(true)
+            .open(home.path().join(format!("{dir}/subagents/agent-old.jsonl")))
+            .unwrap()
+            .set_modified(started - Duration::from_secs(3600))
+            .unwrap();
+        assert_eq!(names(&home.scan(&mut home.source(), &[42])), [["new"]]);
     }
 
     #[test]
