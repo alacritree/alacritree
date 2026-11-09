@@ -22,6 +22,9 @@ use serde_json::{Map, Value};
 pub(crate) const WORKSPACE: &str = "alacritree.workspace";
 /// The session's index among its workspace's sessions.
 pub(crate) const POSITION: &str = "alacritree.position";
+/// The session's id, which the programs in the terminal carry in
+/// `ALACRITREE_SESSION_ID`, so the next launch gives it back.
+pub(crate) const SESSION: &str = "alacritree.session";
 /// How `hc ls` names the terminal's place, as `<project> / <checkout>`.
 pub(crate) const WHERE: &str = "where";
 /// The [`WORKSPACE`] value of the home tab.
@@ -39,8 +42,9 @@ const HERDR_SEEN: &str = "herdr.seen";
 /// differs from herdr-app's own ids, such as `sp1` and `tb1`.
 const SHARED_PREFIX: &str = "at-";
 
-/// The labels that record `placement`. A placement with no title clears
-/// `where`, since the core removes a label set to the empty string.
+/// The labels that record `placement`. A placement with no title or no
+/// session id clears that label, since the core removes a label set to the
+/// empty string.
 pub(crate) fn of(placement: &Placement) -> Map<String, Value> {
     let workspace = placement
         .workspace
@@ -50,6 +54,8 @@ pub(crate) fn of(placement: &Placement) -> Map<String, Value> {
     labels.insert(WORKSPACE.into(), workspace.into());
     labels.insert(POSITION.into(), placement.position.to_string().into());
     labels.insert(WHERE.into(), placement.title.clone().unwrap_or_default().into());
+    let session = placement.session_id.map(|id| id.to_string()).unwrap_or_default();
+    labels.insert(SESSION.into(), session.into());
     labels
 }
 
@@ -110,6 +116,7 @@ pub(crate) fn placement(labels: &HashMap<String, String>) -> Option<Placement> {
         workspace: (workspace != HOME).then(|| PathBuf::from(workspace)),
         position: labels.get(POSITION).and_then(|p| p.parse().ok()).unwrap_or(usize::MAX),
         title: labels.get(WHERE).cloned(),
+        session_id: labels.get(SESSION).and_then(|id| id.parse().ok()),
     })
 }
 
@@ -131,9 +138,11 @@ mod tests {
             workspace: Some(PathBuf::from("/src/app-feature")),
             position: 2,
             title: Some("app / feature".into()),
+            session_id: Some(43),
         };
 
-        assert_eq!(read_back(for_run(&placement)), Some(placement));
+        assert_eq!(read_back(for_run(&placement)), Some(placement.clone()));
+        assert_eq!(read_back(of(&placement)), Some(placement));
     }
 
     #[test]
