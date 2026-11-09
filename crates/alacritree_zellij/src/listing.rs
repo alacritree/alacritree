@@ -51,6 +51,7 @@ pub(super) fn panes(session: &str, stdout: &str) -> Option<Vec<Pane>> {
                 focused: pane.is_focused,
                 cwd: pane.pane_cwd,
                 foreground_cwd: None,
+                workspace_cwd: None,
             })
             .collect(),
     )

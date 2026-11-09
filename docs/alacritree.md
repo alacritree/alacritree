@@ -195,7 +195,7 @@ herdr is a terminal workspace manager for coding agents. It needs herdr 0.9.1 or
 
 #### herdr-core terminals
 
-The native herdr-core core also runs terminals that alacritree did not create, such as the ones `hc run`, herdr-app or an agent started. Each live one appears in the sidebar as a pane, under the worktree its working directory matches or under Home. A row names the terminal by the name its creator gave it, then by its `where` label, then by its program's title. alacritree reads the list from a core that already serves and never starts a core to list it.
+The native herdr-core core also runs terminals that alacritree did not create, such as the ones `hc run`, herdr-app or an agent started. Each live one appears in the sidebar as a pane, under the worktree its directory matches or under Home. A terminal in a herdr-app space matches by the directory it started in, because herdr-app keeps it in that space after its shell changes directory. Any other terminal matches by its shell's current directory. A row names the terminal by the name its creator gave it, then by its `where` label, then by its program's title. alacritree reads the list from a core that already serves and never starts a core to list it.
 
 - **Opening.** Enter or a click takes the terminal over. The session types into it and sizes it, the same as a terminal alacritree created. Closing the session lets go of the terminal and leaves its program running, so its row comes back.
 - **Watching.** The row's menu offers `Watch`, a session that shows the terminal and follows its output, and never types into it or resizes it.

@@ -1733,6 +1733,7 @@ mod tests {
             focused: false,
             cwd: Some("/repo".into()),
             foreground_cwd: None,
+            workspace_cwd: None,
         }
     }
 

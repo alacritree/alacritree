@@ -44,6 +44,7 @@ pub(crate) fn listed_agent(kind: Option<&str>) -> Pane {
         focused: false,
         cwd: None,
         foreground_cwd: None,
+        workspace_cwd: None,
     }
 }
 
