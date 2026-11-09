@@ -376,6 +376,7 @@ impl HerdrCore {
 pub struct HerdrCores {
     native: HerdrCore,
     wsl_path: Option<String>,
+    share: bool,
     waker: Waker,
     distros: Arc<Mutex<HashMap<String, HerdrCore>>>,
 }
@@ -383,9 +384,12 @@ pub struct HerdrCores {
 impl HerdrCores {
     pub fn new(config: &HerdrCoreConfig) -> Self {
         let waker = Waker::default();
+        let share = config.share_with_herdr_app;
+        let native = SideCore::native(&config.path, waker.clone()).sharing(share);
         Self {
-            native: HerdrCore::on(SideCore::native(&config.path, waker.clone())),
+            native: HerdrCore::on(native),
             wsl_path: config.wsl_path.clone(),
+            share,
             waker,
             distros: Default::default(),
         }
@@ -398,7 +402,7 @@ impl HerdrCores {
                 .entry(distro.clone())
                 .or_insert_with(|| {
                     let core = SideCore::wsl(distro, self.wsl_path.clone(), self.waker.clone());
-                    HerdrCore::on(core)
+                    HerdrCore::on(core.sharing(self.share))
                 })
                 .clone(),
         }
@@ -542,6 +546,14 @@ impl<H: From<HerdrCoreHandle>> SessionBackend<H> for HerdrCore {
             claims.held.insert(address.clone());
             (address, started)
         };
+        // The herdr-app labels go in one call after the run, since the tab id
+        // is the address the run picks. herdr-app adopts no terminal before
+        // its space is set.
+        if let Some(call) = share_call(&address, &started, self.core.shares())
+            && let Err(error) = self.core.call("terminal.label", call)
+        {
+            log::warn!("herdr-core: could not show {address} in herdr-app: {error}");
+        }
 
         let terminal = Terminal {
             address: address.clone(),
@@ -663,6 +675,27 @@ fn adoptable(claims: &Claims, address: &str, facts: &Facts) -> Option<Adoptable>
     let placement = labels::placement(&facts.labels)?;
     (facts.state == State::Live && !claims.held.contains(address))
         .then(|| Adoptable { terminal: address.to_string(), placement })
+}
+
+/// Show alacritree's terminals in herdr-app, or take them out, as `share`
+/// says, without waiting for the core's answers. Only the first connection of
+/// a run does this, so a terminal that herdr-app parks stays parked until the
+/// next launch.
+fn reconcile_sharing(connection: &Connection, share: bool) {
+    for call in connection.pick_terminals(|address, facts| share_call(address, facts, share)) {
+        connection.cast("terminal.label", call);
+    }
+}
+
+/// The `terminal.label` call that shows the terminal at `address` in
+/// herdr-app, or takes it out, as `share` says. A finished terminal gets
+/// none, since herdr-app shows only live ones.
+fn share_call(address: &str, facts: &Facts, share: bool) -> Option<Value> {
+    if facts.state == State::Finished {
+        return None;
+    }
+    let labels = labels::to_share(address, &facts.labels, share)?;
+    Some(json!({ "terminal": address, "labels": labels }))
 }
 
 /// A terminal in the core, about to be shown in a session.
@@ -1401,5 +1434,131 @@ mod tests {
         handle.detach().expect("a detach");
 
         assert!(matches!(handle.attached.resume(false), Resumed::Released));
+    }
+
+    fn in_checkout(path: &str) -> Placement {
+        Placement { workspace: Some(PathBuf::from(path)), position: 0, title: None }
+    }
+
+    /// The facts that `terminal.run` answers for a terminal that alacritree
+    /// started in `placement`.
+    fn started(address: &str, placement: &Placement) -> Facts {
+        let reply = json!({ "address": address, "pid": 10, "state": "live", "argv": ["sh"],
+                            "cwd": "/src", "labels": labels::for_run(placement) });
+        record_facts(&reply).1
+    }
+
+    fn herdr_labels(labels: &HashMap<String, String>) -> Vec<&String> {
+        labels.keys().filter(|key| key.starts_with("herdr.")).collect()
+    }
+
+    #[test]
+    fn a_terminal_started_without_sharing_has_no_herdr_label() {
+        let facts = started("t7", &in_checkout("/src/app"));
+
+        assert_eq!(herdr_labels(&facts.labels), Vec::<&String>::new());
+        assert_eq!(share_call("t7", &facts, false), None);
+    }
+
+    /// herdr-app puts each terminal in the space and the tab its labels
+    /// name, so one checkout is one space and each session is a tab.
+    #[test]
+    fn a_terminal_started_with_sharing_gets_its_checkouts_space_and_a_tab_of_its_own() {
+        let label = |address: &str, path: &str| {
+            let call = share_call(address, &started(address, &in_checkout(path)), true);
+            call.expect("a label call that shares the terminal")
+        };
+
+        let first = label("t7", "/src/app");
+        let same_checkout = label("t8", "/src/app");
+        let other_checkout = label("t9", "/src/app-feature");
+
+        assert_eq!(
+            first,
+            json!({ "terminal": "t7", "labels": {
+                "herdr.space": "at-8851a1fd8860", "herdr.tab": "at-t7", "herdr.seen": "0" } })
+        );
+        assert_eq!(same_checkout["labels"]["herdr.space"], "at-8851a1fd8860");
+        assert_eq!(same_checkout["labels"]["herdr.tab"], "at-t8");
+        assert_ne!(other_checkout["labels"]["herdr.space"], "at-8851a1fd8860");
+        let home = share_call("t1", &started("t1", &Placement::default()), true);
+        assert_eq!(home.map(|call| call["labels"]["herdr.space"].clone()), Some(json!("at-home")));
+    }
+
+    /// The label calls a launch makes on a core whose terminals `listed`
+    /// holds, as the core's records report them.
+    fn launch_calls(listed: Value, share: bool) -> HashMap<String, Value> {
+        records(&listed)
+            .iter()
+            .filter_map(|(address, facts)| {
+                Some((address.clone(), share_call(address, facts, share)?))
+            })
+            .collect()
+    }
+
+    fn record(address: &str, state: &str, labels: Value) -> Value {
+        json!({ "address": address, "pid": 10, "state": state, "labels": labels })
+    }
+
+    /// A terminal that herdr-app already places, or that is not
+    /// alacritree's, keeps its labels. A parked terminal keeps the turn a
+    /// person last looked at.
+    #[test]
+    fn a_launch_with_sharing_labels_the_running_terminals_herdr_app_does_not_show() {
+        let listed = json!([
+            record("t1", "live", json!({ "alacritree.workspace": "/src/app" })),
+            record("t2", "live", json!({ "alacritree.workspace": "/src/app", "herdr.seen": "4" })),
+            record(
+                "t3",
+                "live",
+                json!({ "alacritree.workspace": "/src/app", "herdr.space": "sp1" })
+            ),
+            record("t4", "live", json!({ "alacritree.workspace": "~", "herdr.space": "at-home" })),
+            record("t5", "live", json!({ "where": "app / main" })),
+            record("t6", "finished", json!({ "alacritree.workspace": "/src/app" })),
+        ]);
+
+        let calls = launch_calls(listed, true);
+
+        assert_eq!(calls.len(), 2, "{calls:?}");
+        assert_eq!(
+            calls["t1"]["labels"],
+            json!({ "herdr.space": "at-8851a1fd8860", "herdr.tab": "at-t1", "herdr.seen": "0" })
+        );
+        assert_eq!(
+            calls["t2"]["labels"],
+            json!({ "herdr.space": "at-8851a1fd8860", "herdr.tab": "at-t2" })
+        );
+    }
+
+    /// The core removes a label set to the empty string.
+    #[test]
+    fn a_launch_without_sharing_clears_only_the_spaces_alacritree_made() {
+        let listed = json!([
+            record(
+                "t1",
+                "live",
+                json!({ "alacritree.workspace": "/src/app",
+                                         "herdr.space": "at-8851a1fd8860", "herdr.tab": "at-t1" })
+            ),
+            record(
+                "t2",
+                "live",
+                json!({ "alacritree.workspace": "/src/app",
+                                         "herdr.space": "sp1", "herdr.tab": "tb1" })
+            ),
+            record("t3", "live", json!({ "herdr.space": "at-8851a1fd8860" })),
+            record("t4", "live", json!({ "alacritree.workspace": "/src/app" })),
+        ]);
+
+        let calls = launch_calls(listed, false);
+
+        assert_eq!(
+            calls,
+            HashMap::from([(
+                "t1".to_string(),
+                json!({ "terminal": "t1", "labels": { "herdr.space": "", "herdr.tab": "" } })
+            )])
+        );
     }
 }

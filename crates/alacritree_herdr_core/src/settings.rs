@@ -19,8 +19,9 @@ pub enum SessionBackendChoice {
 }
 
 /// `[integrations.herdr_core]`: where the `hc` binary lives on each side, the
-/// glyph that marks its terminals, whether new sessions run in its cores, and
-/// whether the terminals that alacritree did not create are listed.
+/// glyph that marks its terminals, whether new sessions run in its cores,
+/// whether the terminals that alacritree did not create are listed, and
+/// whether herdr-app shows the ones it did.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct HerdrCoreConfig {
     /// The native `hc` binary.
@@ -33,6 +34,8 @@ pub struct HerdrCoreConfig {
     pub session_backend: SessionBackendChoice,
     /// List the core's terminals that alacritree did not create as panes.
     pub enabled: bool,
+    /// Label alacritree's own terminals so that herdr-app shows them.
+    pub share_with_herdr_app: bool,
 }
 
 impl Default for HerdrCoreConfig {
@@ -85,6 +88,17 @@ pub struct RawHerdrCore {
     /// or resizes it, and kill it after a confirmation. alacritree reads the
     /// list from a core that already runs, and never starts one for it.
     enabled: bool,
+    /// Show each session that runs in a herdr-core core in herdr-app, as a
+    /// tab in a herdr-app space for its checkout.
+    ///
+    /// alacritree labels each terminal it starts, and at launch it labels
+    /// the terminals that already run. When herdr-app closes such a tab, the
+    /// terminal ends, and so does the alacritree session. A tab that
+    /// herdr-app parks with "Send back" keeps running, and alacritree shows
+    /// it in herdr-app again at the next launch. When this is off, the next
+    /// launch removes those labels, but the tabs that herdr-app already shows
+    /// stay there until their terminals end.
+    share_with_herdr_app: bool,
 }
 
 impl Default for RawHerdrCore {
@@ -95,6 +109,7 @@ impl Default for RawHerdrCore {
             icon: None,
             session_backend: ClosedSet::default(),
             enabled: true,
+            share_with_herdr_app: false,
         }
     }
 }
@@ -112,6 +127,7 @@ impl RawHerdrCore {
             icon: self.icon.unwrap_or_else(default_icon).into(),
             session_backend: self.session_backend.get(),
             enabled: self.enabled,
+            share_with_herdr_app: self.share_with_herdr_app,
         }
     }
 }

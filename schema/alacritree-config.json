@@ -922,6 +922,11 @@
           ],
           "type": "string"
         },
+        "share_with_herdr_app": {
+          "default": false,
+          "description": "Show each session that runs in a herdr-core core in herdr-app, as a\ntab in a herdr-app space for its checkout.\n\nalacritree labels each terminal it starts, and at launch it labels\nthe terminals that already run. When herdr-app closes such a tab, the\nterminal ends, and so does the alacritree session. A tab that\nherdr-app parks with \"Send back\" keeps running, and alacritree shows\nit in herdr-app again at the next launch. When this is off, the next\nlaunch removes those labels, but the tabs that herdr-app already shows\nstay there until their terminals end.",
+          "type": "boolean"
+        },
         "wsl_path": {
           "default": "",
           "description": "The `hc` program to run inside every WSL distro, as written. Empty\nfinds it by name through the distro's login shell.",

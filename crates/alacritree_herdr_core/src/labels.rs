@@ -1,15 +1,20 @@
-//! The labels that tie a core terminal to its place in alacritree.
+//! The labels that tie a core terminal to its place in alacritree, and to
+//! its place in herdr-app.
 //!
-//! Every label alacritree writes is `alacritree.*`, plus the `where` label
-//! that `hc ls` and the `hc` picker show. A `herdr.*` label would make
-//! herdr-app adopt the terminal, or kill it, so none is ever written. A
-//! terminal is alacritree's when it carries [`WORKSPACE`], which is also how
-//! an agent puts a terminal into a workspace:
-//! `hc run --keep --label alacritree.workspace=<path>`.
+//! alacritree writes its own `alacritree.*` labels, plus the `where` label
+//! that `hc ls` and the `hc` picker show. It writes `herdr.*` labels only on
+//! its own terminals, and only to show them in herdr-app or to take them out
+//! again. herdr-app adopts a terminal that has a `herdr.space`, and closing
+//! its tab there kills the terminal. Each space and tab id that alacritree
+//! makes starts with [`SHARED_PREFIX`], so alacritree takes out only the
+//! terminals that it put in. A terminal is alacritree's when it carries
+//! [`WORKSPACE`], which is also how an agent puts a terminal into a
+//! workspace: `hc run --keep --label alacritree.workspace=<path>`.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use alacritree_common::digest::stable_digest;
 use alacritree_session_backend::Placement;
 use serde_json::{Map, Value};
 
@@ -21,9 +26,18 @@ pub(crate) const POSITION: &str = "alacritree.position";
 pub(crate) const WHERE: &str = "where";
 /// The [`WORKSPACE`] value of the home tab.
 pub(crate) const HOME: &str = "~";
-/// The herdr-app space that holds the terminal. herdr-app sets it, and
-/// clears it to park the terminal in no space. alacritree only reads it.
+/// The herdr-app space that holds the terminal. herdr-app clears it to park
+/// the terminal in no space.
 pub(crate) const HERDR_SPACE: &str = "herdr.space";
+/// The herdr-app tab that holds the terminal. A second terminal with the same
+/// tab joins that tab as a split.
+const HERDR_TAB: &str = "herdr.tab";
+/// The last turn a person looked at, which herdr-app counts unread turns
+/// from.
+const HERDR_SEEN: &str = "herdr.seen";
+/// The start of each herdr-app space and tab id that alacritree makes. It
+/// differs from herdr-app's own ids, such as `sp1` and `tb1`.
+const SHARED_PREFIX: &str = "at-";
 
 /// The labels that record `placement`. A placement with no title clears
 /// `where`, since the core removes a label set to the empty string.
@@ -44,6 +58,48 @@ pub(crate) fn for_run(placement: &Placement) -> Map<String, Value> {
     let mut labels = of(placement);
     labels.retain(|_, value| value.as_str().is_some_and(|value| !value.is_empty()));
     labels
+}
+
+/// The labels that show the terminal at `address` in herdr-app, or take it
+/// out, as `share` says. `None` when its labels already agree, and for a
+/// terminal that is not alacritree's.
+///
+/// A shared terminal goes to the space of its checkout, and to a tab of its
+/// own. A terminal that herdr-app parked has no space, so it goes back. A
+/// space that herdr-app made stays as it is.
+pub(crate) fn to_share(
+    address: &str,
+    labels: &HashMap<String, String>,
+    share: bool,
+) -> Option<Map<String, Value>> {
+    let workspace = labels.get(WORKSPACE)?;
+    let space = labels.get(HERDR_SPACE).filter(|space| !space.is_empty());
+    let mut changed = Map::new();
+    match space {
+        None if share => {
+            changed.insert(HERDR_SPACE.into(), space_id(workspace).into());
+            changed.insert(HERDR_TAB.into(), format!("{SHARED_PREFIX}{address}").into());
+            if !labels.contains_key(HERDR_SEEN) {
+                changed.insert(HERDR_SEEN.into(), "0".into());
+            }
+        },
+        Some(space) if !share && space.starts_with(SHARED_PREFIX) => {
+            changed.insert(HERDR_SPACE.into(), "".into());
+            changed.insert(HERDR_TAB.into(), "".into());
+        },
+        _ => return None,
+    }
+    Some(changed)
+}
+
+/// The herdr-app space of `workspace`, a [`WORKSPACE`] value. A checkout has
+/// the same id on every run and every platform.
+fn space_id(workspace: &str) -> String {
+    if workspace == HOME {
+        return format!("{SHARED_PREFIX}home");
+    }
+    let digest = stable_digest(workspace.as_bytes()) & 0xffff_ffff_ffff;
+    format!("{SHARED_PREFIX}{digest:012x}")
 }
 
 /// The placement a terminal's labels record, if it is alacritree's. A

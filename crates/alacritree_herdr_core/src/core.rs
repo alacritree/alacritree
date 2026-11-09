@@ -6,10 +6,12 @@
 //! go through its WSL helper, so neither costs a `wsl.exe` launch per
 //! session.
 //! A distro whose hc looked for its core at the wrong socket pins the one
-//! the refusal names.
+//! the refusal names. The first connection of a run shows alacritree's
+//! terminals in herdr-app, or takes them out, as the config says.
 
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, TryLockError};
 use std::time::{Duration, Instant};
 
@@ -46,6 +48,10 @@ pub(crate) struct SideCore {
     connection: Mutex<Slot>,
     waker: Waker,
     home: OnceLock<String>,
+    /// Show alacritree's terminals in herdr-app.
+    share: bool,
+    /// A connection of this run brought the terminals in line with `share`.
+    reconciled: AtomicBool,
 }
 
 /// The side's connection, and when the last attempt to open one failed.
@@ -89,7 +95,26 @@ impl SideCore {
     }
 
     fn new(side: Side, launch: Launch, waker: Waker) -> Self {
-        Self { side, launch, connection: Default::default(), waker, home: OnceLock::new() }
+        Self {
+            side,
+            launch,
+            connection: Default::default(),
+            waker,
+            home: OnceLock::new(),
+            share: false,
+            reconciled: AtomicBool::new(false),
+        }
+    }
+
+    /// Show alacritree's terminals in herdr-app, as
+    /// `[integrations.herdr_core] share_with_herdr_app` says.
+    pub(crate) fn sharing(mut self, share: bool) -> Self {
+        self.share = share;
+        self
+    }
+
+    pub(crate) fn shares(&self) -> bool {
+        self.share
     }
 
     pub(crate) fn side(&self) -> &Side {
@@ -157,6 +182,9 @@ impl SideCore {
         slot.failed_at = opened.is_err().then(Instant::now);
         let connection = opened?;
         slot.connection = Some(connection.clone());
+        if !self.reconciled.swap(true, Ordering::Relaxed) {
+            crate::reconcile_sharing(&connection, self.share);
+        }
         Ok(connection)
     }
 
