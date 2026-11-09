@@ -1437,7 +1437,7 @@ mod tests {
     }
 
     fn in_checkout(path: &str) -> Placement {
-        Placement { workspace: Some(PathBuf::from(path)), position: 0, title: None }
+        Placement { workspace: Some(PathBuf::from(path)), position: 0, ..Placement::default() }
     }
 
     /// The facts that `terminal.run` answers for a terminal that alacritree

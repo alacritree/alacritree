@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::ExitStatus;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, mpsc};
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, LazyLock, Mutex, mpsc};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use alacritree_common::wsl_helper::WslProbe;
 use alacritree_multiplexer::{AgentStatus, PaneKey};
@@ -1116,7 +1116,7 @@ impl<R: Repaint> Session<R> {
                 background: config.palette.bg,
                 cursor: config.palette.cursor_bg,
             },
-            placement: Placement::default(),
+            placement: Placement { session_id: Some(id), ..Placement::default() },
             screen: Screen {
                 term: term.clone(),
                 listener: proxy.clone(),
@@ -1197,6 +1197,7 @@ impl<R: Repaint> Session<R> {
             title: title(&workspace),
             workspace: workspace.clone(),
             position,
+            session_id: Some(self.id),
         });
         self.placed = Some((workspace, position));
     }
@@ -1632,10 +1633,24 @@ fn window_size(size: TermSize, cell_size: (f32, f32)) -> WindowSize {
     }
 }
 
+/// Ids start at the launch time in milliseconds. A program keeps its
+/// `ALACRITREE_SESSION_ID` across launches, so an id from an earlier launch
+/// must name no session of this one. That holds while a launch opens fewer
+/// sessions than milliseconds pass before the next. The ids stay below 2^53,
+/// so a JSON client that reads numbers as doubles reads them exactly.
+static NEXT_SESSION_ID: LazyLock<AtomicU64> = LazyLock::new(|| {
+    let launch = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    AtomicU64::new(launch.as_millis() as u64)
+});
+
 fn next_session_id() -> SessionId {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static NEXT: AtomicU64 = AtomicU64::new(1);
-    NEXT.fetch_add(1, Ordering::Relaxed)
+    NEXT_SESSION_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Keep `id` from every later [`next_session_id`], since a kept terminal's
+/// labels may record an id this launch has yet to reach.
+pub(crate) fn reserve_session_id(id: SessionId) {
+    NEXT_SESSION_ID.fetch_max(id.saturating_add(1), Ordering::Relaxed);
 }
 
 #[cfg(test)]

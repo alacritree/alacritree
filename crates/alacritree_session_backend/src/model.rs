@@ -81,9 +81,9 @@ pub struct OpenRequest<L> {
     pub screen: Screen<L>,
 }
 
-/// Where a session sits in the app. A backend whose terminals outlive the
-/// app records it with the terminal, so the next launch puts the terminal
-/// back in the same place.
+/// Where a session sits in the app, and the id that names it. A backend
+/// whose terminals outlive the app records it with the terminal, so the next
+/// launch puts the terminal back in the same place under the same id.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Placement {
     /// The checkout the session belongs to. `None` is the home tab.
@@ -92,6 +92,9 @@ pub struct Placement {
     pub position: usize,
     /// How other clients name the workspace, as `<project> / <checkout>`.
     pub title: Option<String>,
+    /// The session's id, which the programs in the terminal carry in
+    /// [`crate::SESSION_ID_ENV`].
+    pub session_id: Option<u64>,
 }
 
 /// A terminal that a backend keeps and no session holds, with the place

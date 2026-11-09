@@ -222,7 +222,12 @@ fn adopted(backend: &HerdrCore, count: usize) -> Vec<Adoptable> {
 }
 
 fn placed(workspace: &Path, position: usize, title: &str) -> Placement {
-    Placement { workspace: Some(workspace.to_path_buf()), position, title: Some(title.into()) }
+    Placement {
+        workspace: Some(workspace.to_path_buf()),
+        position,
+        title: Some(title.into()),
+        session_id: None,
+    }
 }
 
 fn screen(term: &FairMutex<Term<Exits>>) -> String {

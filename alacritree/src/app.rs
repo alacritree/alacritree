@@ -1264,7 +1264,8 @@ impl AlacritreeApp {
     /// workspace and position its labels record. A workspace path inside no
     /// known checkout means the home tab. Focus stays where it is. The
     /// terminal becomes its workspace's active session only when that
-    /// workspace has none.
+    /// workspace has none. The session takes back the id its labels record,
+    /// which the terminal's programs carry, unless a session holds it.
     fn adopt_core_terminals(&mut self, ctx: &Context) {
         let Some(cores) = &self.cores else { return };
         let mut adoptable: Vec<_> = cores
@@ -1276,11 +1277,14 @@ impl AlacritreeApp {
             .collect();
         // Each insert counts the ones before it, so the lowest goes first.
         adoptable.sort_by_key(|(_, _, adoptable)| adoptable.placement.position);
+        for id in adoptable.iter().filter_map(|(_, _, found)| found.placement.session_id) {
+            crate::session::reserve_session_id(id);
+        }
         for (side, core, Adoptable { terminal, placement }) in adoptable {
             let workspace =
                 placement.workspace.as_deref().and_then(|path| self.workspace_for_path(path));
             let (size, cell_size) = self.next_spawn_geometry();
-            let (session, request) = Session::pending_attach(
+            let (mut session, request) = Session::pending_attach(
                 ctx.clone(),
                 &self.config,
                 workspace.clone(),
@@ -1292,6 +1296,11 @@ impl AlacritreeApp {
                     Side::Native => None,
                 },
             );
+            if let Some(recorded) =
+                placement.session_id.filter(|&id| self.sessions.iter().all(|s| s.id != id))
+            {
+                session.id = recorded;
+            }
             let id = session.id;
             self.sessions.insert_at(session, placement.position);
             if !self.sessions.has_active(&workspace) {
@@ -1525,6 +1534,7 @@ impl AlacritreeApp {
             position: self.sessions.iter().filter(|s| s.working_directory == workspace).count(),
             title: workspace_title(&self.projects, &workspace),
             workspace: workspace.clone(),
+            ..request.placement
         };
         let id = self.open_session(session, request, preferred)?;
         self.sessions.set_active(workspace, id);
@@ -5901,8 +5911,11 @@ mod tests {
     }
 
     fn adoptable(terminal: &str, workspace: Option<&Path>, position: usize) -> Adoptable {
-        let placement =
-            Placement { workspace: workspace.map(Path::to_path_buf), position, title: None };
+        let placement = Placement {
+            workspace: workspace.map(Path::to_path_buf),
+            position,
+            ..Placement::default()
+        };
         Adoptable { terminal: terminal.into(), placement }
     }
 
@@ -5987,6 +6000,98 @@ mod tests {
         assert_eq!(app.current_workspace, None);
         assert_eq!(app.sessions.active(&None), Some(home_shell));
         assert_eq!(app.sessions.active(&checkout), Some(checkout_shell));
+    }
+
+    fn adoptable_as(terminal: &str, workspace: Option<&Path>, id: SessionId) -> Adoptable {
+        let mut adoptable = adoptable(terminal, workspace, 0);
+        adoptable.placement.session_id = Some(id);
+        adoptable
+    }
+
+    /// Send `request` through the IPC channel, as a CLI or MCP client does,
+    /// and answer it as the next frame would.
+    fn ipc(
+        app: &mut AlacritreeApp,
+        ctx: &Context,
+        request: ipc::protocol::IpcRequest,
+    ) -> ipc::protocol::IpcResult {
+        let crate::ipc::route::Route::App(request) = request.into() else {
+            panic!("a request the app answers");
+        };
+        let (calls, rx) = mpsc::channel();
+        let (reply_tx, reply) = mpsc::channel();
+        app.ipc_rx = Some(rx);
+        calls.send(crate::ipc::server::AppCall { request, reply_tx }).expect("the app listens");
+        app.process_ipc_calls(ctx);
+        reply.try_recv().expect("an answer in the same frame")
+    }
+
+    /// The programs in a kept terminal carry the id its labels record, so
+    /// the next launch gives the session that id back. A shell that opens
+    /// before the core answers, as the home tab's does at startup, leaves
+    /// it free.
+    #[test]
+    fn a_kept_terminal_answers_to_the_id_its_labels_record() {
+        let (mut app, _native, core, dir) = app_with_a_checkout_and_a_core();
+        let checkout = Some(dir.path().to_path_buf());
+        let ctx = Context::default();
+        let home_shell = app.spawn_session(&ctx, None).expect("a home shell");
+        core.set_adoptable(vec![adoptable_as("t7", None, 1)]);
+
+        app.poll_core_terminals(&ctx);
+
+        assert_eq!(ids_in(&app, &None), [1, home_shell]);
+        let moved = ipc(&mut app, &ctx, ipc::protocol::IpcRequest::MoveSession {
+            session_id: 1,
+            path: dir.path().to_path_buf(),
+        });
+        assert!(moved.is_ok(), "{moved:?}");
+        assert_eq!(ids_in(&app, &checkout), [1]);
+        assert_eq!(ids_in(&app, &None), [home_shell]);
+    }
+
+    /// A program from an earlier launch still carries an id that launch
+    /// handed out. No session of this launch answers to it.
+    #[test]
+    fn an_id_from_an_earlier_launch_moves_no_session() {
+        let (mut app, _native, _core, dir) = app_with_a_checkout_and_a_core();
+        let ctx = Context::default();
+        for _ in 0..3 {
+            app.spawn_session(&ctx, None).expect("a home shell");
+        }
+        let before = ids_in(&app, &None);
+
+        for stale in 1..=3 {
+            let moved = ipc(&mut app, &ctx, ipc::protocol::IpcRequest::MoveSession {
+                session_id: stale,
+                path: dir.path().to_path_buf(),
+            });
+            assert_eq!(moved, Err(format!("no session with id {stale}. See list_sessions")));
+        }
+        assert_eq!(ids_in(&app, &None), before);
+    }
+
+    /// Labels may record an id this launch has yet to hand out, as after
+    /// the clock steps back. Two terminals may record the same id. Every
+    /// session still ends up with an id of its own.
+    #[test]
+    fn a_session_opened_after_adoption_takes_an_id_no_session_holds() {
+        let (mut app, _native, core, _dir) = app_with_a_checkout_and_a_core();
+        let ctx = Context::default();
+        let next = app.spawn_session(&ctx, None).expect("a home shell") + 1;
+        let recorded = next + 2;
+        core.set_adoptable(vec![
+            adoptable_as("t7", None, recorded),
+            adoptable_as("t8", None, recorded),
+        ]);
+        app.poll_core_terminals(&ctx);
+        for _ in 0..5 {
+            app.spawn_session(&ctx, None).expect("a home shell");
+        }
+
+        let ids: Vec<SessionId> = app.sessions.iter().map(|s| s.id).collect();
+        assert_eq!(ids.iter().filter(|&&id| id == recorded).count(), 1, "{ids:?}");
+        assert_eq!(ids.iter().collect::<HashSet<_>>().len(), ids.len(), "{ids:?}");
     }
 
     /// Kept terminals come back in their recorded order whatever order the
@@ -6106,9 +6211,16 @@ mod tests {
         let name = dir.path().file_name().unwrap().to_string_lossy().into_owned();
         let title = Some(format!("{name} / {name}"));
 
+        let session_id = Some(second);
+
         assert_eq!(
             placement(second),
-            Some(Placement { workspace: checkout.clone(), position: 1, title: title.clone() })
+            Some(Placement {
+                workspace: checkout.clone(),
+                position: 1,
+                title: title.clone(),
+                session_id
+            })
         );
 
         app.close_session(&ctx, first);
@@ -6116,7 +6228,7 @@ mod tests {
 
         assert_eq!(
             placement(second),
-            Some(Placement { workspace: checkout.clone(), position: 0, title })
+            Some(Placement { workspace: checkout.clone(), position: 0, title, session_id })
         );
 
         app.rename_project(dir.path(), Some("renamed".into())).expect("the project");
@@ -6125,7 +6237,7 @@ mod tests {
         let renamed = Some(format!("renamed / {name}"));
         assert_eq!(
             placement(second),
-            Some(Placement { workspace: checkout, position: 0, title: renamed })
+            Some(Placement { workspace: checkout, position: 0, title: renamed, session_id })
         );
     }
 
