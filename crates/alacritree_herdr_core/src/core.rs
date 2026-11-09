@@ -187,8 +187,9 @@ impl SideCore {
         }
         log::warn!(
             "herdr-core ({distro}): the core listens at {at}, where hc run from wsl.exe does not \
-             look. Reaching it there for this run. Set `socket` in the distro's herdr-core \
-             config.toml to make it permanent."
+             look. Reaching it there for this run. To make it permanent, set `socket` in the \
+             distro's herdr-core config.toml, or export `HC_SOCKET` when the core's session is \
+             not `default`."
         );
         *socket = Some(at);
         true
