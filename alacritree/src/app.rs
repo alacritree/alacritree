@@ -11352,6 +11352,7 @@ mod tests {
 
     /// A shell in a distro reports its cwd as the UNC path Windows reaches it
     /// by, and the tooltip names it the way the distro does.
+    #[cfg(windows)]
     #[test]
     fn a_session_rows_tooltip_spells_a_wsl_cwd_the_distros_way() {
         let icons = PaintedIcons::new(
