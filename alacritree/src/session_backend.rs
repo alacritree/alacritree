@@ -106,6 +106,16 @@ impl Cores {
         }
     }
 
+    /// Call `wake` whenever any side's core reports a terminal to adopt or
+    /// to list.
+    pub(crate) fn set_waker(&self, wake: impl Fn() + Send + Sync + 'static) {
+        match self {
+            Self::HerdrCore(cores) => cores.set_waker(wake),
+            #[cfg(test)]
+            Self::Scripted(..) => {},
+        }
+    }
+
     /// Open each distro's core connection when its WSL helper starts.
     pub(crate) fn open_beside_wsl_helpers(&self) {
         match self {

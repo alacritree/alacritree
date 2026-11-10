@@ -1,11 +1,10 @@
-//! The core's terminals that alacritree did not create, listed as the panes
-//! of a multiplexer.
+//! The terminals that alacritree did not create in each side's core, listed
+//! as the panes of a multiplexer.
 //!
-//! The listing reads the connection that sessions share, so a poll makes no
-//! process call. A pane is a session backend's terminal: the app opens it
-//! through [`crate::HerdrCore`], and its session never kills it on close.
-//! Only a core that already serves is followed, since `hc connect` would
-//! start one just to be listed.
+//! A poll reads the connections that sessions share and makes no process
+//! call. The app opens a pane through its side's [`crate::HerdrCore`] and
+//! never kills it on close. Only a serving native core is followed, since
+//! `hc connect` would start one and a look into a distro starts `wsl.exe`.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -21,7 +20,7 @@ use alacritree_multiplexer::{
 use serde_json::{Value, json};
 
 use crate::connection::{Facts, State};
-use crate::{HerdrCore, HerdrCoreConfig, labels};
+use crate::{HerdrCoreConfig, HerdrCores, labels};
 
 /// How long a look for a serving core that found none waits before the
 /// next one.
@@ -41,11 +40,12 @@ pub enum PanesError {
     NoAttachClient,
 }
 
-/// The native core's terminals that carry no `alacritree.workspace` label.
+/// Every side's terminals that carry no `alacritree.workspace` label.
 pub struct HerdrCorePanes {
-    core: HerdrCore,
+    cores: HerdrCores,
     config: HerdrCoreConfig,
-    panes: Vec<Pane>,
+    /// Native first, then each distro, each side's oldest terminal first.
+    panes: Vec<(Side, Pane)>,
     generation: u64,
     /// A look for a serving core is running.
     following: Arc<AtomicBool>,
@@ -58,11 +58,11 @@ pub struct HerdrCorePanes {
 }
 
 impl HerdrCorePanes {
-    /// `core` is the backend the app's herdr-core sessions run on, so the
-    /// listing and the sessions share one connection.
-    pub fn new(core: HerdrCore, config: HerdrCoreConfig) -> Self {
+    /// `cores` are the backends the app's herdr-core sessions run on, so the
+    /// listing and the sessions share one connection per side.
+    pub fn new(cores: HerdrCores, config: HerdrCoreConfig) -> Self {
         Self {
-            core,
+            cores,
             config,
             panes: Vec::new(),
             generation: 0,
@@ -77,27 +77,28 @@ impl HerdrCorePanes {
 
     /// List `panes` in place of what the core reports, from now on.
     #[cfg(feature = "test-support")]
-    pub fn adopt_for_test(&mut self, panes: Vec<Pane>) {
+    pub fn adopt_for_test(&mut self, panes: Vec<(Side, Pane)>) {
         self.fixed = true;
         self.set_panes(panes);
     }
 
-    fn set_panes(&mut self, panes: Vec<Pane>) {
+    fn set_panes(&mut self, panes: Vec<(Side, Pane)>) {
         if panes != self.panes {
             self.panes = panes;
             self.generation = self.generation.wrapping_add(1);
         }
     }
 
-    /// Open a connection on a thread when a core serves, at most once per
-    /// [`FOLLOW_INTERVAL`], and wake the app once it is open.
+    /// Open the native connection on a thread when its core serves, at most
+    /// once per [`FOLLOW_INTERVAL`], and wake the app once it is open.
     fn follow(&mut self) {
         let due = self.followed_at.is_none_or(|at| at.elapsed() >= FOLLOW_INTERVAL);
         if !due || self.following.swap(true, Ordering::AcqRel) {
             return;
         }
         self.followed_at = Some(Instant::now());
-        let (core, following) = (self.core.core.clone(), self.following.clone());
+        let core = self.cores.on(&Side::Native).core;
+        let following = self.following.clone();
         let spawned = std::thread::Builder::new().name("hc-follow".into()).spawn(move || {
             if core.serving() && core.connection().is_ok() {
                 if let Some(wake) = core.waker().get() {
@@ -152,8 +153,8 @@ impl MultiplexerSession for HerdrCorePanes {
         &self.config.icon
     }
 
-    /// The core's own event stream keeps the connection's facts current, so
-    /// a poll only reads them. With no connection the listing is empty.
+    /// Each core's own event stream keeps its connection's facts current, so
+    /// a poll only reads them. A side with no connection lists nothing.
     fn poll(&mut self, _attached: &dyn Fn(&Side) -> bool) {
         #[cfg(feature = "test-support")]
         if self.fixed {
@@ -162,14 +163,27 @@ impl MultiplexerSession for HerdrCorePanes {
         if !self.config.enabled {
             return self.set_panes(Vec::new());
         }
-        let Some(connection) = self.core.core.live() else {
-            self.follow();
-            return self.set_panes(Vec::new());
-        };
-        let mut panes = connection.pick_terminals(foreign_pane);
-        // Addresses count up from `t1`, so the oldest terminal lists first.
-        panes.sort_by(|a, b| {
-            (a.terminal_id.len(), &a.terminal_id).cmp(&(b.terminal_id.len(), &b.terminal_id))
+        let mut panes = Vec::new();
+        for (side, core) in self.cores.all() {
+            match core.core.live() {
+                Some(connection) => panes.extend(
+                    connection
+                        .pick_terminals(foreign_pane)
+                        .into_iter()
+                        .map(|pane| (side.clone(), pane)),
+                ),
+                None if side == Side::Native => self.follow(),
+                None => {},
+            }
+        }
+        // Addresses count up from `t1`, so each side's oldest terminal lists
+        // first, and the native side lists before every distro.
+        panes.sort_by_cached_key(|(side, pane)| {
+            let distro = match side {
+                Side::Native => None,
+                Side::Wsl(distro) => Some(distro.clone()),
+            };
+            (distro, pane.terminal_id.len(), pane.terminal_id.clone())
         });
         self.set_panes(panes);
     }
@@ -179,13 +193,11 @@ impl MultiplexerSession for HerdrCorePanes {
     }
 
     fn panes(&self) -> Vec<(&Side, &Pane)> {
-        self.panes.iter().map(|pane| (&Side::Native, pane)).collect()
+        self.panes.iter().map(|(side, pane)| (side, pane)).collect()
     }
 
     fn pane_index(&self, side: &Side, terminal_id: &str) -> Option<usize> {
-        (*side == Side::Native)
-            .then(|| self.panes.iter().position(|pane| pane.terminal_id == terminal_id))
-            .flatten()
+        self.panes.iter().position(|(at, pane)| at == side && pane.terminal_id == terminal_id)
     }
 
     fn pane_count(&self) -> usize {
@@ -193,7 +205,7 @@ impl MultiplexerSession for HerdrCorePanes {
     }
 
     fn find(&self, side: &Side, terminal_id: &str) -> Option<&Pane> {
-        self.pane_index(side, terminal_id).map(|at| &self.panes[at])
+        self.pane_index(side, terminal_id).map(|at| &self.panes[at].1)
     }
 
     fn retained(&self, side: &Side, terminal_id: &str) -> Option<(&Pane, bool)> {
@@ -208,10 +220,10 @@ impl MultiplexerSession for HerdrCorePanes {
         }
         self.panes
             .iter()
-            .map(|pane| (self.key(&pane.terminal_id), pane))
-            .filter(|(key, _)| !claimed.contains(key))
-            .map(|(key, pane)| ListedPane {
-                workspace: pane.workspace(&Side::Native, workspaces),
+            .map(|(side, pane)| (side, self.key(side, &pane.terminal_id), pane))
+            .filter(|(_, key, _)| !claimed.contains(key))
+            .map(|(side, key, pane)| ListedPane {
+                workspace: pane.workspace(side, workspaces),
                 key,
                 pane,
             })
@@ -294,15 +306,15 @@ impl MultiplexerSession for HerdrCorePanes {
     }
 
     fn kill_terminal(&mut self, key: &PaneKey) {
-        self.core.kill_terminal(&key.terminal_id);
+        self.cores.on(&key.side).kill_terminal(&key.terminal_id);
     }
 }
 
 impl HerdrCorePanes {
-    fn key(&self, terminal_id: &str) -> PaneKey {
+    fn key(&self, side: &Side, terminal_id: &str) -> PaneKey {
         PaneKey {
             multiplexer: MultiplexerKind::HerdrCore,
-            side: Side::Native,
+            side: side.clone(),
             terminal_id: terminal_id.to_string(),
         }
     }
