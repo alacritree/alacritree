@@ -15,7 +15,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use alacritree_herdr_core::{
-    CoreElsewhere, HerdrCore, HerdrCoreConfig, HerdrCoreHandle, HerdrCorePanes, Remedy,
+    CoreElsewhere, HerdrCore, HerdrCoreConfig, HerdrCoreHandle, HerdrCorePanes, HerdrCores, Remedy,
 };
 use alacritree_multiplexer::{MultiplexerSession, Side};
 use alacritree_session_backend::{
@@ -642,6 +642,57 @@ fn a_terminal_an_agent_labels_with_a_workspace_is_adoptable_once() {
     assert_eq!(found[0].terminal, address);
     assert_eq!(found[0].placement.workspace.as_deref(), Some(core.dir()));
     assert!(SessionBackend::<HerdrCoreHandle>::adoptable(&backend).is_empty());
+}
+
+/// The labels of a terminal that an agent starts in a workspace while the
+/// connection is up, once alacritree adopts it with `share_with_herdr_app`
+/// set to `share`.
+fn labels_once_adopted(share: bool) -> serde_json::Map<String, Value> {
+    let core = Core::start();
+    let config = HerdrCoreConfig { share_with_herdr_app: share, ..HerdrCoreConfig::default() };
+    let backend = HerdrCores::new(&config).on(&Side::Native);
+    SessionBackend::<HerdrCoreHandle>::ready(&backend).expect("the backend connects");
+    let label = format!("alacritree.workspace={}", core.dir().display());
+    let program = if cfg!(windows) { "cmd.exe" } else { "sh" };
+    let run = hc(&["run", "--bg", "--keep", "--no-parent", "--label", &label, "--json", program]);
+    assert!(run.status.success(), "{run:?}");
+    let address = serde_json::from_slice::<Value>(&run.stdout).expect("run answers JSON")
+        ["address"]
+        .as_str()
+        .expect("an address")
+        .to_string();
+
+    let found = adopted(&backend, 1);
+    assert_eq!(found[0].terminal, address);
+
+    let labels = || core.get(&address)["labels"].as_object().cloned().unwrap_or_default();
+    let shown = || labels().contains_key("herdr.space");
+    if share {
+        wait_until("the herdr-app labels", PATIENCE, shown);
+    } else {
+        // The label call goes out without an answer, so give it time to land.
+        std::thread::sleep(Duration::from_secs(1));
+    }
+    labels()
+}
+
+/// herdr-app shows a terminal an agent puts into a workspace mid-run, in
+/// that checkout's space, without waiting for the next launch.
+#[test]
+#[ignore = "needs hc on PATH"]
+fn a_terminal_adopted_mid_run_is_shared_with_herdr_app() {
+    let labels = labels_once_adopted(true);
+
+    assert!(labels["herdr.space"].as_str().is_some_and(|space| space.starts_with("at-")));
+    assert!(labels.contains_key("herdr.tab"), "{labels:?}");
+}
+
+#[test]
+#[ignore = "needs hc on PATH"]
+fn a_terminal_adopted_mid_run_without_sharing_gets_no_herdr_label() {
+    let labels = labels_once_adopted(false);
+
+    assert!(labels.keys().all(|key| !key.starts_with("herdr.")), "{labels:?}");
 }
 
 /// A core of `session` with a live terminal, on a socket hc stops looking
