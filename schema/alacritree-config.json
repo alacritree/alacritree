@@ -2609,6 +2609,18 @@
           "description": "Distro-side mount point for Windows drives, mirroring wsl.conf's\n`[automount] root`. Only used for paths *we* translate (git output\nfrom inside a distro); `wsl.exe --cd` translates with the distro's\nreal mount table regardless of this value. Unset means `/mnt`; the\nkey stays optional so the deprecated `[ui.wsl]` spelling can still win\nwhen this one is absent.",
           "type": "string"
         },
+        "ignore_distros": {
+          "default": [
+            "docker-desktop*",
+            "rancher-desktop*",
+            "podman-machine-*"
+          ],
+          "description": "Distros alacritree never lists, starts a helper in, or probes for\ntools. An entry ending in `*` matches every name with that prefix, and\nany other entry matches one whole name. Matching ignores case, as WSL\ndoes. Setting this list replaces the built-in one.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "resident_helper": {
           "default": true,
           "description": "Keep a resident helper process per distro for foreground probes,\nbatched git queries, and tool discovery. `false` restores one-shot\nwsl.exe spawns everywhere; WSL sessions then always report \"no\nTUI\", so FocusLeft/FocusRight always move panel focus.",
