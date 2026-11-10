@@ -561,6 +561,10 @@ pub struct AlacritreeApp {
     /// The core `[integrations.herdr_core] session_backend` prefers on each
     /// side, or `None` when it prefers native.
     cores: Option<Cores>,
+    /// Kept terminals whose labels name a workspace the sidebar does not
+    /// list yet. They wait in `adopt_core_terminals` while a project
+    /// discovery is in flight, since that discovery may list it.
+    unplaced_terminals: Vec<(Side, Backend, Adoptable)>,
     /// What opens a herdr-core pane, a terminal that alacritree did not
     /// create, on the pane's side. It shares every side's core of `cores`.
     pane_backends: Cores,
@@ -705,6 +709,7 @@ impl AlacritreeApp {
             project_refreshes: Default::default(),
             session_backend: Backend::native(),
             cores,
+            unplaced_terminals: Vec::new(),
             pane_backends: Cores::HerdrCore(herdr_cores),
             core_connect: None,
             pending_spawns: Default::default(),
@@ -1263,20 +1268,28 @@ impl AlacritreeApp {
     /// terminal becomes its workspace's active session only when that
     /// workspace has none. The session takes back the id its labels record,
     /// which the terminal's programs carry, unless a session holds it.
+    ///
+    /// A terminal whose workspace the sidebar does not list waits while a
+    /// project discovery is in flight. A WSL project lists its worktrees
+    /// only after its discovery, and placing the terminal before that puts
+    /// it in an enclosing checkout, which its labels then record for good.
     fn adopt_core_terminals(&mut self, ctx: &Context) {
         let Some(cores) = &self.cores else { return };
-        let mut adoptable: Vec<_> = cores
-            .all()
-            .into_iter()
-            .flat_map(|(side, core)| {
-                core.adoptable().into_iter().map(move |found| (side.clone(), core.clone(), found))
-            })
-            .collect();
-        // Each insert counts the ones before it, so the lowest goes first.
-        adoptable.sort_by_key(|(_, _, adoptable)| adoptable.placement.position);
+        let mut adoptable = std::mem::take(&mut self.unplaced_terminals);
+        adoptable.extend(cores.all().into_iter().flat_map(|(side, core)| {
+            core.adoptable().into_iter().map(move |found| (side.clone(), core.clone(), found))
+        }));
         for id in adoptable.iter().filter_map(|(_, _, found)| found.placement.session_id) {
             crate::session::reserve_session_id(id);
         }
+        let discovering = !self.project_refreshes.is_empty();
+        let (waiting, mut adoptable): (Vec<_>, Vec<_>) =
+            adoptable.into_iter().partition(|(_, _, found)| {
+                discovering && !self.lists_workspace(&found.placement.workspace)
+            });
+        self.unplaced_terminals = waiting;
+        // Each insert counts the ones before it, so the lowest goes first.
+        adoptable.sort_by_key(|(_, _, adoptable)| adoptable.placement.position);
         for (side, core, Adoptable { terminal, placement }) in adoptable {
             let workspace =
                 placement.workspace.as_deref().and_then(|path| self.workspace_for_path(path));
@@ -3622,6 +3635,15 @@ impl AlacritreeApp {
         self.projects.iter().flat_map(|p| &p.checkouts).find_map(|wt| {
             (wt.path == path || canonical.as_deref() == Some(wt.path.as_path()))
                 .then(|| wt.path.clone())
+        })
+    }
+
+    /// Whether `workspace` is the home tab or a checkout the sidebar lists,
+    /// spelled as the sidebar spells it. It touches no filesystem, since it
+    /// runs every frame while a discovery is in flight.
+    fn lists_workspace(&self, workspace: &WorkspaceKey) -> bool {
+        workspace.as_ref().is_none_or(|path| {
+            self.projects.iter().flat_map(|p| &p.checkouts).any(|wt| wt.path == *path)
         })
     }
 }
@@ -6112,6 +6134,64 @@ mod tests {
         assert!(adopted.is_sorted(), "sessions follow the attach order: {adopted:?}");
         assert_eq!(app.sessions.active(&checkout), Some(adopted[0]));
         assert_eq!(app.current_workspace, None);
+    }
+
+    /// A WSL project lists its worktrees only once its discovery lands, and
+    /// a worktree sits beside the repository, so before that the distro's
+    /// home is the only checkout that holds its path. A kept terminal of
+    /// that worktree waits for the discovery rather than joining the home,
+    /// which would also stamp the home into its labels for every later
+    /// launch.
+    #[test]
+    fn a_kept_terminal_waits_for_the_discovery_that_lists_its_worktree() {
+        let (mut app, _native, core, home) = app_with_a_checkout_and_a_core();
+        let repo = home.path().join("repo");
+        let worktree = home.path().join("repo_worktrees").join("feature");
+        app.projects.push(Project::placeholder(repo.clone()));
+        let mut discovered = Project::placeholder(repo.clone());
+        let main = discovered.checkouts[0].clone();
+        discovered.checkouts.push(Checkout {
+            name: "feature".into(),
+            path: worktree.clone(),
+            is_main: false,
+            ..main
+        });
+        let (release, gate) = mpsc::channel::<()>();
+        app.project_refreshes.start(repo, || {
+            jobs::pool().spawn(jobs::Priority::Background, move |_| {
+                let _ = gate.recv();
+                Discovered { project: discovered, authoritative: true, failure: None }
+            })
+        });
+        core.set_adoptable(vec![adoptable("t1", Some(&worktree), 0)]);
+        let ctx = Context::default();
+        let frame = |app: &mut AlacritreeApp| {
+            app.poll_project_refreshes();
+            app.poll_core_terminals(&ctx);
+            app.place_sessions();
+        };
+
+        frame(&mut app);
+
+        let in_home = ids_in(&app, &Some(home.path().to_path_buf()));
+        assert!(in_home.is_empty(), "the worktree's terminal joined the home: {in_home:?}");
+
+        release.send(()).expect("the discovery waits");
+        let checkout = Some(worktree.clone());
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while ids_in(&app, &checkout).is_empty() && Instant::now() < deadline {
+            frame(&mut app);
+            std::thread::yield_now();
+        }
+
+        assert_eq!(ids_in(&app, &checkout).len(), 1);
+        let placed = core
+            .records()
+            .into_iter()
+            .find(|record| record.terminal.as_deref() == Some("t1"))
+            .and_then(|record| record.placement)
+            .map(|placement| placement.workspace);
+        assert_eq!(placed, Some(checkout), "the labels name the worktree");
     }
 
     /// The startup shell waits for the core's listing, so a relaunch puts
