@@ -214,10 +214,38 @@ pub struct WslDistro {
     pub is_default: bool,
 }
 
-/// Docker/Rancher register utility distros the user never shells into.
+/// Docker, Rancher and Podman register VM distros the user never shells into.
+/// Each has no tools alacritree looks for, so a helper or probe there is wasted.
+pub const DEFAULT_IGNORED_DISTROS: &[&str] =
+    &["docker-desktop*", "rancher-desktop*", "podman-machine-*"];
+
+/// Distro name patterns alacritree skips everywhere. Set once at startup from
+/// `[wsl] ignore_distros`. A caller that runs before that, such as a CLI
+/// subcommand, gets [`DEFAULT_IGNORED_DISTROS`].
+static IGNORED_DISTROS: OnceLock<Vec<String>> = OnceLock::new();
+
+pub fn set_ignored_distros(patterns: Vec<String>) {
+    let _ = IGNORED_DISTROS.set(patterns);
+}
+
 #[cfg(any(windows, test))]
-fn is_utility_distro(name: &str) -> bool {
-    name.starts_with("docker-desktop") || name.starts_with("rancher-desktop")
+fn is_ignored_distro(name: &str) -> bool {
+    match IGNORED_DISTROS.get() {
+        Some(patterns) => patterns.iter().any(|p| matches_distro_pattern(p, name)),
+        None => DEFAULT_IGNORED_DISTROS.iter().any(|p| matches_distro_pattern(p, name)),
+    }
+}
+
+/// A trailing `*` matches by prefix, anything else matches the whole name.
+/// WSL treats distro names case-insensitively, so this does too.
+#[cfg(any(windows, test))]
+fn matches_distro_pattern(pattern: &str, name: &str) -> bool {
+    match pattern.strip_suffix('*') {
+        Some(prefix) => {
+            name.get(..prefix.len()).is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+        },
+        None => name.eq_ignore_ascii_case(pattern),
+    }
 }
 
 /// The answer every caller shares. A distro registered or unregistered
@@ -305,7 +333,7 @@ fn registry_distros() -> Option<Vec<WslDistro>> {
     for guid in lxss.enum_keys().flatten() {
         let Ok(subkey) = lxss.open_subkey(&guid) else { continue };
         let Ok(name) = subkey.get_value::<String, _>("DistributionName") else { continue };
-        if is_utility_distro(&name) {
+        if is_ignored_distro(&name) {
             continue;
         }
         out.push(WslDistro { is_default: guid == default_guid, name });
@@ -382,7 +410,7 @@ fn parse_distro_list(stdout: &[u8]) -> Vec<WslDistro> {
     };
     text.lines()
         .map(str::trim)
-        .filter(|line| !line.is_empty() && !is_utility_distro(line))
+        .filter(|line| !line.is_empty() && !is_ignored_distro(line))
         .enumerate()
         .map(|(i, name)| WslDistro { name: name.to_string(), is_default: i == 0 })
         .collect()
@@ -1078,7 +1106,7 @@ mod tests {
 
     #[test]
     fn parses_utf8_distro_list() {
-        let out = b"kali-linux\nUbuntu\ndocker-desktop\n";
+        let out = b"kali-linux\nUbuntu\ndocker-desktop\nPodman-Machine-Default\n";
         let distros = parse_distro_list(out);
         assert_eq!(distros.len(), 2);
         assert_eq!(distros[0], WslDistro { name: "kali-linux".to_string(), is_default: true });
@@ -1102,6 +1130,29 @@ mod tests {
                 is_default: false,
             }];
         assert_eq!(running_names(b"Ubuntu\r\n", &registered), vec!["Ubuntu".to_string()]);
+    }
+
+    #[test]
+    fn running_names_drops_ignored_distros() {
+        let registered =
+            vec![WslDistro { name: "Ubuntu".to_string(), is_default: true }, WslDistro {
+                name: "podman-machine-default".to_string(),
+                is_default: false,
+            }];
+        let out = b"podman-machine-default\r\nUbuntu\r\n";
+        assert_eq!(running_names(out, &registered), vec!["Ubuntu".to_string()]);
+    }
+
+    #[test]
+    fn distro_pattern_matches_whole_name_or_starred_prefix() {
+        assert!(matches_distro_pattern("Ubuntu", "Ubuntu"));
+        assert!(matches_distro_pattern("ubuntu", "Ubuntu"));
+        assert!(!matches_distro_pattern("Ubuntu", "Ubuntu-22.04"));
+        assert!(matches_distro_pattern("Ubuntu*", "Ubuntu-22.04"));
+        assert!(matches_distro_pattern("podman-machine-*", "Podman-Machine-Default"));
+        assert!(!matches_distro_pattern("Ubuntu*", "kali-linux"));
+        assert!(!matches_distro_pattern("Ubuntu-22.04*", "Ubuntu"));
+        assert!(matches_distro_pattern("*", "anything"));
     }
 
     /// With nothing running, wsl.exe prints prose where the list would be.

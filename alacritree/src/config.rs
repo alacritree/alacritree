@@ -67,6 +67,8 @@ pub struct Config {
     pub wsl_automount_root: String,
     pub wsl_resident_helper: bool,
     pub wsl_warm_spare: bool,
+    /// `[wsl] ignore_distros`: distro name patterns alacritree skips.
+    pub wsl_ignore_distros: Vec<String>,
     pub profiles: Vec<Profile>,
     /// Validated at load: always names an entry in `profiles` when `Some`.
     pub default_profile: Option<String>,
@@ -1581,6 +1583,7 @@ impl Default for Config {
             wsl_automount_root: "/mnt".to_string(),
             wsl_resident_helper: true,
             wsl_warm_spare: false,
+            wsl_ignore_distros: default_ignored_distros(),
             profiles: Vec::new(),
             default_profile: None,
             integrations: IntegrationsConfig::default(),
@@ -2643,12 +2646,26 @@ struct RawWsl {
     /// is already past that point. Costs one idle `wsl.exe` and `sh` per
     /// distro. Read at startup.
     warm_spare: bool,
+    /// Distros alacritree never lists, starts a helper in, or probes for
+    /// tools. An entry ending in `*` matches every name with that prefix, and
+    /// any other entry matches one whole name. Matching ignores case, as WSL
+    /// does. Setting this list replaces the built-in one.
+    ignore_distros: Vec<String>,
 }
 
 impl Default for RawWsl {
     fn default() -> Self {
-        Self { resident_helper: true, automount_root: None, warm_spare: false }
+        Self {
+            resident_helper: true,
+            automount_root: None,
+            warm_spare: false,
+            ignore_distros: default_ignored_distros(),
+        }
     }
+}
+
+fn default_ignored_distros() -> Vec<String> {
+    alacritree_common::wsl::DEFAULT_IGNORED_DISTROS.iter().map(|p| p.to_string()).collect()
 }
 
 /// `[ui.icons]`: sidebar glyph overrides. A bare string sets the glyph
@@ -3717,6 +3734,7 @@ impl RawConfig {
             .unwrap_or_else(|| "/mnt".to_string());
         let wsl_resident_helper = self.wsl.resident_helper;
         let wsl_warm_spare = self.wsl.warm_spare;
+        let wsl_ignore_distros = self.wsl.ignore_distros;
 
         // ---- UI Font ----
         let ui_font = UiFont {
@@ -3784,6 +3802,7 @@ impl RawConfig {
             wsl_automount_root,
             wsl_resident_helper,
             wsl_warm_spare,
+            wsl_ignore_distros,
             profiles,
             default_profile,
             integrations: self.integrations.resolve(moved),

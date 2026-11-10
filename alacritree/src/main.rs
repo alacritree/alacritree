@@ -102,6 +102,7 @@ fn main() -> eframe::Result<()> {
         state::set_dir(dir);
     }
     wsl::set_automount_root(config.wsl_automount_root.clone());
+    wsl::set_ignored_distros(config.wsl_ignore_distros.clone());
     wsl_helper::set_enabled(config.wsl_resident_helper);
     wsl_spare::set_enabled(config.wsl_warm_spare);
     tools::configure(config.integrations.tool_paths());
