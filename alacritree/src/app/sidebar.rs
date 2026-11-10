@@ -44,10 +44,7 @@ impl AlacritreeApp {
         let Some(pointer) = file_drop::screen_pointer(ctx) else {
             return;
         };
-        // winit's `DragOver` handler emits no event, so moving the cursor
-        // mid-drag wakes nothing and the polled position would stay frozen at
-        // wherever the drag entered. This is the only place the feature drives
-        // the loop, and it stops when the drag leaves or drops.
+        // winit's `DragOver` emits no event, so nothing else wakes a drag.
         ctx.request_repaint();
         let active_is_scratchpad =
             self.active_session_index().is_some_and(|idx| self.sessions[idx].scratchpad.is_some());
@@ -163,13 +160,8 @@ impl AlacritreeApp {
             HashMap::new()
         };
 
-        // Child names are resolved before the matcher borrows the filter: the
-        // names come off `&self` helpers and the matcher wants `&mut
-        // self.sidebar.filter`, so the two cannot be live at once. Skipped
-        // outright by `search_reaches_children` with an empty query, where
-        // `matches` answers true for everything and every workspace holding
-        // any child would surface, and with `[ui] search_depth` at its
-        // "workspaces" default, which never descends past a workspace name.
+        // Resolved before the matcher takes `&mut self.sidebar.filter`, since
+        // the names come off `&self` helpers.
         let child_matches: HashMap<SidebarRow, bool> =
             if search_reaches_children(self.search_depth, self.sidebar.filter.query().is_empty()) {
                 let names: Vec<(SidebarRow, String)> = listed
@@ -286,11 +278,8 @@ impl AlacritreeApp {
                 ui.separator();
 
                 sidebar_scroll_area(ui, theme.scroll_align, |ui| {
-                    // Inter-group spacing is emitted above the group that
-                    // follows, never after the last one: trailing padding
-                    // makes the content measure taller than the rows on
-                    // screen, which shows a scrollbar with nothing to scroll
-                    // whenever the list otherwise fits the panel.
+                    // Gaps go above each group, since trailing padding shows a
+                    // scrollbar with nothing to scroll.
                     let mut group_gap = 0.0_f32;
                     if !view.filtering || view.membership.home {
                         paint_home_group(ui, paint, &mut requests);
@@ -330,11 +319,8 @@ impl AlacritreeApp {
         let workspace_activated = self.apply_sidebar_activations(ctx, &mut requests);
         self.poll_worktree_liveness(ctx, view.probing, &requests.drawn_worktrees);
         if self.config.ui.sidebar_click_focus {
-            // A click that picks a workspace or session means "go work
-            // there", so it focuses the terminal; other panel clicks focus
-            // the sidebar for filter typing. Row activations fire on the
-            // release frame, after the press already focused the sidebar,
-            // which is why this can't fold into the press test below.
+            // Activations fire on release, after the press focused the
+            // sidebar, so they cannot fold into the press test below.
             if workspace_activated {
                 self.focus_terminal();
             } else if self.focus != PaneFocus::ProjectsSidebar
@@ -349,11 +335,7 @@ impl AlacritreeApp {
     /// Everything the paint pass reads, gathered while `&self` helpers are
     /// still callable: the panel closure borrows `projects` mutably.
     fn project_sidebar_view(&mut self, ctx: &Context) -> SidebarView {
-        // Only rows that actually paint are worth a liveness probe, and which
-        // ones those are is not known until the tree, its filters and its
-        // collapsed projects have all had their say. Deciding *before* the
-        // walk that this frame is not a probe frame is what keeps the other
-        // ~89 frames of every 90 from collecting anything at all.
+        // Decided before the walk, so frames that do not probe collect nothing.
         let probing = self.config.ui.worktree_liveness
             && self.liveness_probe.is_none()
             && self.liveness.wants_probe(Instant::now());
@@ -428,10 +410,8 @@ impl AlacritreeApp {
             }
         }
         let home_rows = self.workspace_rows(&None, &listed);
-        // A rendered session list carries its own per-session status; repeating
-        // it on the parent row reads as noise, the same
-        // rule the project row applies when expanded. Aggregates therefore
-        // apply only while the list is hidden (fewer than two sessions).
+        // A listed session shows its own status, so the row aggregates only
+        // while the list is hidden.
         let home_lists_sessions = WorkspaceRowData::any_session(&home_rows);
         let home_status = if home_lists_sessions {
             RowStatus::live(SessionActivity::Shell)
@@ -658,16 +638,8 @@ impl AlacritreeApp {
             self.modals.pending_kill_terminal = Some(key);
         }
         if let Some(ws) = requests.spawn_shell.take() {
-            // Spawning activates the workspace and the new session, matching
-            // Ctrl+T and worktree-creation's open-on-done. An `Err` here
-            // arrived before the session record did, from a checkout git has
-            // forgotten or a PTY opened inline, and hands the workspace
-            // back rather than stranding the user on one with no shell, the
-            // same reasoning as `activate_worktree`. A PTY opened on a
-            // worker fails after the record exists, so the switch stands and
-            // `poll_pending_spawns` leaves the pane on the "no session"
-            // placeholder: every workspace it could hand back to is one
-            // `ensure_active_session` would spawn into and fail identically.
+            // A failed spawn hands the workspace back rather than stranding
+            // the user on one with no shell, as `activate_worktree` does.
             let previous = std::mem::replace(&mut self.current_workspace, ws.clone());
             match self.spawn_session(ctx, ws.clone()) {
                 Ok(_) => workspace_activated = true,
@@ -678,10 +650,7 @@ impl AlacritreeApp {
             }
         }
         if let Some((path, name)) = requests.spawn_profile.take() {
-            // Same activate-on-success and stale-row-recovery shape as
-            // `spawn_shell`: a stale worktree row's `+` reaches
-            // `report_spawn_failure` today, and a profile picked from the
-            // same row's menu must un-grey it the same way.
+            // The same failure recovery as `spawn_shell` above.
             let ws = Some(path);
             let previous = std::mem::replace(&mut self.current_workspace, ws.clone());
             match self.spawn_profile_session_in(ctx, &name, ws.clone()) {

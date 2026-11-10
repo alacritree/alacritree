@@ -742,11 +742,7 @@ impl AlacritreeApp {
         visuals.extreme_bg_color = theme.terminal_bg;
         ctx.set_visuals(visuals);
 
-        // Anchor every text style to the terminal font: titles (unmodified
-        // labels) use `Body`/`Heading` at 100% of the grid's text size, and
-        // every other UI label (`.small()`, buttons) drops to 80% via
-        // `font_normal`. Spacing knobs scale with the normal-text size so
-        // paddings/widths track changes to `font.size`.
+        // Text styles and spacing scale with the terminal font.
         let mut style = (*ctx.style()).clone();
         let scale = theme.ui_scale;
         let heading_px = theme.font_heading;
@@ -765,12 +761,8 @@ impl AlacritreeApp {
         s.icon_width_inner *= scale;
         s.icon_spacing *= scale;
         s.text_edit_width *= scale;
-        // egui's debug build paints "Unaligned" labels next to widgets whose
-        // edges land on fractional physical pixels. Our chrome scaling
-        // produces non-integer sizes by design (matching `font.size`), so the
-        // warning is noise rather than signal, so silence it everywhere.
-        // `Style::debug` itself is `#[cfg(debug_assertions)]` in egui, so the
-        // assignment has to be cfg-gated to keep `--release` compiling.
+        // Chrome scaling lands on fractional pixels by design, so egui's debug
+        // "Unaligned" labels are noise.
         #[cfg(debug_assertions)]
         {
             style.debug.show_unaligned = false;
@@ -794,11 +786,8 @@ impl AlacritreeApp {
             .projects
             .iter()
             .map(|p| {
-                // WSL roots discover in the background after construction,
-                // since a cold distro takes seconds to boot and would block first
-                // paint. Normalize the root first so a persisted `\\wsl$\`
-                // spelling converges with the `\\wsl.localhost\` paths that
-                // background discovery later swaps in via `poll_project_refreshes`.
+                // A cold distro takes seconds to boot, so WSL roots discover in
+                // the background rather than block first paint.
                 let root = wsl::normalize_root(p.root.clone());
                 let mut project = match wsl::classify(&root) {
                     wsl::Location::Windows(_) => jobs::on_this_thread(|blocking| {
@@ -971,25 +960,9 @@ impl AlacritreeApp {
         });
     }
 
-    /// Keep the worktree rows the sidebar just drew honest about whether their
-    /// checkout is still there. Discovery only re-runs when something asks it
-    /// to, so a `git worktree remove` typed into one of our own sessions would
-    /// otherwise leave the row looking live until the user pressed refresh.
-    ///
-    /// `request_repaint_after` is what carries the tick across a terminal that
-    /// has gone quiet. Since egui paints on demand, the probe would never run
-    /// a second time without it. It is armed only for a short window after the
-    /// user last touched the app, because an unconditional 1.5 s wake-up is
-    /// not just a repaint: every frame runs `StatusCache::poll` from the git
-    /// sidebar's paint on the same staleness interval, so a permanent
-    /// heartbeat would spawn a git status walk forever on an app nobody is
-    /// using.
-    ///
-    /// `probing` is the sidebar's decision, not a re-derivation: only it knows
-    /// whether the walk that produced `drawn` was collecting at all, and an
-    /// empty `drawn` on a probe frame ("nothing eligible painted") has to
-    /// restart the interval where an empty `drawn` on any other frame must
-    /// leave it alone.
+    /// Mark drawn worktree rows whose checkout is gone, since discovery runs
+    /// only on request. `probing` comes from the sidebar, the only one that
+    /// knows whether the walk producing `drawn` collected anything.
     fn poll_worktree_liveness(&mut self, ctx: &Context, probing: bool, drawn: &[PathBuf]) {
         let now = Instant::now();
         match self.liveness_probe.as_ref().map(|job| (job.poll(), job.failed())) {
@@ -998,21 +971,15 @@ impl AlacritreeApp {
                 self.liveness
                     .adopt(results.into_iter().map(|(path, probe)| (path, probe.liveness)), now);
                 self.liveness_probe = None;
-                // This runs after the rows painted, so the answers that just
-                // landed are one frame late. Without asking for that frame the
-                // new styling waits out a whole interval, or never arrives at
-                // all once the grace window has closed.
+                // The rows already painted this frame, so ask for the next.
                 ctx.request_repaint();
             },
             // A job still running is the backpressure: a path slower than
             // the interval stretches freshness instead of stacking up probes,
             // and its own `request_repaint` brings us back here.
             Some((None, false)) => return,
-            // A panicked probe adopts nothing, and an interval that never
-            // restarts leaves `wants_probe` true: the next frame starts
-            // another batch, and the pool wakes a frame at every job end, so
-            // a probe that fails every time would run at frame rate. An
-            // empty round restarts the interval the same way.
+            // Restart the interval, or a probe that always panics would run
+            // at frame rate.
             Some((None, true)) => {
                 self.liveness_probe = None;
                 self.liveness.adopt(Vec::new(), now);
@@ -1223,10 +1190,7 @@ impl AlacritreeApp {
             }
         }
 
-        // Interactive: an empty pane is on screen until this lands. The pool
-        // repaints once the job returns, so nothing here has to. Without that
-        // the result would wait for whatever wakes the loop next, which under
-        // load is the shell's own first output seconds later.
+        // Interactive, since an empty pane is on screen until this lands.
         let job = jobs::pool().spawn(jobs::Priority::Interactive, move |_blocking| open());
         self.pending_spawns.start(id, || job);
         Ok(())
@@ -1975,17 +1939,8 @@ impl AlacritreeApp {
         // refresh should still get the prune flow, not a doomed
         // `git worktree remove`.
         let prunable = wt.gone || self.is_gone(&wt.path);
-        // A missing dir has nothing to be dirty; skip the status probe. A
-        // worktree the git panel has already completed a compute for answers
-        // from that cache instead of walking the tree again. A cache entry
-        // with no compute yet (the panel's first frame for this workspace)
-        // is `Status::default()`, indistinguishable from "known clean",
-        // so it is not read as an answer. A cold one waits on a job so the
-        // dialog opens at once and fills in.
-        //
-        // A resolved dirty count preloads `force` so a known-dirty tree goes
-        // straight to a forced removal. The dialog does not confirm until a
-        // count is known, so no removal runs against an unknown tree.
+        // An entry with no compute yet reads as clean, so only a computed one
+        // answers. The dialog does not confirm until a count is known.
         let (dirty, dirty_job, force) = if prunable {
             (Some(Dirty::default()), None, false)
         } else if let Some(counts) = self
