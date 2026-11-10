@@ -76,6 +76,11 @@ impl<K: Eq + Hash + Clone, T> InFlight<K, T> {
         true
     }
 
+    /// Whether no job is running.
+    pub fn is_empty(&self) -> bool {
+        self.running.is_empty()
+    }
+
     /// Park `reply_tx` until the job running for `key` has finished. Hands
     /// the channel back when nothing is running for it, leaving the caller to
     /// answer it however it sees fit.
