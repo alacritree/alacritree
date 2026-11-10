@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.17.0](https://github.com/alacritree/alacritree/compare/v0.16.0...v0.17.0) (2026-11-10)
+
+
+### Features
+
+* **herdr-core:** share sessions with herdr-app ([#492](https://github.com/alacritree/alacritree/issues/492)) ([904baf7](https://github.com/alacritree/alacritree/commit/904baf70085d72758676deffa3600e4f4b5ddf2d))
+* **wsl:** ignore distros listed in config ([#495](https://github.com/alacritree/alacritree/issues/495)) ([227e19d](https://github.com/alacritree/alacritree/commit/227e19d732cf90790f488f8596187b4bc761ec06))
+
+
+### Bug Fixes
+
+* **herdr-core:** adopt after WSL worktree discovery ([#497](https://github.com/alacritree/alacritree/issues/497)) ([263786f](https://github.com/alacritree/alacritree/commit/263786f1157d8d1edd48295008bc119075a53e14))
+* **herdr-core:** keep a herdr-app terminal where it started [1] ([#488](https://github.com/alacritree/alacritree/issues/488)) ([b67bf90](https://github.com/alacritree/alacritree/commit/b67bf90a05080a7b061d96836e4b1ebf794626e5))
+* **herdr-core:** keep a session's id across restarts ([#494](https://github.com/alacritree/alacritree/issues/494)) ([3c1e306](https://github.com/alacritree/alacritree/commit/3c1e306a8ac81a4d35e275a4c9b4cf029b2e532d))
+* **herdr-core:** list foreign terminals of every side ([#498](https://github.com/alacritree/alacritree/issues/498)) ([068d20a](https://github.com/alacritree/alacritree/commit/068d20a34d009132a6ad364809e36c2d942258cf))
+* **sidebar:** spell a WSL cwd the distro way ([988ae32](https://github.com/alacritree/alacritree/commit/988ae327083c35f20323c77cdb4214731e417e00))
+
 ## [0.16.0](https://github.com/alacritree/alacritree/compare/v0.15.0...v0.16.0) (2026-11-08)
 
 
