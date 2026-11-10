@@ -569,7 +569,9 @@ impl<H: From<HerdrCoreHandle>> SessionBackend<H> for HerdrCore {
     }
 
     /// Before a distro's resident connection is up, its terminals come from
-    /// one listing through its helper.
+    /// one listing through its helper. A terminal found on the connection is
+    /// shown in herdr-app as the config says, since the first connection's
+    /// [`reconcile_sharing`] ran before it appeared.
     fn adoptable(&self) -> Vec<Adoptable> {
         let mut claims = lock(&self.claims);
         if claims.opening > 0 {
@@ -577,7 +579,19 @@ impl<H: From<HerdrCoreHandle>> SessionBackend<H> for HerdrCore {
         }
         let found: Vec<Adoptable> = match self.core.live() {
             Some(connection) => {
-                connection.pick_terminals(|address, facts| adoptable(&claims, address, facts))
+                let share = self.core.shares();
+                let picked = connection.pick_terminals(|address, facts| {
+                    Some((adoptable(&claims, address, facts)?, share_call(address, facts, share)))
+                });
+                picked
+                    .into_iter()
+                    .map(|(found, call)| {
+                        if let Some(call) = call {
+                            connection.cast("terminal.label", call);
+                        }
+                        found
+                    })
+                    .collect()
             },
             None => {
                 let listed = self.listed(&mut claims);
