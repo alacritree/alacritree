@@ -8,7 +8,7 @@ use std::str::FromStr;
 
 use alacritree_common::side::Side;
 use alacritree_herdr::Herdr;
-use alacritree_herdr_core::{HerdrCore, HerdrCorePanes};
+use alacritree_herdr_core::{HerdrCorePanes, HerdrCores};
 #[cfg(test)]
 use alacritree_multiplexer::Scripted;
 use alacritree_multiplexer::{
@@ -87,16 +87,16 @@ impl Multiplexers {
     /// In the order of [`MultiplexerKind::real`], which is the order a
     /// listing is polled and drawn in.
     pub(crate) fn new(config: &IntegrationsConfig) -> Self {
-        Self::with_core(config, HerdrCore::new(&config.herdr_core.path))
+        Self::with_cores(config, HerdrCores::new(&config.herdr_core))
     }
 
-    /// As [`Self::new`], listing the terminals of `core`, which the app's
-    /// herdr-core sessions share.
-    pub(crate) fn with_core(config: &IntegrationsConfig, core: HerdrCore) -> Self {
+    /// As [`Self::new`], listing the terminals of every side's core in
+    /// `cores`, which the app's herdr-core sessions share.
+    pub(crate) fn with_cores(config: &IntegrationsConfig, cores: HerdrCores) -> Self {
         Self(vec![
             Multiplexer::Herdr(Herdr::new(config.herdr.clone())),
             Multiplexer::Zellij(Zellij::new(config.zellij.clone())),
-            Multiplexer::HerdrCore(HerdrCorePanes::new(core, config.herdr_core.clone())),
+            Multiplexer::HerdrCore(HerdrCorePanes::new(cores, config.herdr_core.clone())),
         ])
     }
 

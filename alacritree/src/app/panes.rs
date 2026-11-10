@@ -380,6 +380,13 @@ impl AlacritreeApp {
         focus: AttachFocus,
         watch: bool,
     ) -> Option<SessionId> {
+        let kind = key.multiplexer;
+        let Some(backend) = self.pane_backends.on(&key.side) else {
+            let side = key.side.name();
+            self.modals.error_dialog =
+                Some(format!("failed to attach {kind} pane: no core on the {side} side"));
+            return None;
+        };
         let (size, cell_size) = self.next_spawn_geometry();
         let (mut session, request) = Session::pending_attach(
             ctx.clone(),
@@ -390,11 +397,9 @@ impl AlacritreeApp {
             key.terminal_id.clone(),
             None,
         );
-        let kind = key.multiplexer;
         session.bind_pane(key, false);
         let id = session.id;
         self.sessions.push(session);
-        let backend = self.pane_backend.clone();
         let opened = self.start_open(id, move || {
             let handle = if watch { backend.watch(request) } else { backend.attach(request) }?;
             Ok(Opened { handle, fell_back: None })

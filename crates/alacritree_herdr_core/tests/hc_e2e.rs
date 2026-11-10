@@ -1066,6 +1066,57 @@ fn a_distro_core_on_a_socket_hc_does_not_resolve_runs_its_sessions() {
     });
 }
 
+/// A terminal another client starts in a distro's core lists as a pane of
+/// the distro's side, under the workspace its Linux directory maps to, and a
+/// kill reaches the distro's core.
+#[cfg(windows)]
+#[test]
+#[ignore = "needs a WSL distro with hc"]
+fn a_terminal_hc_runs_in_a_distro_lists_as_a_pane_of_that_side() {
+    use alacritree_multiplexer::MultiplexerKind;
+
+    let Some(core) = DistroCore::start() else {
+        eprintln!("skip: this machine has no WSL distro");
+        return;
+    };
+    let side = Side::Wsl(core.distro.clone());
+    let cores = HerdrCores::new(&HerdrCoreConfig::default());
+    assert!(cores.on(&side).connect().is_ok(), "the distro's connection opens");
+    let space = format!("herdr.space={}", core.dir);
+    let started = core.hc(&[
+        "run",
+        "--bg",
+        "--keep",
+        "--no-parent",
+        "--json",
+        "--name",
+        "hook",
+        "--cwd",
+        &core.dir,
+        "--label",
+        &space,
+    ]);
+    assert!(started.status.success(), "{started:?}");
+    let record: Value = serde_json::from_slice(&started.stdout).expect("run answers JSON");
+    let address = record["address"].as_str().expect("an address").to_string();
+    let mut panes = HerdrCorePanes::new(cores.clone(), HerdrCoreConfig::default());
+
+    wait_until("the distro's pane to list", PATIENCE, || {
+        panes.poll(&|_| false);
+        panes.find(&side, &address).is_some()
+    });
+    let workspace = core.windows_dir();
+    let listed = panes.listed(&[], std::slice::from_ref(&workspace));
+    let row = listed.iter().find(|row| row.key.terminal_id == address).expect("a listed row");
+    assert_eq!(row.key.multiplexer, MultiplexerKind::HerdrCore);
+    assert_eq!(row.key.side, side);
+    assert_eq!(row.workspace.as_ref(), Some(&workspace));
+
+    let key = row.key.clone();
+    panes.kill_terminal(&key);
+    wait_until("the kill to reach the distro's core", PATIENCE, || core.live_terminals() == 0);
+}
+
 /// Start `argv` the way another client does: kept, and with no alacritree
 /// label. Answers its address.
 fn run_foreign(argv: &[&str]) -> String {
@@ -1101,10 +1152,11 @@ fn size_of(core: &Core, address: &str) -> (Value, Value) {
 #[ignore = "needs hc on PATH"]
 fn a_terminal_hc_runs_without_labels_lists_as_a_pane_and_opens_interactively() {
     let core = Core::start();
-    let backend = HerdrCore::new("hc");
+    let cores = HerdrCores::new(&HerdrCoreConfig::default());
+    let backend = cores.on(&Side::Native);
     let own = open(&backend, shell(), core.dir());
     let address = foreign_shell();
-    let mut panes = HerdrCorePanes::new(backend.clone(), HerdrCoreConfig::default());
+    let mut panes = HerdrCorePanes::new(cores, HerdrCoreConfig::default());
 
     wait_until("the foreign pane to list", PATIENCE, || {
         panes.poll(&|_| false);

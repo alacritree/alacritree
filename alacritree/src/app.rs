@@ -561,9 +561,9 @@ pub struct AlacritreeApp {
     /// The core `[integrations.herdr_core] session_backend` prefers on each
     /// side, or `None` when it prefers native.
     cores: Option<Cores>,
-    /// What opens a herdr-core pane, the native core's terminal that
-    /// alacritree did not create. It shares the native core of `cores`.
-    pane_backend: Backend,
+    /// What opens a herdr-core pane, a terminal that alacritree did not
+    /// create, on the pane's side. It shares every side's core of `cores`.
+    pane_backends: Cores,
     /// The startup connect to the native core. The home tab's first shell
     /// waits for it, so a home tab whose terminals the core kept gets them
     /// back rather than one more. It answers a core that hc does not reach,
@@ -637,11 +637,10 @@ impl AlacritreeApp {
         let (font_chain, face_metrics) = fonts;
         let herdr_cores = HerdrCores::new(&config.integrations.herdr_core);
         let cores = Cores::from_config(&config.integrations.herdr_core, &herdr_cores);
-        let core = herdr_cores.on(&Side::Native);
         let color_glyph_budget_mb = config.font.color_glyph_cache_mb;
         let grid_snapshot = crate::terminal_view::GridSnapshot::new(&config.palette);
         let (ipc_socket, ipc_rx) = ipc;
-        let multiplexers = Multiplexers::with_core(&config.integrations, core.clone());
+        let multiplexers = Multiplexers::with_cores(&config.integrations, herdr_cores.clone());
         let row_labels = crate::row_label::LabelTemplates::new(
             config.ui.worktree_name.clone(),
             config.ui.project_name.clone(),
@@ -706,7 +705,7 @@ impl AlacritreeApp {
             project_refreshes: Default::default(),
             session_backend: Backend::native(),
             cores,
-            pane_backend: Backend::HerdrCore(core),
+            pane_backends: Cores::HerdrCore(herdr_cores),
             core_connect: None,
             pending_spawns: Default::default(),
             multiplexers,
@@ -858,10 +857,8 @@ impl AlacritreeApp {
 
         // Every side's core shares the pane listing's waker, so an idle window
         // repaints for a terminal to adopt or to list.
-        if let Backend::HerdrCore(core) = &app.pane_backend {
-            let ctx = cc.egui_ctx.clone();
-            core.set_waker(move || ctx.request_repaint());
-        }
+        let ctx = cc.egui_ctx.clone();
+        app.pane_backends.set_waker(move || ctx.request_repaint());
         // `hc connect` may start the core, so connecting here keeps that wait
         // off the frame that opens the first session. A distro's connection
         // opens with its WSL helper.
@@ -8277,11 +8274,19 @@ mod tests {
     /// `test_app` listing the pane `t1`, whose terminal a session backend runs
     /// and opens on the scripted `sessions`.
     fn app_with_a_backend_terminal() -> (AlacritreeApp, ScriptedSessions, PaneKey) {
+        app_with_a_backend_terminal_on(Side::Native)
+    }
+
+    /// As [`app_with_a_backend_terminal`], with `t1` on `side`, whose core is
+    /// `sessions`, and a native core beside it when `side` is a distro.
+    fn app_with_a_backend_terminal_on(side: Side) -> (AlacritreeApp, ScriptedSessions, PaneKey) {
         let (mut app, sessions) = app_on_scripted_backend();
-        app.pane_backend = Backend::Scripted(sessions.clone());
+        let mut cores = HashMap::from([(Side::Native, ScriptedSessions::default())]);
+        cores.insert(side.clone(), sessions.clone());
+        app.pane_backends = Cores::Scripted(cores, Default::default());
         app.multiplexers.scripted_mut().enable().backend_terminal_panes(true);
-        adopt_panes(&mut app, &Side::Native, vec![Scripted::pane("t1")]);
-        (app, sessions, Scripted::key(&Side::Native, "t1"))
+        adopt_panes(&mut app, &side, vec![Scripted::pane("t1")]);
+        (app, sessions, Scripted::key(&side, "t1"))
     }
 
     fn kill_terminal_from_the_palette(app: &mut AlacritreeApp) {
@@ -8315,6 +8320,21 @@ mod tests {
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].terminal.as_deref(), Some("t1"));
         assert!(!records[0].watching);
+    }
+
+    /// A distro's terminal lives in the distro's core, so its pane opens
+    /// there and never in the native core.
+    #[test]
+    fn a_distro_backend_terminal_pane_attaches_in_the_distros_core() {
+        let side = Side::Wsl("Ubuntu".to_string());
+        let (mut app, sessions, key) = app_with_a_backend_terminal_on(side);
+
+        app.watch_pane(&Context::default(), key.clone());
+
+        assert!(app.pane_session(&key).is_some(), "{:?}", app.modals.error_dialog);
+        let records = sessions.records();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].terminal.as_deref(), Some("t1"));
     }
 
     /// Watch follows the terminal, so what the user types and how the window
@@ -8406,7 +8426,9 @@ mod tests {
             let mut config = crate::config::IntegrationsConfig::default();
             config.herdr_core.enabled = enabled;
             app.multiplexers = Multiplexers::new(&config);
-            app.multiplexers.herdr_core_mut_for_test().adopt_for_test(vec![Scripted::pane("t1")]);
+            app.multiplexers
+                .herdr_core_mut_for_test()
+                .adopt_for_test(vec![(Side::Native, Scripted::pane("t1"))]);
 
             let listed: Vec<MultiplexerKind> =
                 app.pane_listing().iter().map(|listed| listed.key.multiplexer).collect();
