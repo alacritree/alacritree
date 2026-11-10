@@ -2088,7 +2088,7 @@ fn session_name_tooltip(
     elided: bool,
     mode: SidebarTooltips,
 ) -> egui::Response {
-    let cwd = row.cwd.as_ref().map(|path| path.display().to_string());
+    let cwd = row.cwd.as_deref().map(wsl::display_path);
     let lines: Vec<&str> = std::iter::once(row.name.text.as_str())
         .chain(cwd.as_deref())
         .chain(row.program_msg.as_deref())

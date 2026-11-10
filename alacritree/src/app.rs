@@ -11395,6 +11395,39 @@ mod tests {
         }
     }
 
+    /// A shell in a distro reports its cwd as the UNC path Windows reaches it
+    /// by, and the tooltip names it the way the distro does.
+    #[test]
+    fn a_session_rows_tooltip_spells_a_wsl_cwd_the_distros_way() {
+        let icons = PaintedIcons::new(
+            &Config::default(),
+            &Multiplexers::new(&Config::default().integrations),
+        );
+        let mut config = Config::default();
+        config.ui.sidebar_tooltips = SidebarTooltips::Always;
+        let theme = Theme::from_config(&config);
+        let row = SessionRowData {
+            id: 1,
+            name: RowName::plain("shell".to_owned()),
+            cwd: Some(PathBuf::from(r"\\wsl.localhost\Ubuntu\home\dev\src")),
+            last_notification: None,
+            progress: None,
+            needs_attention: false,
+            done: false,
+            activity: SessionActivity::Shell,
+            program_status: None,
+            program_msg: None,
+            is_active: true,
+            is_displayed: true,
+            managed: None,
+        };
+        let texts = texts_while_hovering(140.0, |ui| {
+            session_row(ui, &row, false, false, false, &icons, &theme);
+        });
+        let tooltip = "shell\n/home/dev/src";
+        assert!(texts.iter().flatten().any(|(t, _)| t == tooltip), "{texts:?}");
+    }
+
     /// A sibling started from a reported directory still belongs to the
     /// workspace it was opened in, and a report that no longer exists falls
     /// back to the workspace.
