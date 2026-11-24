@@ -144,10 +144,10 @@ mod tests {
         let env =
             |key: &str| (key == "ANTIGRAVITY_CONVERSATION_ID").then(|| "5525bbeb-886a".to_string());
         let session = session_from_env(env).unwrap();
-        assert_eq!(
-            session,
-            SessionRef { harness: Harness::Antigravity, id: "5525bbeb-886a".into() }
-        );
+        assert_eq!(session, SessionRef {
+            harness: Harness::Antigravity,
+            id: "5525bbeb-886a".into()
+        });
         assert_eq!(node(&ws("r", "main"), Some(&session)), "r.main.antigravity-5525bbeb-886a");
     }
 
