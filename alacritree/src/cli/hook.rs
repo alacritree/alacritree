@@ -1,13 +1,13 @@
 //! `alacritree hook <event>`: the one command a harness's hook config calls.
 //!
-//! The context events (`session-start`, `user-prompt-submit`, `stop`) never
-//! fail a turn; `tasks::hook` holds them. The worktree events keep every
-//! checkout an agent makes alacritree's: `worktree-create` makes Claude Code's
-//! worktree the way the sidebar's + button does, `worktree-remove` leaves it
-//! for the sidebar to delete, and `pre-tool-use` turns away a shell
-//! `git worktree add`. `worktree-create` and `worktree-remove` refuse with
-//! the reason on stderr and exit 1, since Claude Code then gives the
-//! operation up rather than falling back to its own git.
+//! The context events (`session-start`, `user-prompt-submit`,
+//! `pre-invocation`, `stop`) never fail a turn; `tasks::hook` holds them. The
+//! worktree events keep every checkout an agent makes alacritree's:
+//! `worktree-create` makes Claude Code's worktree the way the sidebar's +
+//! button does, `worktree-remove` leaves it for the sidebar to delete, and
+//! `pre-tool-use` turns away a shell `git worktree add`. `worktree-create` and
+//! `worktree-remove` refuse with the reason on stderr and exit 1, since Claude
+//! Code then gives the operation up rather than falling back to its own git.
 
 use std::iter::Peekable;
 use std::path::{Path, PathBuf};
@@ -28,6 +28,9 @@ use crate::ipc::protocol::{IpcRequest, LocalSocket, SendError};
 pub(crate) enum Event {
     SessionStart,
     UserPromptSubmit,
+    /// Antigravity's stand-in for `user-prompt-submit`: it has no prompt
+    /// event, and runs this one before every model call.
+    PreInvocation,
     Stop,
     PreToolUse,
     WorktreeCreate,
@@ -74,12 +77,13 @@ pub(super) fn run(
     let kind = match harness {
         Harness::Claude => AnyHarness::ClaudeCode,
         Harness::Codex => AnyHarness::Codex,
+        Harness::Antigravity => AnyHarness::Antigravity,
     };
     let payload = AnyPayload::parse_named(kind, event.into(), &stdin);
     let printed = match event {
         // A harness waits on this before the model sees the turn, so it
         // answers from disk with no window and never fails the hook.
-        Event::SessionStart | Event::UserPromptSubmit | Event::Stop => {
+        Event::SessionStart | Event::UserPromptSubmit | Event::PreInvocation | Event::Stop => {
             payload.ok().and_then(|payload| tasks(&payload, harness, config))
         },
         // Runs before every shell command, so it reads no config and lets
@@ -108,6 +112,9 @@ fn refuse(error: &HookError) -> i32 {
 }
 
 fn tasks(payload: &AnyPayload, harness: Harness, config: ConfigSource<'_>) -> Option<String> {
+    // agy calls `pre-invocation` before every model call, and all but the
+    // first of a turn have nothing to add, so they leave before the config.
+    crate::tasks::hook::moment(payload)?;
     let cwd = harness_cwd(payload);
     let integrations = super::task::configure_tools(config.dir, config.overrides);
     let state_dir = config.dir.map(Path::to_path_buf).or_else(crate::state::config_dir);
@@ -198,10 +205,25 @@ fn kept(payload: &AnyPayload) -> HookError {
 /// The payload's cwd on this host, or this process's own.
 fn harness_cwd(payload: &AnyPayload) -> Option<PathBuf> {
     let here = std::env::current_dir().ok();
-    match payload.cwd() {
+    match sent_cwd(payload) {
         Some(cwd) => wsl::on_this_host(cwd.to_path_buf(), here),
         None => here,
     }
+}
+
+/// The cwd a payload names. pabal reads none from Antigravity, whose docs
+/// list only `workspacePaths`, but agy 1.5 sends `cwd` too. It runs a hook in
+/// the directory of the `hooks.json` naming it, so there this process's own
+/// cwd says nothing about the session.
+fn sent_cwd(payload: &AnyPayload) -> Option<&Path> {
+    if payload.harness() != AnyHarness::Antigravity {
+        return payload.cwd();
+    }
+    let raw = payload.raw();
+    [&raw["cwd"], &raw["workspacePaths"][0]]
+        .into_iter()
+        .find_map(|value| value.as_str().filter(|path| !path.trim().is_empty()))
+        .map(Path::new)
 }
 
 /// Whether a shell command runs `git worktree add` anywhere in its lists and

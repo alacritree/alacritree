@@ -312,6 +312,13 @@ const LLM_CONFIG_NAMES: &[&str] = &[
     ".roo",
     ".codeium",
     ".continue",
+    // Antigravity's. The rest of `.agents/` is its run state, such as
+    // `teamwork/`, which a new worktree should start without.
+    "GEMINI.md",
+    ".agents/rules",
+    ".agents/workflows",
+    ".agents/skills",
+    ".agents/hooks.json",
 ];
 
 fn copy_llm_configs(src_root: &Path, dst_root: &Path) -> usize {
@@ -800,6 +807,24 @@ mod tests {
 
         assert!(dst.join(".claude/settings.json").is_file());
         assert!(!dst.join(".claude/worktrees/native").exists());
+    }
+
+    #[test]
+    fn antigravity_config_is_copied_without_its_run_state() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (src, dst) = (tmp.path().join("src"), tmp.path().join("dst"));
+        std::fs::create_dir_all(src.join(".agents/rules")).unwrap();
+        std::fs::create_dir_all(src.join(".agents/teamwork/agent-1")).unwrap();
+        std::fs::create_dir_all(&dst).unwrap();
+        std::fs::write(src.join(".agents/rules/style.md"), "tabs").unwrap();
+        std::fs::write(src.join(".agents/hooks.json"), "{}").unwrap();
+        std::fs::write(src.join(".agents/teamwork/agent-1/notes.md"), "mid-run").unwrap();
+
+        assert_eq!(copy_llm_configs(&src, &dst), 2);
+
+        assert!(dst.join(".agents/rules/style.md").is_file());
+        assert!(dst.join(".agents/hooks.json").is_file());
+        assert!(!dst.join(".agents/teamwork").exists());
     }
 
     #[test]

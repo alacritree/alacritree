@@ -95,6 +95,11 @@ fn fixture(name: &str, cwd: &Path) -> String {
 }
 
 fn hook(sandbox: &Sandbox, args: &[&str], stdin: &str) -> Output {
+    hook_in(sandbox, &sandbox.repo, args, stdin)
+}
+
+/// `hook`, run from `dir` instead of the repository.
+fn hook_in(sandbox: &Sandbox, dir: &Path, args: &[&str], stdin: &str) -> Output {
     let home = sandbox.state.path();
     #[allow(clippy::disallowed_methods)]
     let mut child = hidden(binary())
@@ -105,7 +110,7 @@ fn hook(sandbox: &Sandbox, args: &[&str], stdin: &str) -> Output {
         .env("APPDATA", home)
         .env("LOCALAPPDATA", home)
         .env("HOME", home)
-        .current_dir(&sandbox.repo)
+        .current_dir(dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -132,6 +137,43 @@ fn session_start_prints_one_json_object_for_both_harnesses() {
         let ctx = json["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
         assert!(ctx.contains(&format!("myrepo.main.{harness}-")), "{ctx}");
     }
+}
+
+/// agy names its event only through the hook config, and runs a hook from the
+/// directory of the `hooks.json` naming it, so the payload's `cwd` is what
+/// places the session.
+#[test]
+fn antigravity_gets_its_lists_as_an_injected_system_message() {
+    let Some(sandbox) = with_task() else { return };
+    let elsewhere = sandbox.state.path();
+    let args = ["hook", "session-start", "--harness", "antigravity"];
+    let payload = fixture("antigravity-session-start.json", &sandbox.repo);
+    let out = hook_in(&sandbox, elsewhere, &args, &payload);
+    assert!(out.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+        panic!("stdout is JSON ({e}): {}", String::from_utf8_lossy(&out.stderr))
+    });
+    let ctx = json["injectSteps"][0]["systemMessage"]["systemMessage"].as_str().unwrap();
+    assert!(ctx.contains("myrepo.main.antigravity-5525bbeb-886a"), "{ctx}");
+}
+
+/// `pre-invocation` runs before every model call, and only the first of a
+/// turn may add the list, once while it is unchanged.
+#[test]
+fn antigravity_sees_a_list_once_per_change_at_the_start_of_a_turn() {
+    let Some(sandbox) = with_task() else { return };
+    let elsewhere = sandbox.state.path();
+    let args = ["hook", "pre-invocation", "--harness", "antigravity"];
+    let first_call = fixture("antigravity-pre-invocation.json", &sandbox.repo);
+    let later_call = first_call.replace(r#""invocationNum":0"#, r#""invocationNum":1"#);
+    let later = hook_in(&sandbox, elsewhere, &args, &later_call);
+    assert!(later.status.success());
+    assert!(later.stdout.is_empty(), "a mid-turn call adds nothing");
+    let first = hook_in(&sandbox, elsewhere, &args, &first_call);
+    assert!(!first.stdout.is_empty(), "the first call of a turn sees the list");
+    let again = hook_in(&sandbox, elsewhere, &args, &first_call);
+    assert!(again.status.success());
+    assert!(again.stdout.is_empty(), "an unchanged list is not repeated");
 }
 
 /// A harness inside WSL reports its cwd as a Linux path, and the Windows
@@ -431,4 +473,30 @@ fn pre_tool_use_denies_a_shell_worktree_add_for_both_harnesses() {
         assert!(out.status.success());
         assert!(out.stdout.is_empty(), "{harness} lets other git through");
     }
+}
+
+#[test]
+fn pre_tool_use_denies_a_worktree_add_from_antigravity() {
+    let sandbox = without_task();
+    let call = |command: &str| {
+        serde_json::json!({
+            "conversationId": "c1",
+            "cwd": sandbox.repo,
+            "toolCall": {
+                "name": "run_command",
+                "args": { "CommandLine": command, "Cwd": sandbox.repo },
+            },
+            "stepIdx": 3,
+        })
+        .to_string()
+    };
+    let args = ["hook", "pre-tool-use", "--harness", "antigravity"];
+    let out = hook(&sandbox, &args, &call("git worktree add ../topic"));
+    assert!(out.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["decision"], "deny");
+    assert!(json["reason"].as_str().unwrap().contains("alacritree worktree create"));
+    let out = hook(&sandbox, &args, &call("git worktree list"));
+    assert!(out.status.success());
+    assert!(out.stdout.is_empty(), "other git goes through");
 }

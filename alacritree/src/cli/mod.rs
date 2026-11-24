@@ -146,15 +146,16 @@ enum Command {
         command: task::TaskCommand,
     },
 
-    /// Run what a harness hook event needs. Called from Claude Code's and
-    /// codex's hook config. The task and tool events print one JSON object or
-    /// nothing; `worktree-create` prints the new worktree's path.
+    /// Run what a harness hook event needs. Called from the hook config of
+    /// Claude Code, codex and Antigravity (`agy`). The task and tool events
+    /// print one JSON object or nothing; `worktree-create` prints the new
+    /// worktree's path.
     Hook {
         event: hook::Event,
         /// Which harness is calling. Hook processes do not inherit the
         /// variables a harness gives its own shell commands, so this cannot
         /// be read from the environment.
-        #[arg(long, value_parser = ["claude", "codex"])]
+        #[arg(long, value_parser = ["claude", "codex", "antigravity"])]
         harness: String,
     },
 
