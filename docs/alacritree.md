@@ -41,9 +41,9 @@ Every task belongs to one taskwarrior project, and the project name says which s
 | Global | `global` |
 | Project | `<repo>` |
 | Workspace | `<repo>.<branch>` |
-| Agent session | `<repo>.<branch>.claude-<id>` or `<repo>.<branch>.codex-<id>` |
+| Agent session | `<repo>.<branch>.claude-<id>`, `<repo>.<branch>.codex-<id>` or `<repo>.<branch>.antigravity-<id>` |
 
-`.`, `/` and `\` inside a name become `-`, so the branch `feat/v1.2` is `feat-v1-2` and never adds a level. A session is the agent's own conversation, keyed by the harness's session id, so resuming a Claude Code or codex conversation finds its tasks again. `alacritree task scope` prints the project for the current directory and agent, and answers with no window running.
+`.`, `/` and `\` inside a name become `-`, so the branch `feat/v1.2` is `feat-v1-2` and never adds a level. A session is the agent's own conversation, keyed by the harness's session id, so resuming a Claude Code, codex or Antigravity conversation finds its tasks again. `alacritree task scope` prints the project for the current directory and agent, and answers with no window running.
 
 Subtasks and ordering use two user-defined attributes: `subof` holds the parent's uuid and `order` places a task among its siblings. Run `alacritree task setup` once per machine. It declares both in the taskrc on Windows and in every WSL distro, so an agent calling `task` directly stores them instead of folding them into the description. A side with no taskrc yet gets an empty one first, since taskwarrior refuses to run without one when no terminal can answer its offer to create it. With `[integrations.taskwarrior]` enabled, `alacritree doctor` reports whether each side has them.
 
@@ -102,7 +102,7 @@ With the command enabled, the tab turns on without `[integrations.taskwarrior]`,
 
 #### Agent hooks
 
-`alacritree hook <event> --harness <claude|codex>` is the command an agent's hook config runs. Its `session-start` and `user-prompt-submit` events give an agent its lists when a session starts, and again before a prompt whenever they changed. Each prints one JSON object for the harness to add to the model's context, or nothing, and always exits 0, so a missing `task` never blocks a turn. The agent sees its own session's list and every scope above it, never another agent's.
+`alacritree hook <event> --harness <claude|codex|antigravity>` is the command an agent's hook config runs. Its `session-start` and `user-prompt-submit` events give an agent its lists when a session starts, and again before a prompt whenever they changed. Each prints one JSON object for the harness to add to the model's context, or nothing, and always exits 0, so a missing `task` never blocks a turn. The agent sees its own session's list and every scope above it, never another agent's.
 
 Claude Code, in `settings.json`:
 
@@ -126,7 +126,18 @@ codex, in `hooks.json` next to its `config.toml`:
 }
 ```
 
-Add `Stop` too and an agent that finishes with [temporary worktrees](#temporary-worktrees) still open is asked about them before its turn ends. It is asked once for each set of them, so one it means to keep is not nagged about at every stop. The command is `alacritree hook stop --harness <claude|codex>`, in the same shape as the two above. Update alacritree before adding it: an older binary rejects `stop` with exit status 2, which Claude Code reads as a request to keep going.
+Antigravity's `agy`, in `~/.gemini/config/hooks.json` or a workspace's `.agents/hooks.json`. agy has no prompt event, so `pre-invocation` stands in for `user-prompt-submit`. agy runs it before every model call, and it answers only the first call after each prompt. The lists reach the model as an injected system message, which stays in the conversation, so an unchanged list is sent once, as for the other harnesses.
+
+```json
+{
+  "alacritree": {
+    "SessionStart": [{ "type": "command", "command": "alacritree hook session-start --harness antigravity" }],
+    "PreInvocation": [{ "type": "command", "command": "alacritree hook pre-invocation --harness antigravity" }]
+  }
+}
+```
+
+Add `Stop` too and an agent that finishes with [temporary worktrees](#temporary-worktrees) still open is asked about them before its turn ends. It is asked once for each set of them, so one it means to keep is not nagged about at every stop. The command is `alacritree hook stop --harness <claude|codex|antigravity>`, in the same shape as the events above. Update alacritree before adding it: an older binary rejects `stop` with exit status 2, which Claude Code reads as a request to keep going.
 
 #### Agents' worktrees
 
@@ -136,7 +147,7 @@ Three more events keep the worktrees agents make inside alacritree, so each one 
 - `worktree-remove` keeps the worktree. It exits 1 naming the worktree, so Claude Code reports it kept instead of removing it with its own `git worktree remove`. Delete it from the sidebar when it is done.
 - `pre-tool-use` denies a shell command that runs `git worktree add` and tells the agent to run `alacritree worktree create` instead, with `--temporary` for throwaway work. It splits the command the way a shell does, so the phrase in a quoted argument, a comment or a heredoc passes, and so does a command that only mentions it. It catches the call an agent types, not a script or alias that wraps it. Every other call, and any payload it cannot read, goes on to the harness's own permission flow.
 
-The worktree events are Claude Code's own; codex sends none, so it gets the shell check only.
+The worktree events are Claude Code's own; codex and agy send none, so they get the shell check only.
 
 Claude Code, in `settings.json`:
 
@@ -156,6 +167,16 @@ codex, in `hooks.json`:
 {
   "hooks": {
     "PreToolUse": [{ "hooks": [{ "type": "command", "command": "alacritree hook pre-tool-use --harness codex" }] }]
+  }
+}
+```
+
+agy, in its `hooks.json`:
+
+```json
+{
+  "alacritree": {
+    "PreToolUse": [{ "matcher": "run_command", "hooks": [{ "type": "command", "command": "alacritree hook pre-tool-use --harness antigravity" }] }]
   }
 }
 ```
@@ -223,7 +244,7 @@ The create modal validates the proposed branch name against `git check-ref-forma
 2. Verify the base branch exists locally or on `origin`.
 3. `git fetch origin <base>`.
 4. `git worktree add <target> -b <branch> origin/<base>` (or local fallback).
-5. Copy AI-assistant configs from the project root into the new worktree: `CLAUDE.md`, `CLAUDE.local.md`, `.claude/`, `.clauderc`, `AGENTS.md`, `.cursorrules`, `.cursor/`, `.aider.conf.yml`, `.aiderignore`, `.copilot-instructions.md`, `.github/copilot-instructions.md`, `.windsurfrules`, `.roomodes`, `.roo/`, `.codeium/`, `.continue/`. Existing destination files are left alone.
+5. Copy AI-assistant configs from the project root into the new worktree: `CLAUDE.md`, `CLAUDE.local.md`, `.claude/`, `.clauderc`, `AGENTS.md`, `.cursorrules`, `.cursor/`, `.aider.conf.yml`, `.aiderignore`, `.copilot-instructions.md`, `.github/copilot-instructions.md`, `.windsurfrules`, `.roomodes`, `.roo/`, `.codeium/`, `.continue/`, `GEMINI.md`, `.agents/rules/`, `.agents/workflows/`, `.agents/skills/`, `.agents/hooks.json`. Existing destination files are left alone.
 6. Run the [checkout hooks](#checkout-hooks).
 
 `alacritree worktree create` and the `create_worktree` MCP tool run the same steps from outside the window.

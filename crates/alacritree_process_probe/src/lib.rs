@@ -26,6 +26,21 @@ use alacritree_session_backend::{ForegroundProgram, Signals};
 const AGENT_PROCESS_NAMES: &[&str] =
     &["claude", "codex", "gemini", "aider", "cursor-agent", "continue"];
 
+/// Agents matched by process name only. They are native binaries with no
+/// runtime to hide behind, and a name as short as Antigravity's `agy` turns
+/// up inside unrelated command lines (`vim agyle.md`), so the command-line
+/// pass leaves them out.
+const NAME_ONLY_AGENT_NAMES: &[&str] = &["agy"];
+
+/// The agent a process name (`comm`, or a lowercased image name) starts with.
+fn agent_by_process_name(name: &str) -> Option<&'static str> {
+    AGENT_PROCESS_NAMES
+        .iter()
+        .chain(NAME_ONLY_AGENT_NAMES)
+        .find(|agent| name.starts_with(*agent))
+        .copied()
+}
+
 /// TUIs that manage their own splits and cooperate with FocusLeft/
 /// FocusRight (vim, nvim, tmux, zellij, herdr): the key is forwarded while
 /// one runs, and the TUI calls `alacritree action FocusLeft` or `FocusRight`
@@ -173,10 +188,7 @@ fn process_tree_pids(procs: &[(u32, Option<u32>)], root: u32) -> Vec<u32> {
 /// suffix and case-insensitive filenames.
 #[cfg(any(test, windows))]
 fn agent_name_by_name(names: impl IntoIterator<Item = impl AsRef<str>>) -> Option<&'static str> {
-    names.into_iter().find_map(|n| {
-        let n = n.as_ref().to_ascii_lowercase();
-        AGENT_PROCESS_NAMES.iter().find(|name| n.starts_with(*name)).copied()
-    })
+    names.into_iter().find_map(|n| agent_by_process_name(&n.as_ref().to_ascii_lowercase()))
 }
 
 /// Match full command lines against the agent list — picks up
@@ -204,11 +216,8 @@ fn agent_name_for(comm: Option<&str>, cmdline: Option<&str>) -> Option<&'static 
 }
 
 fn agent_named(comm: &str, cmdline: &str) -> Option<&'static str> {
-    AGENT_PROCESS_NAMES
-        .iter()
-        .find(|name| comm.starts_with(*name))
-        .or_else(|| AGENT_PROCESS_NAMES.iter().find(|name| cmdline.contains(*name)))
-        .copied()
+    agent_by_process_name(comm)
+        .or_else(|| AGENT_PROCESS_NAMES.iter().find(|name| cmdline.contains(*name)).copied())
 }
 
 #[cfg(target_os = "linux")]
@@ -1123,6 +1132,7 @@ mod tests {
     fn name_match_handles_exe_suffix_and_case() {
         assert_eq!(agent_name_by_name(["pwsh.exe", "Claude.exe"]), Some("claude"));
         assert_eq!(agent_name_by_name(["cursor-agent.exe"]), Some("cursor-agent"));
+        assert_eq!(agent_name_by_name(["agy.exe"]), Some("agy"));
         assert_eq!(agent_name_by_name(["pwsh.exe", "git.exe"]), None);
         assert_eq!(agent_name_by_name(["not-claude.exe"]), None);
         assert_eq!(agent_name_by_name(std::iter::empty::<&str>()), None);
@@ -1183,5 +1193,28 @@ mod tests {
             r"node C:\Users\lev\AppData\Roaming\npm\node_modules\@anthropic-ai\claude-code\cli.js";
         assert_eq!(agent_name_by_cmdline([cmd]), Some("claude"));
         assert_eq!(agent_name_by_cmdline([r"pwsh.exe -NoLogo"]), None);
+    }
+    #[test]
+    fn a_name_only_agent_needs_its_own_process_name() {
+        assert_eq!(agent_name_by_cmdline([r"nvim.exe C:\notes\agyle.md"]), None);
+        assert_eq!(agent_name_by_name(["nvim.exe"]), None);
+    }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn agy_is_found_by_comm_and_not_inside_a_command_line() {
+        assert_eq!(agent_name_for(Some("agy\n"), Some("agy --continue")), Some("agy"));
+        assert_eq!(agent_name_for(Some("nvim\n"), Some("nvim agyle.md")), None);
+    }
+    #[test]
+    fn a_reported_agy_is_an_agent_and_a_file_named_like_it_is_not() {
+        let program = |argv: &[&str]| ForegroundProgram {
+            side: Side::Native,
+            pid: Some(9),
+            argv: argv.iter().map(|arg| arg.to_string()).collect(),
+            cwd: None,
+        };
+        let agent = |argv: &[&str]| reported_signals(Some(&program(argv)), Some(1)).agent;
+        assert_eq!(agent(&["/usr/bin/agy", "--continue"]), Some("agy"));
+        assert_eq!(agent(&["nvim", "agyle.md"]), None);
     }
 }

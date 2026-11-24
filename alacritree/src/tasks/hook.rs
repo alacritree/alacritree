@@ -1,8 +1,9 @@
 //! The context events of `alacritree hook`. `session-start` and
-//! `user-prompt-submit` add to the model's context, and `stop` asks an agent
-//! to keep going when it still holds temporary worktrees. They never fail a
-//! turn: a failure leaves out what it would have added and exits 0, and the
-//! only thing they print is one JSON object for the harness.
+//! `user-prompt-submit` (Antigravity's `pre-invocation`) add to the model's
+//! context, and `stop` asks an agent to keep going when it still holds
+//! temporary worktrees. They never fail a turn: a failure leaves out what it
+//! would have added and exits 0, and the only thing they print is one JSON
+//! object for the harness.
 
 use std::path::{Path, PathBuf};
 
@@ -10,7 +11,7 @@ use alacritree_common::digest::stable_digest;
 use alacritree_common::jobs;
 use alacritree_tasks::scope::{GLOBAL, Harness, Place, SessionRef, node, sanitize};
 use alacritree_tasks::{Filter, NodeMatch, Status, Task, TaskBackend, tree};
-use pabal::{AddContext, AnyPayload, AnyView, Fields};
+use pabal::{AddContext, AntigravityEvent, AnyPayload, AnyView, Fields};
 
 use crate::tasks::facts;
 use crate::temporary;
@@ -62,12 +63,60 @@ fn digest_path(state_dir: &Path, session: &SessionRef) -> PathBuf {
     state_dir.join("task-hooks").join(name)
 }
 
+/// Which context event a payload is, whatever its harness calls it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Moment {
+    Start,
+    Prompt,
+    Stop,
+}
+
+/// pabal knows Claude Code's and codex's context events by name, but leaves
+/// Antigravity's `SessionStart` among the events it does not know.
+pub(crate) fn moment(payload: &AnyPayload) -> Option<Moment> {
+    if let AnyPayload::Antigravity(payload) = payload {
+        return match payload.event() {
+            AntigravityEvent::Other(name) if name == "SessionStart" => Some(Moment::Start),
+            // agy has no prompt event. `PreInvocation` comes before every
+            // model call, and its `invocationNum` starts from 0 at each prompt.
+            AntigravityEvent::PreInvocation => {
+                let first = payload.raw()["invocationNum"].as_u64().unwrap_or(0) == 0;
+                first.then_some(Moment::Prompt)
+            },
+            AntigravityEvent::Stop => Some(Moment::Stop),
+            _ => None,
+        };
+    }
+    match payload.view() {
+        AnyView::SessionStart(_) => Some(Moment::Start),
+        AnyView::UserPromptSubmit(_) => Some(Moment::Prompt),
+        AnyView::Stop(_) => Some(Moment::Stop),
+        _ => None,
+    }
+}
+
+/// The answer that adds `text` to the model's context. agy takes it as an
+/// injected system message, which pabal has no builder for.
+fn add_context(payload: &AnyPayload, text: &str) -> Option<String> {
+    if let AnyPayload::Antigravity(_) = payload {
+        let step = serde_json::json!({ "systemMessage": { "systemMessage": text } });
+        return Some(serde_json::json!({ "injectSteps": [step] }).to_string());
+    }
+    let response = match payload.view() {
+        AnyView::SessionStart(start) => Some(start.add_context(text)),
+        AnyView::UserPromptSubmit(prompt) => prompt.add_context(text),
+        _ => None,
+    };
+    response.map(|r| r.to_string())
+}
+
 /// Ask an agent that stopped to deal with the temporary worktrees it still
 /// holds, once for each set of them, so one it means to keep is not nagged
 /// about at every stop. The record is written first: without it the agent
 /// would be sent back at every stop, with nothing able to break the loop.
 ///
-/// Both harnesses read this shape, and pabal has no builder for it.
+/// Claude Code and codex keep going on `block`, agy on `continue`, which
+/// injects the reason as a system message. pabal has a builder for neither.
 fn stop_response(state_dir: &Path, session: &SessionRef) -> Option<String> {
     let open = temporary::still_open(state_dir, session);
     if open.is_empty() {
@@ -81,7 +130,11 @@ fn stop_response(state_dir: &Path, session: &SessionRef) -> Option<String> {
     }
     std::fs::create_dir_all(path.parent()?).ok()?;
     std::fs::write(&path, digest).ok()?;
-    Some(serde_json::json!({ "decision": "block", "reason": reason }).to_string())
+    let decision = match session.harness {
+        Harness::Claude | Harness::Codex => "block",
+        Harness::Antigravity => "continue",
+    };
+    Some(serde_json::json!({ "decision": decision, "reason": reason }).to_string())
 }
 
 /// `None` means print nothing, which is where every failure lands. `cwd` is
@@ -94,16 +147,13 @@ pub(crate) fn run(
     state_dir: Option<&Path>,
     backends: &[crate::vcs::Vcs],
 ) -> Option<String> {
-    let view = payload.view();
+    let moment = moment(payload)?;
     let session = payload
         .session_id()
         .filter(|id| !id.trim().is_empty())
         .map(|id| SessionRef { harness, id: id.to_string() });
-    if matches!(view, AnyView::Stop(_)) {
+    if moment == Moment::Stop {
         return stop_response(state_dir?, session.as_ref()?);
-    }
-    if !matches!(view, AnyView::SessionStart(_) | AnyView::UserPromptSubmit(_)) {
-        return None;
     }
     let cwd = cwd?;
     let (place, tasks) = jobs::on_this_thread(|b| {
@@ -133,7 +183,7 @@ pub(crate) fn run(
         let path = digest_path(dir, session);
         let digest = format!("{:016x}", stable_digest(text.as_bytes()));
         let seen = std::fs::read_to_string(&path).is_ok_and(|s| s == digest);
-        if seen && matches!(view, AnyView::UserPromptSubmit(_)) {
+        if seen && moment == Moment::Prompt {
             return None;
         }
         if !seen {
@@ -141,12 +191,7 @@ pub(crate) fn run(
             let _ = std::fs::write(&path, digest);
         }
     }
-    let response = match view {
-        AnyView::SessionStart(start) => Some(start.add_context(&text)),
-        AnyView::UserPromptSubmit(prompt) => prompt.add_context(&text),
-        _ => None,
-    };
-    response.map(|r| r.to_string())
+    add_context(payload, &text)
 }
 
 #[cfg(test)]
@@ -244,5 +289,45 @@ mod tests {
     fn without_a_session_the_workspace_is_the_write_target() {
         let place = Place::Workspace { repo: "r".into(), branch: "main".into() };
         assert!(context(&FakeBackend::default(), &place, None, &[]).contains("`r.main`"));
+    }
+
+    /// agy names no event in its payload, so the hook config's name decides.
+    fn antigravity(event: &str, stdin: &str) -> AnyPayload {
+        AnyPayload::parse_named(pabal::AnyHarness::Antigravity, event, stdin).unwrap()
+    }
+
+    #[test]
+    fn antigravity_events_map_to_their_moments() {
+        let at = |event, stdin| moment(&antigravity(event, stdin));
+        assert_eq!(at("SessionStart", r#"{"conversationId":"c1"}"#), Some(Moment::Start));
+        assert_eq!(at("PreInvocation", r#"{"invocationNum":0}"#), Some(Moment::Prompt));
+        assert_eq!(at("PreInvocation", "{}"), Some(Moment::Prompt));
+        assert_eq!(at("PreInvocation", r#"{"invocationNum":3}"#), None, "mid-turn");
+        assert_eq!(at("Stop", r#"{"conversationId":"c1"}"#), Some(Moment::Stop));
+        assert_eq!(at("PostInvocation", r#"{"invocationNum":0}"#), None);
+        assert_eq!(at("UserPromptSubmit", "{}"), None, "an event agy never sends");
+    }
+
+    #[test]
+    fn antigravity_context_is_an_injected_system_message() {
+        let reply = add_context(&antigravity("SessionStart", "{}"), "the lists").unwrap();
+        let reply: serde_json::Value = serde_json::from_str(&reply).unwrap();
+        let step = serde_json::json!({ "systemMessage": { "systemMessage": "the lists" } });
+        assert_eq!(reply, serde_json::json!({ "injectSteps": [step] }));
+    }
+
+    #[test]
+    fn antigravity_is_asked_to_continue_rather_than_blocked() {
+        let state = tempfile::tempdir().unwrap();
+        let held = tempfile::tempdir().unwrap();
+        let ledger = state.path().join("task-hooks").join("antigravity-c1.temporary");
+        std::fs::create_dir_all(ledger.parent().unwrap()).unwrap();
+        std::fs::write(&ledger, format!("{}\n", held.path().display())).unwrap();
+        let payload = antigravity("Stop", r#"{"conversationId":"c1","fullyIdle":true}"#);
+        let backend = FakeBackend::default();
+        let reply = run(&backend, &payload, Harness::Antigravity, None, Some(state.path()), &[]);
+        let reply: serde_json::Value = serde_json::from_str(&reply.unwrap()).unwrap();
+        assert_eq!(reply["decision"], "continue");
+        assert!(reply["reason"].as_str().unwrap().contains(held.path().to_str().unwrap()));
     }
 }

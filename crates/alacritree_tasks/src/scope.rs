@@ -8,6 +8,7 @@ pub const GLOBAL: &str = "global";
 pub enum Harness {
     Claude,
     Codex,
+    Antigravity,
 }
 
 impl Harness {
@@ -15,6 +16,7 @@ impl Harness {
         match name {
             "claude" => Some(Self::Claude),
             "codex" => Some(Self::Codex),
+            "antigravity" => Some(Self::Antigravity),
             _ => None,
         }
     }
@@ -23,6 +25,7 @@ impl Harness {
         match self {
             Self::Claude => "claude",
             Self::Codex => "codex",
+            Self::Antigravity => "antigravity",
         }
     }
 }
@@ -65,14 +68,19 @@ pub fn node(place: &Place, session: Option<&SessionRef>) -> String {
 
 /// Codex's hook payload carries the root session id, which is also what it
 /// exports as `CODEX_SESSION_ID`, so keying on it keeps a subagent's shell
-/// and the hook on one node.
+/// and the hook on one node. Antigravity's `ANTIGRAVITY_CONVERSATION_ID` is
+/// the `conversationId` its hooks are sent.
 pub fn session_from_env(get: impl Fn(&str) -> Option<String>) -> Option<SessionRef> {
-    [("CODEX_SESSION_ID", Harness::Codex), ("CLAUDE_CODE_SESSION_ID", Harness::Claude)]
-        .into_iter()
-        .find_map(|(key, harness)| {
-            let id = get(key)?.trim().to_string();
-            (!id.is_empty()).then_some(SessionRef { harness, id })
-        })
+    [
+        ("CODEX_SESSION_ID", Harness::Codex),
+        ("CLAUDE_CODE_SESSION_ID", Harness::Claude),
+        ("ANTIGRAVITY_CONVERSATION_ID", Harness::Antigravity),
+    ]
+    .into_iter()
+    .find_map(|(key, harness)| {
+        let id = get(key)?.trim().to_string();
+        (!id.is_empty()).then_some(SessionRef { harness, id })
+    })
 }
 
 #[cfg(test)]
@@ -132,6 +140,18 @@ mod tests {
     }
 
     #[test]
+    fn antigravity_conversation_id_names_its_session() {
+        let env =
+            |key: &str| (key == "ANTIGRAVITY_CONVERSATION_ID").then(|| "5525bbeb-886a".to_string());
+        let session = session_from_env(env).unwrap();
+        assert_eq!(
+            session,
+            SessionRef { harness: Harness::Antigravity, id: "5525bbeb-886a".into() }
+        );
+        assert_eq!(node(&ws("r", "main"), Some(&session)), "r.main.antigravity-5525bbeb-886a");
+    }
+
+    #[test]
     fn blank_ids_are_no_session() {
         let env = |key: &str| (key == "CODEX_SESSION_ID").then(|| "  ".to_string());
         assert_eq!(session_from_env(env), None);
@@ -141,6 +161,7 @@ mod tests {
     fn harness_names_round_trip() {
         assert_eq!(Harness::parse("claude"), Some(Harness::Claude));
         assert_eq!(Harness::parse("codex"), Some(Harness::Codex));
+        assert_eq!(Harness::parse("antigravity"), Some(Harness::Antigravity));
         assert_eq!(Harness::parse("gemini"), None);
     }
 }
