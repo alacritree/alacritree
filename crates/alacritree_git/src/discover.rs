@@ -41,7 +41,7 @@ pub(crate) fn discover(
     upstream: bool,
     blocking: &jobs::Blocking,
 ) -> Result<Repository, VcsError> {
-    match wsl::classify(root) {
+    let mut repository = match wsl::classify(root) {
         wsl::Location::Wsl { distro, linux_path } => {
             let run = |script: &str, args: &[&str]| wsl::run_batch(&distro, script, args, blocking);
             discover_from_batch(root.to_path_buf(), &distro, &linux_path, upstream, run)
@@ -50,7 +50,17 @@ pub(crate) fn discover(
             Ok(repo) => Ok(from_repo(root, &repo, upstream)),
             Err(_) => Err(VcsError::NotARepository(root.to_path_buf())),
         },
-    }
+    }?;
+    in_name_order(&mut repository.checkouts);
+    Ok(repository)
+}
+
+/// The main checkout, then the linked ones by name. libgit2 and
+/// `git worktree list` both give linked worktrees in the order their admin
+/// directories read back from disk, which differs from one filesystem to the
+/// next: ext4 hashes names with a seed of its own.
+fn in_name_order(checkouts: &mut [Checkout]) {
+    checkouts.sort_by(|a, b| b.is_main.cmp(&a.is_main).then_with(|| a.name.cmp(&b.name)));
 }
 
 /// Discovery once the round trip is somebody else's problem, so a test
@@ -330,6 +340,23 @@ mod tests {
 
     use super::*;
     use crate::GitBackend;
+
+    #[test]
+    fn linked_worktrees_follow_the_main_checkout_in_name_order() {
+        let checkout = |name: &str, is_main| Checkout {
+            name: name.into(),
+            path: PathBuf::from(name),
+            head: Head::default(),
+            is_main,
+            gone: false,
+            upstream: None,
+        };
+        let mut checkouts =
+            [checkout("wt-feature", false), checkout("main", true), checkout("wt-detached", false)];
+        in_name_order(&mut checkouts);
+        let names: Vec<&str> = checkouts.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["main", "wt-detached", "wt-feature"]);
+    }
 
     /// `%(refname:short)` shortens to the *unambiguous* name, so a branch that
     /// shares its name with a tag comes back as `heads/<name>`. Worktree
